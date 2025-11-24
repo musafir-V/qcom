@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"os"
@@ -37,7 +38,12 @@ func main() {
 		logger.WithError(err).Fatal("Failed to initialize DynamoDB")
 	}
 
-	redisClient := initRedis(cfg, logger)
+	redisClient, err := initRedis(cfg, logger)
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to initialize Redis")
+	}
+	defer redisClient.Close()
+
 	userRepo := repository.NewUserRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -104,9 +110,7 @@ func initDynamoDB(cfg *config.Config, logger *logrus.Logger) (*dynamodb.Client, 
 				})),
 		)
 	} else {
-		awsCfg, err = awsconfig.LoadDefaultConfig(context.TODO(),
-			awsconfig.WithRegion(cfg.DynamoDB.Region),
-		)
+		awsCfg, err = awsconfig.LoadDefaultConfig(context.TODO())
 	}
 
 	if err != nil {
@@ -118,23 +122,42 @@ func initDynamoDB(cfg *config.Config, logger *logrus.Logger) (*dynamodb.Client, 
 	return client, nil
 }
 
-func initRedis(cfg *config.Config, logger *logrus.Logger) *redis.Client {
+func initRedis(cfg *config.Config, logger *logrus.Logger) (*redis.Client, error) {
+	var tlsConfig *tls.Config
+
+	// Enable TLS if configured
+	if cfg.Redis.UseTLS {
+		tlsConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
+		logger.Info("TLS enabled for Redis connection")
+	}
+
+	// Create Redis client with password authentication
 	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.Redis.Endpoint,
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
+		Addr:      cfg.Redis.Endpoint,
+		Password:  cfg.Redis.Password,
+		DB:        cfg.Redis.DB,
+		TLSConfig: tlsConfig,
 	})
 
+	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := client.Ping(ctx).Err(); err != nil {
+	pong, err := client.Ping(ctx).Result()
+	if err != nil {
 		logger.WithError(err).Warn("Failed to connect to Redis, continuing anyway")
-	} else {
-		logger.Info("Redis client initialized")
+		return client, nil
 	}
 
-	return client
+	logger.WithFields(logrus.Fields{
+		"ping_response": pong,
+		"endpoint":      cfg.Redis.Endpoint,
+		"tls_enabled":   cfg.Redis.UseTLS,
+	}).Info("Redis client initialized successfully")
+
+	return client, nil
 }
 
 func setupRouter(

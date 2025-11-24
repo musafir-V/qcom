@@ -109,7 +109,7 @@ func (s *RefreshTokenService) IsRevoked(ctx context.Context, jti string) (bool, 
 func (s *RefreshTokenService) RevokeFamily(ctx context.Context, familyID string) error {
 	// This is a simplified version - in production, you might want to store
 	// a mapping of family_id to all tokens
-	pattern := fmt.Sprintf("refresh_token:*")
+	pattern := "refresh_token:*"
 	keys, err := s.client.Keys(ctx, pattern).Result()
 	if err != nil {
 		return err
@@ -137,3 +137,4 @@ func (s *RefreshTokenService) RevokeFamily(ctx context.Context, familyID string)
 func GenerateFamilyID() string {
 	return uuid.New().String()
 }
+
