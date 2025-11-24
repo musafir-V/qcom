@@ -35,9 +35,9 @@ run: ## Run the application (requires dependencies to be running)
 	fi
 	@$(BINARY_PATH)
 
-docker-up: ## Start Docker containers (DynamoDB, Redis)
+docker-up: ## Start Docker container (DynamoDB)
 	@echo "Starting Docker containers..."
-	@$(DOCKER_COMPOSE) up -d dynamodb-local redis
+	@$(DOCKER_COMPOSE) up -d dynamodb-local
 	@echo "Waiting for services to be ready..."
 	@sleep 5
 	@echo "Docker containers started"
@@ -82,16 +82,14 @@ dev-test: ## Start server with local containers for manual API testing
 	@echo "Setting up development test environment..."
 	@echo ""
 	@echo "Starting Docker containers..."
-	@docker stop qcom-dynamodb qcom-redis 2>/dev/null || true
-	@docker rm qcom-dynamodb qcom-redis 2>/dev/null || true
+	@docker stop qcom-dynamodb 2>/dev/null || true
+	@docker rm qcom-dynamodb 2>/dev/null || true
 	@docker run -d --name qcom-dynamodb -p 8000:8000 \
 		-e AWS_ACCESS_KEY_ID=dummy \
 		-e AWS_SECRET_ACCESS_KEY=dummy \
 		-e AWS_DEFAULT_REGION=us-east-1 \
 		amazon/dynamodb-local:2.0.0 \
 		-jar DynamoDBLocal.jar -sharedDb -inMemory
-	@docker run -d --name qcom-redis -p 6379:6379 \
-		redis:7-alpine redis-server --appendonly yes
 	@echo "Waiting for services to be ready..."
 	@sleep 3
 	@echo ""

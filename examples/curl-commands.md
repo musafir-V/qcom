@@ -5,7 +5,7 @@ This file contains sample curl commands to test the QCom authentication API manu
 ## Prerequisites
 
 - Server running on `http://localhost:8080`
-- DynamoDB and Redis running
+- DynamoDB running
 - `JWT_SECRET_KEY` environment variable set
 
 ## Base URL
@@ -44,11 +44,7 @@ curl -X POST http://localhost:8080/api/v1/auth/initiate-otp \
 }
 ```
 
-**Note:** The OTP is logged in server logs. Check logs or Redis:
-```bash
-# Get OTP from Redis (for development/testing)
-redis-cli -h localhost -p 6379 get "otp:plain:+1234567890"
-```
+**Note:** The OTP is logged in server logs for development/testing.
 
 ## 3. Verify OTP
 
@@ -207,13 +203,13 @@ curl -X POST http://localhost:8080/api/v1/auth/initiate-otp \
   -H "Content-Type: application/json" \
   -d '{"phone_number":"+1234567890"}'
 
-# 3. Get OTP from Redis (development only)
-OTP=$(redis-cli -h localhost -p 6379 get "otp:plain:+1234567890" | tr -d '"')
+# 3. Get OTP from server logs (development only)
+# Check server logs for the OTP
 
 # 4. Verify OTP and get tokens
 RESPONSE=$(curl -s -X POST http://localhost:8080/api/v1/auth/verify-otp \
   -H "Content-Type: application/json" \
-  -d "{\"phone_number\":\"+1234567890\",\"otp\":\"$OTP\"}")
+  -d "{\"phone_number\":\"+1234567890\",\"otp\":\"YOUR_OTP\"}")
 
 # 5. Extract tokens
 ACCESS_TOKEN=$(echo "$RESPONSE" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)

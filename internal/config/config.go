@@ -10,7 +10,6 @@ import (
 type Config struct {
 	Server   ServerConfig
 	DynamoDB DynamoDBConfig
-	Redis    RedisConfig
 	JWT      JWTConfig
 	OTP      OTPConfig
 }
@@ -25,13 +24,6 @@ type DynamoDBConfig struct {
 	Endpoint  string
 	Region    string
 	TableName string
-}
-
-type RedisConfig struct {
-	Endpoint string
-	Password string
-	DB       int
-	UseTLS   bool // Enable TLS for encrypted connections
 }
 
 type JWTConfig struct {
@@ -57,12 +49,6 @@ func Load() (*Config, error) {
 			Endpoint:  getEnv("DYNAMODB_ENDPOINT", ""),
 			Region:    getEnv("DYNAMODB_REGION", "us-east-1"),
 			TableName: getEnv("DYNAMODB_TABLE_NAME", "QComTable"),
-		},
-		Redis: RedisConfig{
-			Endpoint: getEnv("REDIS_ENDPOINT", "localhost:6379"),
-			Password: getEnv("REDIS_PASSWORD", ""),
-			DB:       getEnvAsInt("REDIS_DB", 0),
-			UseTLS:   getEnvAsBool("REDIS_USE_TLS", false),
 		},
 		JWT: JWTConfig{
 			SecretKey:     getEnv("JWT_SECRET_KEY", ""),
@@ -107,18 +93,6 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	if value := os.Getenv(key); value != "" {
 		if duration, err := time.ParseDuration(value); err == nil {
 			return duration
-		}
-	}
-	return defaultValue
-}
-
-func getEnvAsBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		if value == "true" || value == "1" || value == "yes" {
-			return true
-		}
-		if value == "false" || value == "0" || value == "no" {
-			return false
 		}
 	}
 	return defaultValue

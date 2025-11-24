@@ -2,25 +2,24 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/models"
-	"github.com/redis/go-redis/v9"
+	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
 )
 
 type RefreshTokenService struct {
-	client *redis.Client
-	logger *logrus.Logger
+	tokenRepo *repository.RefreshTokenRepository
+	logger    *logrus.Logger
 }
 
-func NewRefreshTokenService(client *redis.Client, logger *logrus.Logger) *RefreshTokenService {
+func NewRefreshTokenService(tokenRepo *repository.RefreshTokenRepository, logger *logrus.Logger) *RefreshTokenService {
 	return &RefreshTokenService{
-		client: client,
-		logger: logger,
+		tokenRepo: tokenRepo,
+		logger:    logger,
 	}
 }
 
@@ -35,99 +34,45 @@ func (s *RefreshTokenService) Store(ctx context.Context, jti, userID, phone, fam
 		Revoked:   false,
 	}
 
-	dataJSON, err := json.Marshal(tokenData)
-	if err != nil {
-		return fmt.Errorf("failed to marshal token data: %w", err)
-	}
-
-	key := fmt.Sprintf("refresh_token:%s", jti)
-	ttl := time.Until(expiresAt)
-
-	if err := s.client.Set(ctx, key, dataJSON, ttl).Err(); err != nil {
-		s.logger.WithError(err).Error("Failed to store refresh token")
-		return fmt.Errorf("failed to store refresh token: %w", err)
-	}
-
-	return nil
+	return s.tokenRepo.Store(ctx, tokenData)
 }
 
 func (s *RefreshTokenService) Get(ctx context.Context, jti string) (*models.RefreshTokenData, error) {
-	key := fmt.Sprintf("refresh_token:%s", jti)
-
-	dataJSON, err := s.client.Get(ctx, key).Result()
-	if err == redis.Nil {
-		return nil, fmt.Errorf("refresh token not found")
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to get refresh token: %w", err)
-	}
-
-	var tokenData models.RefreshTokenData
-	if err := json.Unmarshal([]byte(dataJSON), &tokenData); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal token data: %w", err)
-	}
-
-	return &tokenData, nil
+	return s.tokenRepo.Get(ctx, jti)
 }
 
 func (s *RefreshTokenService) Revoke(ctx context.Context, jti string) error {
-	key := fmt.Sprintf("refresh_token:%s", jti)
-
 	tokenData, err := s.Get(ctx, jti)
 	if err != nil {
 		return err
 	}
 
 	tokenData.Revoked = true
-	dataJSON, _ := json.Marshal(tokenData)
-
-	ttl := time.Until(tokenData.ExpiresAt)
-	if ttl < 0 {
-		ttl = 0
-	}
-
-	if err := s.client.Set(ctx, key, dataJSON, ttl).Err(); err != nil {
+	if err := s.tokenRepo.Store(ctx, *tokenData); err != nil {
 		return fmt.Errorf("failed to revoke refresh token: %w", err)
 	}
 
-	// Also add to revoked tokens list for quick lookup
-	revokedKey := fmt.Sprintf("revoked_token:%s", jti)
-	s.client.Set(ctx, revokedKey, "1", ttl)
+	// Also mark as revoked for quick lookup
+	if err := s.tokenRepo.MarkRevoked(ctx, jti, tokenData.ExpiresAt); err != nil {
+		return fmt.Errorf("failed to mark token as revoked: %w", err)
+	}
 
 	return nil
 }
 
 func (s *RefreshTokenService) IsRevoked(ctx context.Context, jti string) (bool, error) {
-	revokedKey := fmt.Sprintf("revoked_token:%s", jti)
-	exists, err := s.client.Exists(ctx, revokedKey).Result()
-	if err != nil {
-		return false, err
-	}
-	return exists > 0, nil
+	return s.tokenRepo.IsRevoked(ctx, jti)
 }
 
 func (s *RefreshTokenService) RevokeFamily(ctx context.Context, familyID string) error {
-	// This is a simplified version - in production, you might want to store
-	// a mapping of family_id to all tokens
-	pattern := "refresh_token:*"
-	keys, err := s.client.Keys(ctx, pattern).Result()
+	tokens, err := s.tokenRepo.GetByFamilyID(ctx, familyID)
 	if err != nil {
 		return err
 	}
 
-	for _, key := range keys {
-		dataJSON, err := s.client.Get(ctx, key).Result()
-		if err != nil {
-			continue
-		}
-
-		var tokenData models.RefreshTokenData
-		if err := json.Unmarshal([]byte(dataJSON), &tokenData); err != nil {
-			continue
-		}
-
-		if tokenData.FamilyID == familyID {
-			s.Revoke(ctx, tokenData.JTI)
+	for _, token := range tokens {
+		if err := s.Revoke(ctx, token.JTI); err != nil {
+			s.logger.WithError(err).WithField("jti", token.JTI).Error("Failed to revoke token in family")
 		}
 	}
 
@@ -137,4 +82,3 @@ func (s *RefreshTokenService) RevokeFamily(ctx context.Context, familyID string)
 func GenerateFamilyID() string {
 	return uuid.New().String()
 }
-

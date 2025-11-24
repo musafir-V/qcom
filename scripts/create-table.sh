@@ -24,3 +24,14 @@ aws dynamodb create-table \
 
 echo "Table created successfully!"
 
+# Enable TTL on the table
+echo "Enabling TTL on table..."
+aws dynamodb update-time-to-live \
+  --table-name "$TABLE_NAME" \
+  --time-to-live-specification "Enabled=true,AttributeName=TTL" \
+  --endpoint-url "$ENDPOINT" \
+  --region "$REGION" \
+  --no-cli-pager
+
+echo "TTL enabled successfully!"
+

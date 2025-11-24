@@ -7,17 +7,18 @@ A Go-based authentication service with OTP verification via phone number and JWT
 - Phone number-based authentication
 - OTP generation and verification (logged for development)
 - JWT access and refresh tokens (HS256)
-- DynamoDB for user storage
-- Redis for OTP and token storage (with password authentication)
-- Optional TLS encryption for secure connections
+- DynamoDB for user storage, OTPs, and refresh tokens (with TTL auto-expiration)
 - RESTful API with proper HTTP standards
 
 ## Architecture
 
 ```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Client    │───▶│  Go Server   │───▶│  DynamoDB   │    │   Valkey    │
-└─────────────┘    └──────────────┘    └─────────────┘    └─────────────┘
+┌─────────────┐    ┌──────────────┐    ┌─────────────┐
+│   Client    │───▶│  Go Server   │───▶│  DynamoDB   │
+└─────────────┘    └──────────────┘    └─────────────┘
+                                         ├─ Users
+                                         ├─ OTPs (TTL)
+                                         └─ Tokens (TTL)
 ```
 
 ## API Endpoints
@@ -137,8 +138,8 @@ go run cmd/server/main.go
 ## Integration Tests
 
 Run the integration test script that:
-1. Starts Docker containers (DynamoDB, Redis/Valkey)
-2. Creates the DynamoDB table
+1. Starts Docker container (DynamoDB only)
+2. Creates the DynamoDB table with TTL enabled
 3. Starts the application
 4. Tests all API endpoints using curl
 5. Validates responses
@@ -170,10 +171,6 @@ The script will:
 | `DYNAMODB_ENDPOINT` | `` | DynamoDB endpoint (empty for AWS) |
 | `DYNAMODB_REGION` | `us-east-1` | AWS region |
 | `DYNAMODB_TABLE_NAME` | `QComTable` | DynamoDB table name |
-| `REDIS_ENDPOINT` | `localhost:6379` | Redis endpoint |
-| `REDIS_PASSWORD` | `` | Redis password |
-| `REDIS_DB` | `0` | Redis database number |
-| `REDIS_USE_TLS` | `false` | Enable TLS encryption |
 | `OTP_LENGTH` | `6` | OTP length |
 | `OTP_EXPIRY` | `10m` | OTP expiration |
 | `OTP_MAX_ATTEMPTS` | `5` | Max OTP verification attempts |
@@ -276,7 +273,7 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
 - **Token Revocation:** Refresh tokens can be revoked
 - **OTP Hashing:** OTPs are hashed with bcrypt before storage
 - **Rate Limiting:** OTP attempts are limited
-- **Secure Storage:** Tokens stored in Valkey with expiration
+- **Secure Storage:** OTPs and tokens stored in DynamoDB with automatic TTL expiration
 
 ## Development
 

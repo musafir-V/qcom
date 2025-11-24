@@ -84,6 +84,7 @@ type ErrorDetail struct {
 func (h *AuthHandlers) InitiateOTP(w http.ResponseWriter, r *http.Request) {
 	var req InitiateOTPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.logger.WithError(err).Error("Failed to generate OTP")
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
 		return
 	}

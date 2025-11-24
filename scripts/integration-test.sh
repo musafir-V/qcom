@@ -67,8 +67,8 @@ cleanup() {
     fi
     
     # Stop Docker containers
-    docker stop qcom-dynamodb qcom-redis 2>/dev/null || true
-    docker rm qcom-dynamodb qcom-redis 2>/dev/null || true
+    docker stop qcom-dynamodb 2>/dev/null || true
+    docker rm qcom-dynamodb 2>/dev/null || true
     
     echo "Cleanup complete"
 }
@@ -79,8 +79,8 @@ trap cleanup EXIT
 # Start Docker containers
 echo "Starting Docker containers..."
 # Stop and remove existing containers if they exist (clean start)
-docker stop qcom-dynamodb qcom-redis 2>/dev/null || true
-docker rm qcom-dynamodb qcom-redis 2>/dev/null || true
+docker stop qcom-dynamodb 2>/dev/null || true
+docker rm qcom-dynamodb 2>/dev/null || true
 
 # Start DynamoDB
 echo "Starting DynamoDB..."
@@ -94,20 +94,12 @@ if ! docker run -d --name qcom-dynamodb -p 8000:8000 \
     exit 1
 fi
 
-# Start Redis
-echo "Starting Redis..."
-if ! docker run -d --name qcom-redis -p 6379:6379 \
-    redis:7-alpine redis-server --appendonly yes; then
-    echo "Failed to start Redis container"
-    exit 1
-fi
-
 # Wait for services to be ready
 echo "Waiting for services to be ready..."
 for i in {1..15}; do
-    if docker ps | grep -q "qcom-dynamodb" && docker ps | grep -q "qcom-redis"; then
-        # Check if services are responding
-        if curl -s http://localhost:8000 > /dev/null 2>&1 && redis-cli -h localhost -p 6379 ping > /dev/null 2>&1; then
+    if docker ps | grep -q "qcom-dynamodb"; then
+        # Check if DynamoDB is responding
+        if curl -s http://localhost:8000 > /dev/null 2>&1; then
             break
         fi
     fi
@@ -139,9 +131,6 @@ export JWT_SECRET_KEY="$JWT_SECRET"
 export DYNAMODB_ENDPOINT="http://localhost:8000"
 export DYNAMODB_REGION="us-east-1"
 export DYNAMODB_TABLE_NAME="$TEST_TABLE"
-export REDIS_ENDPOINT="localhost:6379"
-export REDIS_PASSWORD=""
-export REDIS_DB="0"
 export PORT="8080"
 export OTP_LENGTH="6"
 export OTP_EXPIRY="10m"
@@ -185,16 +174,9 @@ get_otp_from_logs() {
     sleep 2  # Wait for OTP to be generated and logged
     # Extract OTP from JSON logs - look for "OTP generated" log entry
     # The log format is JSON: {"level":"info","msg":"OTP generated (logged for development)","otp":"123456","phone":"+1234567890","time":"..."}
-    # Try to extract from JSON log
     local otp_from_log=$(grep -o "\"otp\":\"[0-9]*\"" /tmp/server.log 2>/dev/null | tail -1 | grep -o '[0-9]*' || echo "")
     if [ -n "$otp_from_log" ]; then
         echo "$otp_from_log"
-        return 0
-    fi
-    # Fallback: try Redis directly
-    local otp_from_redis=$(redis-cli -h localhost -p 6379 get "otp:plain:$phone" 2>/dev/null | tr -d '"' || echo "")
-    if [ -n "$otp_from_redis" ]; then
-        echo "$otp_from_redis"
         return 0
     fi
     echo ""

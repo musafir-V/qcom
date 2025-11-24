@@ -7,7 +7,7 @@
 # 
 # Prerequisites:
 # - Server should be running on http://localhost:8080
-# - DynamoDB and Redis should be running
+# - DynamoDB should be running
 # - Set JWT_SECRET_KEY environment variable
 #
 # Usage:
@@ -56,8 +56,7 @@ echo -e "\n\n"
 # =============================================================================
 echo "3. Verify OTP"
 echo "-------------"
-echo "First, get the OTP from server logs or Redis:"
-echo "  redis-cli -h localhost -p 6379 get 'otp:plain:${PHONE_NUMBER}'"
+echo "First, get the OTP from server logs"
 echo ""
 echo "Then verify with:"
 echo "curl -X POST ${BASE_URL}/api/v1/auth/verify-otp \\"
