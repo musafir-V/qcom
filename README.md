@@ -34,6 +34,12 @@ A Go-based authentication service with OTP verification via phone number and JWT
 | `GET` | `/api/v1/me` | Get current user info | Yes |
 | `GET` | `/health` | Health check | No |
 
+### Content
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| `POST` | `/api/v1/home` | Get home page content | Yes |
+
 ## Quick Start
 
 ### Prerequisites
@@ -85,6 +91,15 @@ make setup
 chmod +x scripts/create-table.sh
 ./scripts/create-table.sh
 ```
+
+#### 2.1. (Optional) Seed Home Page Data
+
+```bash
+chmod +x scripts/seed-home-page.sh
+./scripts/seed-home-page.sh
+```
+
+This will create a sample `PAGE#HOME` record in DynamoDB for testing the home endpoint.
 
 #### 3. Generate JWT Secret Key
 
@@ -158,7 +173,18 @@ The script will:
 - Test protected endpoints
 - Test token refresh
 - Test logout
+- **Test home page endpoint** (new)
 - Clean up resources
+
+### Quick Home Endpoint Test
+
+To quickly test just the home endpoint (requires server already running):
+
+```bash
+./scripts/test-home-endpoint.sh
+```
+
+For detailed testing documentation, see [TESTING_HOME_API.md](TESTING_HOME_API.md).
 
 ## Environment Variables
 
@@ -253,6 +279,33 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
   }'
 ```
 
+### 6. Get Home Page Content
+
+```bash
+curl -X POST http://localhost:8080/api/v1/home \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "latitude": 37.7749,
+    "longitude": -122.4194
+  }'
+```
+
+Response:
+```json
+{
+  "data": {
+    "PK": "PAGE#HOME",
+    "SK": "PAGE#HOME",
+    "content": {
+      "...": "page content from DynamoDB"
+    }
+  }
+}
+```
+
+**Note:** The endpoint accepts latitude and longitude (logged but not currently used for filtering). It queries DynamoDB for the `PAGE#HOME` partition key and returns the stored JSON data.
+
 ## DynamoDB Schema
 
 ### User Table
@@ -265,6 +318,14 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
 - `name` (String): User's name (optional)
 - `created_at` (String): ISO 8601 timestamp
 - `updated_at` (String): ISO 8601 timestamp
+
+### Page Content
+
+**Partition Key (PK):** `PAGE#HOME` (or other page identifiers)  
+**Sort Key (SK):** `PAGE#HOME` (same as PK)
+
+**Attributes:**
+- `content` (Map): JSON content for the page
 
 ## Security Features
 
@@ -293,6 +354,7 @@ curl -X POST http://localhost:8080/api/v1/auth/logout \
 │   └── service/              # Business logic
 ├── scripts/                  # Utility scripts
 │   ├── create-table.sh       # Create DynamoDB table
+│   ├── seed-home-page.sh     # Seed sample home page data
 │   └── integration-test.sh   # Integration test script
 └── docker-compose.yml        # Local development setup
 ```

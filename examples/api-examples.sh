@@ -112,6 +112,66 @@ fi
 echo -e "\n\n"
 
 # =============================================================================
+# 4b. Get Home Page Content (Protected Endpoint)
+# =============================================================================
+echo "4b. Get Home Page Content (Protected Endpoint)"
+echo "-----------------------------------------------"
+if [ -n "$ACCESS_TOKEN" ]; then
+  echo "First, let's seed the home page data (if not already present)..."
+  DYNAMODB_ENDPOINT="${DYNAMODB_ENDPOINT:-http://localhost:8000}"
+  DYNAMODB_TABLE_NAME="${DYNAMODB_TABLE_NAME:-QComTable}"
+  
+  aws dynamodb put-item \
+    --table-name "$DYNAMODB_TABLE_NAME" \
+    --region us-east-1 \
+    --endpoint-url "$DYNAMODB_ENDPOINT" \
+    --item '{
+        "PK": {"S": "PAGE#HOME"},
+        "SK": {"S": "PAGE#HOME"},
+        "content": {
+            "M": {
+                "title": {"S": "Welcome to QCom"},
+                "subtitle": {"S": "Your trusted platform"},
+                "sections": {
+                    "L": [
+                        {
+                            "M": {
+                                "id": {"S": "section-1"},
+                                "type": {"S": "hero"},
+                                "title": {"S": "Featured Products"}
+                            }
+                        }
+                    ]
+                },
+                "version": {"N": "1"}
+            }
+        }
+    }' > /dev/null 2>&1
+  
+  echo ""
+  echo "Request:"
+  echo "curl -X POST ${BASE_URL}/api/v1/home \\"
+  echo "  -H 'Authorization: Bearer <access_token>' \\"
+  echo "  -H 'Content-Type: application/json' \\"
+  echo "  -d '{\"latitude\": 37.7749, \"longitude\": -122.4194}'"
+  echo ""
+  echo "Response:"
+  RESPONSE=$(curl -s -X POST "${BASE_URL}/api/v1/home" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"latitude": 37.7749, "longitude": -122.4194}')
+  echo "$RESPONSE" | jq '.' 2>/dev/null || echo "$RESPONSE"
+else
+  echo "Skipping (no access token available)"
+  echo "Example command:"
+  echo "curl -X POST ${BASE_URL}/api/v1/home \\"
+  echo "  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \\"
+  echo "  -H 'Content-Type: application/json' \\"
+  echo "  -d '{\"latitude\": 37.7749, \"longitude\": -122.4194}'"
+fi
+echo -e "\n\n"
+
+# =============================================================================
 # 5. Refresh Token
 # =============================================================================
 echo "5. Refresh Token"

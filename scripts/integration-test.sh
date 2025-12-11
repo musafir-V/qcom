@@ -449,6 +449,128 @@ else
     print_fail "Logout - Could not get tokens for logout test"
 fi
 
+# Test 12: Seed Home Page Data
+print_test "Seed Home Page Data"
+aws dynamodb put-item \
+    --table-name "$TEST_TABLE" \
+    --region us-east-1 \
+    --endpoint-url http://localhost:8000 \
+    --item '{
+        "PK": {"S": "PAGE#HOME"},
+        "SK": {"S": "PAGE#HOME"},
+        "content": {
+            "M": {
+                "title": {"S": "Welcome to QCom Test"},
+                "subtitle": {"S": "Integration Test Home Page"},
+                "version": {"N": "1"}
+            }
+        }
+    }' > /dev/null 2>&1
+
+if [ $? -eq 0 ]; then
+    print_pass "Seed home page data"
+else
+    print_fail "Seed home page data"
+fi
+
+# Test 13: Home Page - With Valid Token
+if [ -n "$ACCESS_TOKEN" ]; then
+    print_test "Home Page - Valid Token"
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"latitude": 37.7749, "longitude": -122.4194}' \
+        http://localhost:8080/api/v1/home)
+    
+    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+    BODY=$(echo "$RESPONSE" | sed '$d')
+    
+    if [ "$HTTP_CODE" == "200" ] && echo "$BODY" | grep -q "PAGE#HOME"; then
+        print_pass "Home page with valid token"
+        
+        # Verify response contains expected fields
+        if echo "$BODY" | grep -q "Welcome to QCom Test"; then
+            print_pass "Home page contains expected content"
+        else
+            print_fail "Home page missing expected content"
+        fi
+    else
+        print_fail "Home page with valid token (HTTP $HTTP_CODE): $BODY"
+    fi
+else
+    print_fail "Home page with valid token - No access token available"
+fi
+
+# Test 14: Home Page - Without Token
+print_test "Home Page - No Token"
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+    -H "Content-Type: application/json" \
+    -d '{"latitude": 37.7749, "longitude": -122.4194}' \
+    http://localhost:8080/api/v1/home)
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+if [ "$HTTP_CODE" == "401" ]; then
+    print_pass "Home page without token (returns 401)"
+else
+    print_fail "Home page without token (HTTP $HTTP_CODE)"
+fi
+
+# Test 15: Home Page - With Invalid Token
+print_test "Home Page - Invalid Token"
+RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+    -H "Authorization: Bearer invalid.token.here" \
+    -H "Content-Type: application/json" \
+    -d '{"latitude": 37.7749, "longitude": -122.4194}' \
+    http://localhost:8080/api/v1/home)
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+if [ "$HTTP_CODE" == "401" ]; then
+    print_pass "Home page with invalid token (returns 401)"
+else
+    print_fail "Home page with invalid token (HTTP $HTTP_CODE)"
+fi
+
+# Test 16: Home Page - Invalid Request Body
+if [ -n "$ACCESS_TOKEN" ]; then
+    print_test "Home Page - Invalid Request Body"
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d 'invalid json' \
+        http://localhost:8080/api/v1/home)
+    
+    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+    if [ "$HTTP_CODE" == "400" ]; then
+        print_pass "Home page with invalid request body (returns 400)"
+    else
+        print_fail "Home page with invalid request body (HTTP $HTTP_CODE)"
+    fi
+fi
+
+# Test 17: Home Page - Non-existent Page
+if [ -n "$ACCESS_TOKEN" ]; then
+    print_test "Home Page - Verify Location Logged"
+    # Clear previous logs
+    > /tmp/server.log
+    
+    # Make request with specific coordinates
+    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"latitude": 12.9716, "longitude": 77.5946}' \
+        http://localhost:8080/api/v1/home)
+    
+    sleep 1
+    
+    # Check if coordinates were logged
+    if grep -q "12.9716" /tmp/server.log && grep -q "77.5946" /tmp/server.log; then
+        print_pass "Home page logs user location"
+    else
+        # This is not critical, just informational
+        echo "  Note: Could not verify location logging"
+    fi
+fi
+
 # Print summary
 echo ""
 echo "=========================================="

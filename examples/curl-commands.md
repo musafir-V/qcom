@@ -286,3 +286,46 @@ curl -X POST http://localhost:8080/api/v1/auth/refresh \
 
 **Expected:** HTTP 401 with `INVALID_TOKEN` error
 
+## 7. Home Page API (Protected Endpoint)
+
+Get home page data with user's location.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/home \
+  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "latitude": 37.7749,
+    "longitude": -122.4194
+  }'
+```
+
+**Example with extracted token:**
+```bash
+curl -X POST http://localhost:8080/api/v1/home \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "latitude": 37.7749,
+    "longitude": -122.4194
+  }'
+```
+
+**Expected Response:**
+```json
+{
+  "data": {
+    "PK": "PAGE#HOME",
+    "SK": "PAGE#HOME",
+    "content": {
+      "...": "page content as stored in DynamoDB"
+    }
+  }
+}
+```
+
+**Note:** 
+- The latitude and longitude are logged but not currently used for filtering
+- The API queries DynamoDB for the partition key `PAGE#HOME`
+- The response contains the raw JSON data stored in DynamoDB for that key
+

@@ -40,6 +40,7 @@ func main() {
 	userRepo := repository.NewUserRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	otpRepo := repository.NewOTPRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	pageRepo := repository.NewPageRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -58,8 +59,10 @@ func main() {
 		logger,
 	)
 
+	homeHandlers := handlers.NewHomeHandlers(pageRepo, logger)
+
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -106,7 +109,7 @@ func initDynamoDB(cfg *config.Config, logger *logrus.Logger) (*dynamodb.Client, 
 				})),
 		)
 	} else {
-		awsCfg, err = awsconfig.LoadDefaultConfig(context.TODO())
+		awsCfg, err = awsconfig.LoadDefaultConfig(context.TODO(), awsconfig.WithRegion(cfg.DynamoDB.Region))
 	}
 
 	if err != nil {
@@ -120,6 +123,7 @@ func initDynamoDB(cfg *config.Config, logger *logrus.Logger) (*dynamodb.Client, 
 
 func setupRouter(
 	authHandlers *handlers.AuthHandlers,
+	homeHandlers *handlers.HomeHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -149,6 +153,7 @@ func setupRouter(
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fmt.Sprintf(`{"phone":"%s"}`, phone)))
 	}).Methods("GET")
+	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST", "OPTIONS")
 
 	return router
 }
