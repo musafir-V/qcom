@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -52,29 +54,47 @@ func (r *PageRepository) GetPageByKey(ctx context.Context, pk string) (map[strin
 	return pageData, nil
 }
 
-// convertAttributeValue converts DynamoDB AttributeValue to Go native types
 func convertAttributeValue(av types.AttributeValue) interface{} {
 	switch v := av.(type) {
+
 	case *types.AttributeValueMemberS:
 		return v.Value
+
 	case *types.AttributeValueMemberN:
+		// DynamoDB numbers are strings → parse explicitly
+		if strings.Contains(v.Value, ".") {
+			if f, err := strconv.ParseFloat(v.Value, 64); err == nil {
+				return f
+			}
+			return v.Value
+		}
+
+		if i, err := strconv.ParseInt(v.Value, 10, 64); err == nil {
+			return i
+		}
+
 		return v.Value
+
 	case *types.AttributeValueMemberBOOL:
 		return v.Value
+
 	case *types.AttributeValueMemberNULL:
 		return nil
+
 	case *types.AttributeValueMemberM:
-		m := make(map[string]interface{})
+		m := make(map[string]interface{}, len(v.Value))
 		for k, val := range v.Value {
 			m[k] = convertAttributeValue(val)
 		}
 		return m
+
 	case *types.AttributeValueMemberL:
 		l := make([]interface{}, len(v.Value))
 		for i, val := range v.Value {
 			l[i] = convertAttributeValue(val)
 		}
 		return l
+
 	default:
 		return nil
 	}
