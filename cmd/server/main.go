@@ -11,7 +11,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/gorilla/mux"
 	"github.com/qcom/qcom/internal/config"
 	"github.com/qcom/qcom/internal/handlers"
@@ -51,6 +53,12 @@ func main() {
 	otpService := service.NewOTPService(otpRepo, &cfg.OTP, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 
+	s3Client, err := initS3(cfg, logger)
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to initialize S3")
+	}
+	uploadService := service.NewUploadService(s3Client, &cfg.S3, logger)
+
 	authHandlers := handlers.NewAuthHandlers(
 		otpService,
 		jwtService,
@@ -60,9 +68,10 @@ func main() {
 	)
 
 	homeHandlers := handlers.NewHomeHandlers(pageRepo, logger)
+	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -121,9 +130,39 @@ func initDynamoDB(cfg *config.Config, logger *logrus.Logger) (*dynamodb.Client, 
 	return client, nil
 }
 
+func initS3(cfg *config.Config, logger *logrus.Logger) (*s3.Client, error) {
+	var opts []func(*s3.Options)
+
+	if cfg.S3.Endpoint != "" {
+		awsCfg, err := awsconfig.LoadDefaultConfig(context.TODO(),
+			awsconfig.WithRegion(cfg.S3.Region),
+			awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("dummy", "dummy", "")),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load AWS config for S3: %w", err)
+		}
+		opts = append(opts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(cfg.S3.Endpoint)
+			o.UsePathStyle = cfg.S3.ForcePathStyle
+		})
+		client := s3.NewFromConfig(awsCfg, opts...)
+		logger.WithField("endpoint", cfg.S3.Endpoint).Info("S3 client initialized (custom endpoint)")
+		return client, nil
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.TODO(), awsconfig.WithRegion(cfg.S3.Region))
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config for S3: %w", err)
+	}
+	client := s3.NewFromConfig(awsCfg)
+	logger.Info("S3 client initialized")
+	return client, nil
+}
+
 func setupRouter(
 	authHandlers *handlers.AuthHandlers,
 	homeHandlers *handlers.HomeHandlers,
+	uploadHandlers *handlers.UploadHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -149,11 +188,13 @@ func setupRouter(
 	protected.Use(authMiddleware.RequireAuth)
 	protected.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
 		phone := r.Context().Value("phone").(string)
+		userID := r.Context().Value("user_id").(string)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf(`{"phone":"%s"}`, phone)))
+		w.Write([]byte(fmt.Sprintf(`{"user_id":"%s","phone":"%s"}`, userID, phone)))
 	}).Methods("GET")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST", "OPTIONS")
 
 	return router
 }

@@ -55,7 +55,7 @@ func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 		// Add claims to context
 		ctx := context.WithValue(r.Context(), "claims", claims)
 		ctx = context.WithValue(ctx, "phone", claims.Phone)
-		ctx = context.WithValue(ctx, "user_id", claims.Subject)
+		ctx = context.WithValue(ctx, "user_id", claims.UserID)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

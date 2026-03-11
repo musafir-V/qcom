@@ -57,6 +57,7 @@ type VerifyOTPResponse struct {
 }
 
 type UserResponse struct {
+	UserID      string `json:"user_id"`
 	PhoneNumber string `json:"phone_number"`
 	Name        string `json:"name,omitempty"`
 }
@@ -159,7 +160,7 @@ func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate JWT tokens
-	tokenPair, familyID, err := h.jwtService.GenerateAccessToken(phoneNumber)
+	tokenPair, familyID, err := h.jwtService.GenerateAccessToken(phoneNumber, user.UserID)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to generate tokens")
 		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
@@ -178,13 +179,12 @@ func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	if err := h.refreshTokenService.Store(
 		r.Context(),
 		claims.JTI,
-		phoneNumber,
+		user.UserID,
 		phoneNumber,
 		familyID,
 		claims.RegisteredClaims.ExpiresAt.Time,
 	); err != nil {
 		h.logger.WithError(err).Error("Failed to store refresh token")
-		// Continue anyway, token is still valid
 	}
 
 	h.respondWithJSON(w, http.StatusOK, VerifyOTPResponse{
@@ -193,6 +193,7 @@ func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 		TokenType:    tokenPair.TokenType,
 		ExpiresIn:    tokenPair.ExpiresIn,
 		User: UserResponse{
+			UserID:      user.UserID,
 			PhoneNumber: user.PhoneNumber,
 			Name:        user.Name,
 		},
@@ -267,13 +268,12 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	if err := h.refreshTokenService.Store(
 		r.Context(),
 		newClaims.JTI,
-		claims.Phone,
+		claims.UserID,
 		claims.Phone,
 		newFamilyID,
 		newClaims.RegisteredClaims.ExpiresAt.Time,
 	); err != nil {
 		h.logger.WithError(err).Error("Failed to store new refresh token")
-		// Continue anyway
 	}
 
 	h.respondWithJSON(w, http.StatusOK, RefreshTokenResponse{

@@ -12,6 +12,7 @@ type Config struct {
 	DynamoDB DynamoDBConfig
 	JWT      JWTConfig
 	OTP      OTPConfig
+	S3       S3Config
 }
 
 type ServerConfig struct {
@@ -38,6 +39,14 @@ type OTPConfig struct {
 	MaxAttempts int
 }
 
+type S3Config struct {
+	Endpoint         string
+	Region           string
+	Bucket           string
+	PresignExpirySeconds int
+	ForcePathStyle   bool
+}
+
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -59,6 +68,13 @@ func Load() (*Config, error) {
 			Length:      getEnvAsInt("OTP_LENGTH", 6),
 			Expiry:      getEnvAsDuration("OTP_EXPIRY", 10*time.Minute),
 			MaxAttempts: getEnvAsInt("OTP_MAX_ATTEMPTS", 5),
+		},
+		S3: S3Config{
+			Endpoint:             getEnv("S3_ENDPOINT", ""),
+			Region:               getEnv("S3_REGION", "ap-southeast-2"),
+			Bucket:               getEnv("S3_BUCKET", "printdrop-documents"),
+			PresignExpirySeconds: getEnvAsInt("S3_PRESIGN_EXPIRY_SECONDS", 300),
+			ForcePathStyle:       getEnv("S3_FORCE_PATH_STYLE", "false") == "true",
 		},
 	}
 

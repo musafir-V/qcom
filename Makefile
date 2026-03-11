@@ -35,9 +35,9 @@ run: ## Run the application (requires dependencies to be running)
 	fi
 	@$(BINARY_PATH)
 
-docker-up: ## Start Docker container (DynamoDB)
+docker-up: ## Start Docker containers (DynamoDB + LocalStack S3)
 	@echo "Starting Docker containers..."
-	@$(DOCKER_COMPOSE) up -d dynamodb-local
+	@$(DOCKER_COMPOSE) up -d dynamodb-local localstack
 	@echo "Waiting for services to be ready..."
 	@sleep 5
 	@echo "Docker containers started"
@@ -133,6 +133,10 @@ dev-test: ## Start server with local containers for manual API testing
 	REDIS_ENDPOINT=localhost:6379 \
 	REDIS_PASSWORD= \
 	REDIS_DB=0 \
+	S3_ENDPOINT=http://localhost:4566 \
+	S3_REGION=ap-southeast-2 \
+	S3_BUCKET=printdrop-documents \
+	S3_FORCE_PATH_STYLE=true \
 	PORT=8080 \
 	OTP_LENGTH=6 \
 	OTP_EXPIRY=10m \
@@ -142,6 +146,10 @@ dev-test: ## Start server with local containers for manual API testing
 test: ## Run unit tests
 	@echo "Running unit tests..."
 	@go test -v ./...
+
+test-upload: ## Run upload API integration tests (requires Docker)
+	@echo "Running upload API integration tests..."
+	@go test -v -tags=integration -timeout 120s ./tests/integration/...
 
 test-coverage: ## Run tests with coverage
 	@echo "Running tests with coverage..."

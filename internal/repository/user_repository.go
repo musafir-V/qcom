@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -68,6 +69,7 @@ func (r *UserRepository) GetByPhoneNumber(ctx context.Context, phoneNumber strin
 
 func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 	now := time.Now()
+	user.UserID = uuid.New().String()
 	user.CreatedAt = now
 	user.UpdatedAt = now
 

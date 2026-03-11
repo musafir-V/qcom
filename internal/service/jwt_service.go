@@ -35,25 +35,26 @@ func NewJWTService(cfg *config.JWTConfig, logger *logrus.Logger) (*JWTService, e
 }
 
 type Claims struct {
-	Phone string `json:"phone"`
-	Type  string `json:"type"`
-	JTI   string `json:"jti"`
+	Phone  string `json:"phone"`
+	UserID string `json:"user_id"`
+	Type   string `json:"type"`
+	JTI    string `json:"jti"`
 	jwt.RegisteredClaims
 }
 
-func (s *JWTService) GenerateAccessToken(phoneNumber string) (*models.TokenPair, string, error) {
+func (s *JWTService) GenerateAccessToken(phoneNumber string, userID string) (*models.TokenPair, string, error) {
 	now := time.Now()
 	accessJTI := uuid.New().String()
 	refreshJTI := uuid.New().String()
 	familyID := uuid.New().String()
 
-	// Generate access token
 	accessClaims := &Claims{
-		Phone: phoneNumber,
-		Type:  "access",
-		JTI:   accessJTI,
+		Phone:  phoneNumber,
+		UserID: userID,
+		Type:   "access",
+		JTI:    accessJTI,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   phoneNumber,
+			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.accessExpiry)),
 			ID:        accessJTI,
@@ -67,13 +68,13 @@ func (s *JWTService) GenerateAccessToken(phoneNumber string) (*models.TokenPair,
 		return nil, "", fmt.Errorf("failed to sign access token: %w", err)
 	}
 
-	// Generate refresh token
 	refreshClaims := &Claims{
-		Phone: phoneNumber,
-		Type:  "refresh",
-		JTI:   refreshJTI,
+		Phone:  phoneNumber,
+		UserID: userID,
+		Type:   "refresh",
+		JTI:    refreshJTI,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   phoneNumber,
+			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.refreshExpiry)),
 			ID:        refreshJTI,
@@ -125,27 +126,25 @@ func (s *JWTService) RefreshTokens(refreshTokenString string, familyID string) (
 		return nil, "", fmt.Errorf("token is not a refresh token")
 	}
 
-	// Generate new token pair with existing family ID
-	return s.GenerateAccessTokenWithFamily(claims.Phone, familyID)
+	return s.GenerateAccessTokenWithFamily(claims.Phone, claims.UserID, familyID)
 }
 
-func (s *JWTService) GenerateAccessTokenWithFamily(phoneNumber string, familyID string) (*models.TokenPair, string, error) {
+func (s *JWTService) GenerateAccessTokenWithFamily(phoneNumber string, userID string, familyID string) (*models.TokenPair, string, error) {
 	now := time.Now()
 	accessJTI := uuid.New().String()
 	refreshJTI := uuid.New().String()
 
-	// Use provided family ID or generate new one
 	if familyID == "" {
 		familyID = uuid.New().String()
 	}
 
-	// Generate access token
 	accessClaims := &Claims{
-		Phone: phoneNumber,
-		Type:  "access",
-		JTI:   accessJTI,
+		Phone:  phoneNumber,
+		UserID: userID,
+		Type:   "access",
+		JTI:    accessJTI,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   phoneNumber,
+			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.accessExpiry)),
 			ID:        accessJTI,
@@ -159,13 +158,13 @@ func (s *JWTService) GenerateAccessTokenWithFamily(phoneNumber string, familyID 
 		return nil, "", fmt.Errorf("failed to sign access token: %w", err)
 	}
 
-	// Generate refresh token
 	refreshClaims := &Claims{
-		Phone: phoneNumber,
-		Type:  "refresh",
-		JTI:   refreshJTI,
+		Phone:  phoneNumber,
+		UserID: userID,
+		Type:   "refresh",
+		JTI:    refreshJTI,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   phoneNumber,
+			Subject:   userID,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(s.refreshExpiry)),
 			ID:        refreshJTI,
