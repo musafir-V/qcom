@@ -29,11 +29,12 @@ func NewOTPService(otpRepo *repository.OTPRepository, cfg *config.OTPConfig, log
 }
 
 func (s *OTPService) GenerateOTP(phoneNumber string) (string, error) {
-	// Generate random OTP
-	otp, err := s.generateRandomOTP(s.cfg.Length)
-	if err != nil {
-		return "", fmt.Errorf("failed to generate OTP: %w", err)
-	}
+	// TODO: uncomment random OTP generation before production
+	// otp, err := s.generateRandomOTP(s.cfg.Length)
+	// if err != nil {
+	// 	return "", fmt.Errorf("failed to generate OTP: %w", err)
+	// }
+	otp := "112233"
 
 	// Hash OTP before storing
 	hashedOTP, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
