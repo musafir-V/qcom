@@ -24,6 +24,31 @@ aws dynamodb create-table \
 
 echo "Table created successfully!"
 
+# Add UserIdIndex GSI for address queries
+echo "Adding UserIdIndex GSI..."
+aws dynamodb update-table \
+  --table-name "$TABLE_NAME" \
+  --attribute-definitions \
+    AttributeName=user_id,AttributeType=S \
+    AttributeName=created_at,AttributeType=S \
+  --global-secondary-index-updates '[
+    {
+      "Create": {
+        "IndexName": "UserIdIndex",
+        "KeySchema": [
+          {"AttributeName": "user_id", "KeyType": "HASH"},
+          {"AttributeName": "created_at", "KeyType": "RANGE"}
+        ],
+        "Projection": {"ProjectionType": "ALL"}
+      }
+    }
+  ]' \
+  --endpoint-url "$ENDPOINT" \
+  --region "$REGION" \
+  --no-cli-pager 2>/dev/null || echo "GSI may already exist, continuing..."
+
+echo "GSI setup complete!"
+
 # Enable TTL on the table
 echo "Enabling TTL on table..."
 aws dynamodb update-time-to-live \

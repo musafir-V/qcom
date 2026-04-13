@@ -174,23 +174,37 @@ func setupInfra() error {
 		o.BaseEndpoint = aws.String(dynamoDBEndpoint)
 	})
 
-	// Create DynamoDB table
+	// Create DynamoDB table with UserIdIndex GSI for address queries
 	_, err = dynamoClient.CreateTable(ctx, &dynamodb.CreateTableInput{
 		TableName: aws.String(testTableName),
 		AttributeDefinitions: []dynamodbtypes.AttributeDefinition{
 			{AttributeName: aws.String("PK"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
 			{AttributeName: aws.String("SK"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
+			{AttributeName: aws.String("user_id"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
+			{AttributeName: aws.String("created_at"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
 		},
 		KeySchema: []dynamodbtypes.KeySchemaElement{
 			{AttributeName: aws.String("PK"), KeyType: dynamodbtypes.KeyTypeHash},
 			{AttributeName: aws.String("SK"), KeyType: dynamodbtypes.KeyTypeRange},
+		},
+		GlobalSecondaryIndexes: []dynamodbtypes.GlobalSecondaryIndex{
+			{
+				IndexName: aws.String("UserIdIndex"),
+				KeySchema: []dynamodbtypes.KeySchemaElement{
+					{AttributeName: aws.String("user_id"), KeyType: dynamodbtypes.KeyTypeHash},
+					{AttributeName: aws.String("created_at"), KeyType: dynamodbtypes.KeyTypeRange},
+				},
+				Projection: &dynamodbtypes.Projection{
+					ProjectionType: dynamodbtypes.ProjectionTypeAll,
+				},
+			},
 		},
 		BillingMode: dynamodbtypes.BillingModePayPerRequest,
 	})
 	if err != nil && !strings.Contains(err.Error(), "Table already exists") {
 		return fmt.Errorf("failed to create DynamoDB table: %w", err)
 	}
-	fmt.Println("DynamoDB table created")
+	fmt.Println("DynamoDB table created with UserIdIndex GSI")
 
 	// Initialize S3 client
 	s3Cfg, err := awsconfig.LoadDefaultConfig(ctx,
@@ -284,6 +298,7 @@ func setupServer() (*httptest.Server, error) {
 	otpRepo := repository.NewOTPRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	pageRepo := repository.NewPageRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	addressRepo := repository.NewAddressRepository(dynamo, cfg.DynamoDB.TableName, logger)
 
 	// Services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -293,17 +308,19 @@ func setupServer() (*httptest.Server, error) {
 	otpService := service.NewOTPService(otpRepo, &cfg.OTP, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	uploadService := service.NewUploadService(s3c, &cfg.S3, logger)
+	addressService := service.NewAddressService(addressRepo, logger)
 
 	// Handlers
 	authHandlers := handlers.NewAuthHandlers(otpService, jwtService, refreshTokenService, userRepo, logger)
 	homeHandlers := handlers.NewHomeHandlers(pageRepo, logger)
 	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
+	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
 
 	// Middleware
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
 
 	// Router
-	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, authMiddleware, logger)
+	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, authMiddleware, logger)
 	server := httptest.NewServer(router)
 
 	fmt.Printf("Test server started at %s\n", server.URL)
@@ -314,6 +331,7 @@ func buildRouter(
 	authHandlers *handlers.AuthHandlers,
 	homeHandlers *handlers.HomeHandlers,
 	uploadHandlers *handlers.UploadHandlers,
+	addressHandlers *handlers.AddressHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -343,6 +361,13 @@ func buildRouter(
 	}).Methods("GET")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST")
 	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST")
+
+	protected.HandleFunc("/addresses/suggest", addressHandlers.GetSuggestedAddresses).Methods("GET")
+	protected.HandleFunc("/addresses", addressHandlers.GetMyAddresses).Methods("GET")
+	protected.HandleFunc("/addresses", addressHandlers.CreateAddress).Methods("POST")
+	protected.HandleFunc("/addresses/{id}", addressHandlers.GetAddressByID).Methods("GET")
+	protected.HandleFunc("/addresses/{id}", addressHandlers.UpdateReceiverDetails).Methods("PATCH")
+	protected.HandleFunc("/addresses/{id}", addressHandlers.RemoveAddress).Methods("DELETE")
 
 	return router
 }

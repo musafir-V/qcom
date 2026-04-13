@@ -329,3 +329,228 @@ curl -X POST http://localhost:8080/api/v1/home \
 - The API queries DynamoDB for the partition key `PAGE#HOME`
 - The response contains the raw JSON data stored in DynamoDB for that key
 
+## 8. Create Address (Protected Endpoint)
+
+Save a new delivery address for the authenticated user.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/addresses \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "receiver_name": "Shivang Awasthi",
+    "receiver_phone": "+919876543210",
+    "building_and_floor": "Tower B, 4th Floor, Flat 402",
+    "address_line_1": "Sector 62, Noida",
+    "address_line_2": "Near City Centre Metro Station",
+    "latitude": 28.627235,
+    "longitude": 77.364715,
+    "label": "home"
+  }'
+```
+
+**Expected Response (201 Created):**
+```json
+{
+  "data": {
+    "address_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "user_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "receiver_name": "Shivang Awasthi",
+    "receiver_phone": "+919876543210",
+    "building_and_floor": "Tower B, 4th Floor, Flat 402",
+    "address_line_1": "Sector 62, Noida",
+    "address_line_2": "Near City Centre Metro Station",
+    "latitude": 28.627235,
+    "longitude": 77.364715,
+    "label": "home",
+    "is_active": true,
+    "created_at": "2026-04-04T10:30:00Z",
+    "updated_at": "2026-04-04T10:30:00Z"
+  }
+}
+```
+
+**Save the address_id for subsequent requests:**
+```bash
+ADDRESS_ID=$(echo "$RESPONSE" | grep -o '"address_id":"[^"]*"' | cut -d'"' -f4)
+```
+
+## 9. Get Address by ID (Protected Endpoint)
+
+Retrieve a single address. Ownership is verified via JWT.
+
+```bash
+curl -X GET http://localhost:8080/api/v1/addresses/$ADDRESS_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+**Expected Response (200 OK):**
+```json
+{
+  "data": {
+    "address_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "receiver_name": "Shivang Awasthi",
+    "receiver_phone": "+919876543210",
+    "building_and_floor": "Tower B, 4th Floor, Flat 402",
+    "address_line_1": "Sector 62, Noida",
+    "address_line_2": "Near City Centre Metro Station",
+    "latitude": 28.627235,
+    "longitude": 77.364715,
+    "label": "home",
+    "is_active": true
+  }
+}
+```
+
+## 10. Get All My Addresses (Protected Endpoint)
+
+Retrieve all active addresses for the authenticated user.
+
+```bash
+curl -X GET http://localhost:8080/api/v1/addresses \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+**Expected Response (200 OK):**
+```json
+{
+  "data": [
+    {
+      "address_id": "a1b2c3d4-...",
+      "receiver_name": "Shivang Awasthi",
+      "building_and_floor": "Tower B, 4th Floor, Flat 402",
+      "label": "home",
+      "is_active": true
+    }
+  ],
+  "pagination": {
+    "count": 1,
+    "next_token": null
+  }
+}
+```
+
+## 11. Suggest Nearby Addresses (Protected Endpoint)
+
+Get saved addresses within 100 meters of the given coordinates, sorted nearest first.
+
+```bash
+curl -X GET "http://localhost:8080/api/v1/addresses/suggest?latitude=28.627235&longitude=77.364715" \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+**Expected Response (200 OK):**
+```json
+{
+  "data": [
+    {
+      "address_id": "a1b2c3d4-...",
+      "receiver_name": "Shivang Awasthi",
+      "building_and_floor": "Tower B, 4th Floor, Flat 402",
+      "latitude": 28.627235,
+      "longitude": 77.364715,
+      "distance_meters": 0.0,
+      "is_active": true
+    }
+  ],
+  "count": 1
+}
+```
+
+**Note:** Returns an empty list (not 404) if no addresses are within 100 meters.
+
+## 12. Update Receiver Details (Protected Endpoint)
+
+Update only the receiver name and/or phone on an existing address. Location fields cannot be changed — create a new address instead.
+
+```bash
+curl -X PATCH http://localhost:8080/api/v1/addresses/$ADDRESS_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "receiver_name": "Rahul Sharma",
+    "receiver_phone": "+911234567890"
+  }'
+```
+
+**Expected Response (200 OK):**
+```json
+{
+  "data": {
+    "address_id": "a1b2c3d4-...",
+    "receiver_name": "Rahul Sharma",
+    "receiver_phone": "+911234567890",
+    "building_and_floor": "Tower B, 4th Floor, Flat 402",
+    "is_active": true
+  }
+}
+```
+
+## 13. Remove Address — Soft Delete (Protected Endpoint)
+
+Deactivate an address. Data is kept in DynamoDB for historical order references.
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/addresses/$ADDRESS_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+**Expected Response (200 OK):**
+```json
+{
+  "message": "Address removed successfully"
+}
+```
+
+**Note:** The address is not physically deleted. It is marked as `is_active: false` and will no longer appear in listings or suggestions.
+
+## Address API Error Scenarios
+
+### Missing Required Field
+
+```bash
+curl -X POST http://localhost:8080/api/v1/addresses \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"address_line_1": "Street 1", "latitude": 28.0, "longitude": 77.0}'
+```
+
+**Expected:** HTTP 400 with `MISSING_FIELD` error
+
+### Invalid Receiver Phone
+
+```bash
+curl -X POST http://localhost:8080/api/v1/addresses \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "receiver_name": "Test",
+    "receiver_phone": "not-a-phone",
+    "building_and_floor": "House 1",
+    "address_line_1": "Street 1",
+    "latitude": 28.0,
+    "longitude": 77.0
+  }'
+```
+
+**Expected:** HTTP 400 with `INVALID_PHONE` error
+
+### Address Not Found
+
+```bash
+curl -X GET http://localhost:8080/api/v1/addresses/00000000-0000-0000-0000-000000000000 \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+**Expected:** HTTP 404 with `ADDRESS_NOT_FOUND` error
+
+### Access Another User's Address
+
+```bash
+# Using User A's token to access User B's address
+curl -X GET http://localhost:8080/api/v1/addresses/$OTHER_USERS_ADDRESS_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+**Expected:** HTTP 403 with `FORBIDDEN` error
+

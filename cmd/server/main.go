@@ -43,6 +43,7 @@ func main() {
 	otpRepo := repository.NewOTPRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	pageRepo := repository.NewPageRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	addressRepo := repository.NewAddressRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -52,6 +53,7 @@ func main() {
 
 	otpService := service.NewOTPService(otpRepo, &cfg.OTP, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
+	addressService := service.NewAddressService(addressRepo, logger)
 
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
@@ -69,9 +71,10 @@ func main() {
 
 	homeHandlers := handlers.NewHomeHandlers(pageRepo, logger)
 	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
+	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -163,6 +166,7 @@ func setupRouter(
 	authHandlers *handlers.AuthHandlers,
 	homeHandlers *handlers.HomeHandlers,
 	uploadHandlers *handlers.UploadHandlers,
+	addressHandlers *handlers.AddressHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -195,6 +199,14 @@ func setupRouter(
 	}).Methods("GET")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST", "OPTIONS")
 	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST", "OPTIONS")
+
+	// Address endpoints — specific routes must be registered before the parameterized /:id route
+	protected.HandleFunc("/addresses/suggest", addressHandlers.GetSuggestedAddresses).Methods("GET")
+	protected.HandleFunc("/addresses", addressHandlers.GetMyAddresses).Methods("GET")
+	protected.HandleFunc("/addresses", addressHandlers.CreateAddress).Methods("POST")
+	protected.HandleFunc("/addresses/{id}", addressHandlers.GetAddressByID).Methods("GET")
+	protected.HandleFunc("/addresses/{id}", addressHandlers.UpdateReceiverDetails).Methods("PATCH")
+	protected.HandleFunc("/addresses/{id}", addressHandlers.RemoveAddress).Methods("DELETE")
 
 	return router
 }
