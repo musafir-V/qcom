@@ -44,6 +44,8 @@ func main() {
 	refreshTokenRepo := repository.NewRefreshTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	pageRepo := repository.NewPageRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	addressRepo := repository.NewAddressRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	darkstoreRepo := repository.NewDarkstoreRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	deRepo := repository.NewDERepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -54,6 +56,10 @@ func main() {
 	otpService := service.NewOTPService(otpRepo, &cfg.OTP, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
+	geocoder := service.NewGoogleGeocoder(cfg.Google.MapsAPIKey, logger)
+	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, logger)
+	qrService := service.NewQRService(logger)
+	deService := service.NewDEService(deRepo, qrService, logger)
 
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
@@ -66,15 +72,18 @@ func main() {
 		jwtService,
 		refreshTokenService,
 		userRepo,
+		deRepo,
 		logger,
 	)
 
 	homeHandlers := handlers.NewHomeHandlers(pageRepo, logger)
 	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
 	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
+	serviceabilityHandlers := handlers.NewServiceabilityHandlers(serviceabilityService, logger)
+	deHandlers := handlers.NewDEHandlers(deService, qrService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -167,6 +176,8 @@ func setupRouter(
 	homeHandlers *handlers.HomeHandlers,
 	uploadHandlers *handlers.UploadHandlers,
 	addressHandlers *handlers.AddressHandlers,
+	serviceabilityHandlers *handlers.ServiceabilityHandlers,
+	deHandlers *handlers.DEHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -182,22 +193,32 @@ func setupRouter(
 
 	api := router.PathPrefix("/api/v1").Subrouter()
 
+	// Auth endpoints (no auth required)
 	auth := api.PathPrefix("/auth").Subrouter()
 	auth.HandleFunc("/initiate-otp", authHandlers.InitiateOTP).Methods("POST", "OPTIONS")
 	auth.HandleFunc("/verify-otp", authHandlers.VerifyOTP).Methods("POST", "OPTIONS")
 	auth.HandleFunc("/refresh", authHandlers.RefreshToken).Methods("POST", "OPTIONS")
 	auth.HandleFunc("/logout", authHandlers.Logout).Methods("POST", "OPTIONS")
 
+	// DE onboarding (no auth required)
+	api.HandleFunc("/de/register", deHandlers.Register).Methods("POST", "OPTIONS")
+
+	// QR code display endpoint (no auth required — shown on darkstore screen)
+	api.HandleFunc("/stores/{storeId}/qr", deHandlers.GetStoreQR).Methods("GET", "OPTIONS")
+
+	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()
 	protected.Use(authMiddleware.RequireAuth)
 	protected.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
 		phone := r.Context().Value("phone").(string)
-		userID := r.Context().Value("user_id").(string)
+		entityID := r.Context().Value("entity_id").(string)
+		entityType := r.Context().Value("entity_type").(string)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf(`{"user_id":"%s","phone":"%s"}`, userID, phone)))
+		w.Write([]byte(fmt.Sprintf(`{"entity_id":"%s","entity_type":"%s","phone":"%s"}`, entityID, entityType, phone)))
 	}).Methods("GET")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/serviceability", serviceabilityHandlers.CheckServiceability).Methods("POST", "OPTIONS")
 	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST", "OPTIONS")
 
 	// Address endpoints — specific routes must be registered before the parameterized /:id route
@@ -207,6 +228,12 @@ func setupRouter(
 	protected.HandleFunc("/addresses/{id}", addressHandlers.GetAddressByID).Methods("GET")
 	protected.HandleFunc("/addresses/{id}", addressHandlers.UpdateReceiverDetails).Methods("PATCH")
 	protected.HandleFunc("/addresses/{id}", addressHandlers.RemoveAddress).Methods("DELETE")
+
+	// DE duty endpoints (require DE auth)
+	deProtected := api.PathPrefix("/de").Subrouter()
+	deProtected.Use(authMiddleware.RequireDEAuth)
+	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET", "OPTIONS")
+	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST", "OPTIONS")
 
 	return router
 }

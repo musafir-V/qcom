@@ -33,16 +33,17 @@ func (r *RefreshTokenRepository) Store(ctx context.Context, tokenData models.Ref
 	ttl := tokenData.ExpiresAt.Unix()
 
 	item := map[string]types.AttributeValue{
-		"PK":        &types.AttributeValueMemberS{Value: fmt.Sprintf("REFRESH_TOKEN#%s", tokenData.JTI)},
-		"SK":        &types.AttributeValueMemberS{Value: "METADATA"},
-		"JTI":       &types.AttributeValueMemberS{Value: tokenData.JTI},
-		"UserID":    &types.AttributeValueMemberS{Value: tokenData.UserID},
-		"Phone":     &types.AttributeValueMemberS{Value: tokenData.Phone},
-		"FamilyID":  &types.AttributeValueMemberS{Value: tokenData.FamilyID},
-		"Revoked":   &types.AttributeValueMemberBOOL{Value: tokenData.Revoked},
-		"CreatedAt": &types.AttributeValueMemberS{Value: tokenData.CreatedAt.Format(time.RFC3339)},
-		"ExpiresAt": &types.AttributeValueMemberS{Value: tokenData.ExpiresAt.Format(time.RFC3339)},
-		"TTL":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)},
+		"PK":         &types.AttributeValueMemberS{Value: fmt.Sprintf("REFRESH_TOKEN#%s", tokenData.JTI)},
+		"SK":         &types.AttributeValueMemberS{Value: "METADATA"},
+		"JTI":        &types.AttributeValueMemberS{Value: tokenData.JTI},
+		"EntityID":   &types.AttributeValueMemberS{Value: tokenData.EntityID},
+		"EntityType": &types.AttributeValueMemberS{Value: tokenData.EntityType},
+		"Phone":      &types.AttributeValueMemberS{Value: tokenData.Phone},
+		"FamilyID":   &types.AttributeValueMemberS{Value: tokenData.FamilyID},
+		"Revoked":    &types.AttributeValueMemberBOOL{Value: tokenData.Revoked},
+		"CreatedAt":  &types.AttributeValueMemberS{Value: tokenData.CreatedAt.Format(time.RFC3339)},
+		"ExpiresAt":  &types.AttributeValueMemberS{Value: tokenData.ExpiresAt.Format(time.RFC3339)},
+		"TTL":        &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)},
 	}
 
 	_, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{

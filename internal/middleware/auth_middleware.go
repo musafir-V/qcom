@@ -55,14 +55,32 @@ func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 		// Add claims to context
 		ctx := context.WithValue(r.Context(), "claims", claims)
 		ctx = context.WithValue(ctx, "phone", claims.Phone)
-		ctx = context.WithValue(ctx, "user_id", claims.UserID)
+		ctx = context.WithValue(ctx, "entity_id", claims.EntityID)
+		ctx = context.WithValue(ctx, "entity_type", claims.EntityType)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (m *AuthMiddleware) RequireDEAuth(next http.Handler) http.Handler {
+	return m.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entityType, _ := r.Context().Value("entity_type").(string)
+		if entityType != "de" {
+			m.respondForbidden(w, "This endpoint requires DE authentication")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
 }
 
 func (m *AuthMiddleware) respondUnauthorized(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"` + message + `"}}`))
+}
+
+func (m *AuthMiddleware) respondForbidden(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"` + message + `"}}`))
 }

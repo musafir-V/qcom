@@ -35,7 +35,7 @@ type GenerateUploadURLResponse struct {
 }
 
 func (h *UploadHandlers) ValidateFileRequest(w http.ResponseWriter, r *http.Request) (string, *GenerateUploadURLRequest, bool) {
-	userID, ok := r.Context().Value("user_id").(string)
+	userID, ok := r.Context().Value("entity_id").(string)
 	if !ok || userID == "" {
 		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "User ID not found in token")
 		return "", nil, false
@@ -48,7 +48,7 @@ func (h *UploadHandlers) ValidateFileRequest(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := h.uploadService.ValidateFileRequest(req.FileName, req.FileType, req.FileSize); err != nil {
-		h.logger.WithError(err).WithField("user_id", userID).Warn("Upload validation failed")
+		h.logger.WithError(err).WithField("entity_id", userID).Warn("Upload validation failed")
 		h.respondWithError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
 		return "", nil, false
 	}
@@ -64,13 +64,13 @@ func (h *UploadHandlers) GenerateUploadURL(w http.ResponseWriter, r *http.Reques
 
 	result, err := h.uploadService.GeneratePresignedURL(r.Context(), userID, req.FileName, req.FileType, req.FileSize)
 	if err != nil {
-		h.logger.WithError(err).WithField("user_id", userID).Error("Failed to generate presigned URL")
+		h.logger.WithError(err).WithField("entity_id", userID).Error("Failed to generate presigned URL")
 		h.respondWithError(w, http.StatusInternalServerError, "PRESIGN_FAILED", "Failed to generate upload URL")
 		return
 	}
 
 	h.logger.WithFields(logrus.Fields{
-		"user_id":    userID,
+		"entity_id":    userID,
 		"file_id":    result.FileID,
 		"object_key": result.ObjectKey,
 	}).Info("Presigned upload URL generated")

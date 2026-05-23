@@ -45,14 +45,14 @@ var uuidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 var validLabels = map[string]bool{"home": true, "work": true, "other": true}
 
 func (h *AddressHandlers) extractUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	val := r.Context().Value("user_id")
+	val := r.Context().Value("entity_id")
 	if val == nil {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "User ID not found in token")
+		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
 		return "", false
 	}
 	userID, ok := val.(string)
 	if !ok || userID == "" {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "User ID is empty in token")
+		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID is empty in token")
 		return "", false
 	}
 	return userID, true

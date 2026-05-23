@@ -10,11 +10,12 @@ type TokenPair struct {
 }
 
 type RefreshTokenData struct {
-	JTI       string    `json:"jti"`
-	UserID    string    `json:"user_id"`
-	Phone     string    `json:"phone"`
-	FamilyID  string    `json:"family_id"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Revoked   bool      `json:"revoked"`
+	JTI        string    `json:"jti"`
+	EntityID   string    `json:"entity_id"`
+	EntityType string    `json:"entity_type"`
+	Phone      string    `json:"phone"`
+	FamilyID   string    `json:"family_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Revoked    bool      `json:"revoked"`
 }

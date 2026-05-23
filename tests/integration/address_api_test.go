@@ -91,8 +91,8 @@ func TestCreateAddress_Success(t *testing.T) {
 	if data["address_id"] == nil || data["address_id"].(string) == "" {
 		t.Fatal("missing address_id")
 	}
-	if data["user_id"].(string) != auth.UserID {
-		t.Fatalf("user_id mismatch: got %s, want %s", data["user_id"], auth.UserID)
+	if data["user_id"].(string) != auth.EntityID {
+		t.Fatalf("user_id mismatch: got %s, want %s", data["user_id"], auth.EntityID)
 	}
 	if data["receiver_name"].(string) != "Shivang" {
 		t.Fatalf("receiver_name mismatch")

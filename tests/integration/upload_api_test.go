@@ -299,6 +299,8 @@ func setupServer() (*httptest.Server, error) {
 	refreshTokenRepo := repository.NewRefreshTokenRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	pageRepo := repository.NewPageRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	addressRepo := repository.NewAddressRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	darkstoreRepo := repository.NewDarkstoreRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	deRepo := repository.NewDERepository(dynamo, cfg.DynamoDB.TableName, logger)
 
 	// Services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -309,18 +311,23 @@ func setupServer() (*httptest.Server, error) {
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	uploadService := service.NewUploadService(s3c, &cfg.S3, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
+	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, testGeocoder, logger)
+	qrService := service.NewQRService(logger)
+	deService := service.NewDEService(deRepo, qrService, logger)
 
 	// Handlers
-	authHandlers := handlers.NewAuthHandlers(otpService, jwtService, refreshTokenService, userRepo, logger)
+	authHandlers := handlers.NewAuthHandlers(otpService, jwtService, refreshTokenService, userRepo, deRepo, logger)
 	homeHandlers := handlers.NewHomeHandlers(pageRepo, logger)
 	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
 	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
+	serviceabilityHandlers := handlers.NewServiceabilityHandlers(serviceabilityService, logger)
+	deHandlers := handlers.NewDEHandlers(deService, qrService, logger)
 
 	// Middleware
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
 
 	// Router
-	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, authMiddleware, logger)
+	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, authMiddleware, logger)
 	server := httptest.NewServer(router)
 
 	fmt.Printf("Test server started at %s\n", server.URL)
@@ -332,6 +339,8 @@ func buildRouter(
 	homeHandlers *handlers.HomeHandlers,
 	uploadHandlers *handlers.UploadHandlers,
 	addressHandlers *handlers.AddressHandlers,
+	serviceabilityHandlers *handlers.ServiceabilityHandlers,
+	deHandlers *handlers.DEHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -350,16 +359,24 @@ func buildRouter(
 	auth.HandleFunc("/verify-otp", authHandlers.VerifyOTP).Methods("POST")
 	auth.HandleFunc("/refresh", authHandlers.RefreshToken).Methods("POST")
 
+	// DE onboarding (no auth)
+	api.HandleFunc("/de/register", deHandlers.Register).Methods("POST")
+
+	// QR display (no auth)
+	api.HandleFunc("/stores/{storeId}/qr", deHandlers.GetStoreQR).Methods("GET")
+
 	protected := api.PathPrefix("/").Subrouter()
 	protected.Use(authMiddleware.RequireAuth)
 	protected.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
 		phone := r.Context().Value("phone").(string)
-		userID := r.Context().Value("user_id").(string)
+		entityID := r.Context().Value("entity_id").(string)
+		entityType := r.Context().Value("entity_type").(string)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"user_id":"%s","phone":"%s"}`, userID, phone)
+		fmt.Fprintf(w, `{"entity_id":"%s","entity_type":"%s","phone":"%s"}`, entityID, entityType, phone)
 	}).Methods("GET")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST")
+	protected.HandleFunc("/serviceability", serviceabilityHandlers.CheckServiceability).Methods("POST")
 	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST")
 
 	protected.HandleFunc("/addresses/suggest", addressHandlers.GetSuggestedAddresses).Methods("GET")
@@ -368,6 +385,12 @@ func buildRouter(
 	protected.HandleFunc("/addresses/{id}", addressHandlers.GetAddressByID).Methods("GET")
 	protected.HandleFunc("/addresses/{id}", addressHandlers.UpdateReceiverDetails).Methods("PATCH")
 	protected.HandleFunc("/addresses/{id}", addressHandlers.RemoveAddress).Methods("DELETE")
+
+	// DE protected endpoints
+	deProtected := api.PathPrefix("/de").Subrouter()
+	deProtected.Use(authMiddleware.RequireDEAuth)
+	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET")
+	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST")
 
 	return router
 }
@@ -398,7 +421,8 @@ func getTestOTP(phone string) (string, error) {
 type authTokens struct {
 	AccessToken  string
 	RefreshToken string
-	UserID       string
+	EntityID     string
+	EntityType   string
 }
 
 func authenticateUser(t *testing.T, phone string) authTokens {
@@ -410,10 +434,9 @@ func authenticateUser(t *testing.T, phone string) authTokens {
 	if err != nil {
 		t.Fatalf("initiate-otp request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		t.Fatalf("initiate-otp returned %d: %s", resp.StatusCode, string(b))
+		t.Fatalf("initiate-otp returned %d", resp.StatusCode)
 	}
 
 	// 2. Read test OTP from DynamoDB
@@ -422,33 +445,56 @@ func authenticateUser(t *testing.T, phone string) authTokens {
 		t.Fatalf("failed to read test OTP: %v", err)
 	}
 
-	// 3. Verify OTP
-	body = fmt.Sprintf(`{"phone_number":"%s","otp":"%s"}`, phone, otp)
-	resp, err = http.Post(testServer.URL+"/api/v1/auth/verify-otp", "application/json", strings.NewReader(body))
+	// 3. Verify OTP (no X-App-Type header → customer)
+	return doVerifyOTP(t, phone, otp, "")
+}
+
+// doVerifyOTP sends verify-otp and returns the parsed tokens.
+// appType: "de" sets X-App-Type: de header; "" means customer (no header).
+func doVerifyOTP(t *testing.T, phone, otp, appType string) authTokens {
+	t.Helper()
+
+	body := fmt.Sprintf(`{"phone_number":"%s","otp":"%s"}`, phone, otp)
+	req, _ := http.NewRequest("POST", testServer.URL+"/api/v1/auth/verify-otp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if appType == "de" {
+		req.Header.Set("X-App-Type", "de")
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("verify-otp request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	var verifyResp struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		User         struct {
-			UserID      string `json:"user_id"`
-			PhoneNumber string `json:"phone_number"`
-		} `json:"user"`
+		AccessToken  string                 `json:"access_token"`
+		RefreshToken string                 `json:"refresh_token"`
+		EntityType   string                 `json:"entity_type"`
+		Entity       map[string]interface{} `json:"entity"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&verifyResp); err != nil {
 		t.Fatalf("failed to decode verify-otp response: %v", err)
 	}
 	if verifyResp.AccessToken == "" {
-		t.Fatalf("verify-otp did not return access token")
+		t.Fatalf("verify-otp did not return access token (status %d)", resp.StatusCode)
+	}
+
+	// Extract entity ID — field name differs by entity type
+	entityID := ""
+	if verifyResp.Entity != nil {
+		if id, ok := verifyResp.Entity["user_id"].(string); ok {
+			entityID = id
+		} else if id, ok := verifyResp.Entity["de_id"].(string); ok {
+			entityID = id
+		}
 	}
 
 	return authTokens{
 		AccessToken:  verifyResp.AccessToken,
 		RefreshToken: verifyResp.RefreshToken,
-		UserID:       verifyResp.User.UserID,
+		EntityID:     entityID,
+		EntityType:   verifyResp.EntityType,
 	}
 }
 
@@ -518,7 +564,7 @@ func TestUploadURL_Success(t *testing.T) {
 		t.Fatal("response missing object_key")
 	}
 
-	expectedPrefix := fmt.Sprintf("printdrop/%s/%s", auth.UserID, fileID)
+	expectedPrefix := fmt.Sprintf("printdrop/%s/%s", auth.EntityID, fileID)
 	if !strings.HasPrefix(objectKey, expectedPrefix) {
 		t.Fatalf("object_key %q should start with %q", objectKey, expectedPrefix)
 	}
@@ -746,12 +792,12 @@ func TestUploadURL_UserIDInObjectKey(t *testing.T) {
 	})
 
 	objectKey, _ := result["object_key"].(string)
-	if !strings.Contains(objectKey, auth.UserID) {
-		t.Fatalf("object_key %q should contain user_id %s", objectKey, auth.UserID)
+	if !strings.Contains(objectKey, auth.EntityID) {
+		t.Fatalf("object_key %q should contain user_id %s", objectKey, auth.EntityID)
 	}
 
 	parts := strings.Split(objectKey, "/")
-	if len(parts) != 3 || parts[0] != "printdrop" || parts[1] != auth.UserID {
+	if len(parts) != 3 || parts[0] != "printdrop" || parts[1] != auth.EntityID {
 		t.Fatalf("object_key %q should match printdrop/{user_id}/{file_id}.ext", objectKey)
 	}
 }

@@ -23,15 +23,16 @@ func NewRefreshTokenService(tokenRepo *repository.RefreshTokenRepository, logger
 	}
 }
 
-func (s *RefreshTokenService) Store(ctx context.Context, jti, userID, phone, familyID string, expiresAt time.Time) error {
+func (s *RefreshTokenService) Store(ctx context.Context, jti, entityID, entityType, phone, familyID string, expiresAt time.Time) error {
 	tokenData := models.RefreshTokenData{
-		JTI:       jti,
-		UserID:    userID,
-		Phone:     phone,
-		FamilyID:  familyID,
-		CreatedAt: time.Now(),
-		ExpiresAt: expiresAt,
-		Revoked:   false,
+		JTI:        jti,
+		EntityID:   entityID,
+		EntityType: entityType,
+		Phone:      phone,
+		FamilyID:   familyID,
+		CreatedAt:  time.Now(),
+		ExpiresAt:  expiresAt,
+		Revoked:    false,
 	}
 
 	return s.tokenRepo.Store(ctx, tokenData)

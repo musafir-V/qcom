@@ -554,3 +554,63 @@ curl -X GET http://localhost:8080/api/v1/addresses/$OTHER_USERS_ADDRESS_ID \
 
 **Expected:** HTTP 403 with `FORBIDDEN` error
 
+## 14. Check Serviceability (Protected Endpoint)
+
+Given the customer's current coordinates, checks whether the location falls
+inside a darkstore's serviceable-area polygon and resolves an address for it.
+Seed darkstores first with `./scripts/seed-darkstores.sh`.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/serviceability \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "latitude": 12.9719,
+    "longitude": 77.6412
+  }'
+```
+
+**Serviceable — resolved from a saved address within 50 m (200 OK):**
+```json
+{
+  "data": {
+    "serviceable": true,
+    "darkstore_id": "DS-001",
+    "resolved_address": {
+      "address_line": "Near City Centre Metro Station",
+      "tag": "home",
+      "address_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "source": "saved_address"
+    }
+  }
+}
+```
+
+**Serviceable — resolved via Google reverse geocoding (200 OK):**
+```json
+{
+  "data": {
+    "serviceable": true,
+    "darkstore_id": "DS-001",
+    "resolved_address": {
+      "address_line": "Indiranagar, Bengaluru",
+      "tag": null,
+      "address_id": null,
+      "source": "geocoded"
+    }
+  }
+}
+```
+
+**Unserviceable — coordinate is inside no darkstore polygon (200 OK):**
+```json
+{
+  "data": {
+    "serviceable": false
+  }
+}
+```
+
+**Note:** If `GOOGLE_MAPS_API_KEY` is unset or the Google call fails, a
+serviceable location is still returned, just with `resolved_address: null`.
+

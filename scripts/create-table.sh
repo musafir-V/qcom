@@ -49,6 +49,29 @@ aws dynamodb update-table \
 
 echo "GSI setup complete!"
 
+# Add DEDutyIndex GSI for querying eligible DEs by store (used by assignment cron)
+echo "Adding DEDutyIndex GSI..."
+aws dynamodb update-table \
+  --table-name "$TABLE_NAME" \
+  --attribute-definitions \
+    AttributeName=duty_index_key,AttributeType=S \
+  --global-secondary-index-updates '[
+    {
+      "Create": {
+        "IndexName": "DEDutyIndex",
+        "KeySchema": [
+          {"AttributeName": "duty_index_key", "KeyType": "HASH"}
+        ],
+        "Projection": {"ProjectionType": "ALL"}
+      }
+    }
+  ]' \
+  --endpoint-url "$ENDPOINT" \
+  --region "$REGION" \
+  --no-cli-pager 2>/dev/null || echo "DEDutyIndex GSI may already exist, continuing..."
+
+echo "DEDutyIndex GSI setup complete!"
+
 # Enable TTL on the table
 echo "Enabling TTL on table..."
 aws dynamodb update-time-to-live \

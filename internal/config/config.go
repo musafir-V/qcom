@@ -13,6 +13,7 @@ type Config struct {
 	JWT      JWTConfig
 	OTP      OTPConfig
 	S3       S3Config
+	Google   GoogleConfig
 }
 
 type ServerConfig struct {
@@ -47,6 +48,10 @@ type S3Config struct {
 	ForcePathStyle   bool
 }
 
+type GoogleConfig struct {
+	MapsAPIKey string
+}
+
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -75,6 +80,9 @@ func Load() (*Config, error) {
 			Bucket:               getEnv("S3_BUCKET", "printdrop-documents"),
 			PresignExpirySeconds: getEnvAsInt("S3_PRESIGN_EXPIRY_SECONDS", 300),
 			ForcePathStyle:       getEnv("S3_FORCE_PATH_STYLE", "false") == "true",
+		},
+		Google: GoogleConfig{
+			MapsAPIKey: getEnv("GOOGLE_MAPS_API_KEY", ""),
 		},
 	}
 
