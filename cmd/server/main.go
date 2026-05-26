@@ -186,6 +186,7 @@ func setupRouter(
 	router := mux.NewRouter()
 
 	router.Use(middleware.CORSMiddleware)
+	router.Use(middleware.TraceIDMiddleware)
 	router.Use(middleware.LoggingMiddleware(logger))
 
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
