@@ -311,7 +311,7 @@ func setupServer() (*httptest.Server, error) {
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	uploadService := service.NewUploadService(s3c, &cfg.S3, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
-	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, testGeocoder, testETAService, logger)
+	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, testGeocoder, testETAService, logger, false)
 	qrService := service.NewQRService(logger)
 	deService := service.NewDEService(deRepo, qrService, logger)
 

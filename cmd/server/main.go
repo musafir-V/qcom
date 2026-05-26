@@ -59,7 +59,7 @@ func main() {
 	addressService := service.NewAddressService(addressRepo, logger)
 	geocoder := service.NewGoogleGeocoder(cfg.Google.MapsAPIKey, logger)
 	etaService := service.NewETAService(etaCacheRepo, cfg.Google.MapsAPIKey, logger)
-	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger)
+	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest)
 	qrService := service.NewQRService(logger)
 	deService := service.NewDEService(deRepo, qrService, logger)
 
