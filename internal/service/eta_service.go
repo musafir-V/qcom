@@ -12,6 +12,7 @@ import (
 
 	h3 "github.com/uber/h3-go/v4"
 
+	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -113,11 +114,29 @@ func (s *ETAService) fetchDistanceMeters(ctx context.Context, originLat, originL
 		return 0, fmt.Errorf("failed to build distance matrix request: %w", err)
 	}
 
+	log := logging.FromContext(ctx, s.logger)
+	extStart := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":          "fetchDistanceMeters",
+		"origin":      formatLatLng(originLat, originLng),
+		"destination": formatLatLng(destLat, destLng),
+	}).Info("google_distance_matrix call start")
+
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "fetchDistanceMeters",
+			"duration_ms": time.Since(extStart).Milliseconds(),
+		}).Error("google_distance_matrix call failed")
 		return 0, fmt.Errorf("distance matrix request failed: %w", err)
 	}
 	defer resp.Body.Close()
+
+	log.WithFields(logrus.Fields{
+		"op":          "fetchDistanceMeters",
+		"status_code": resp.StatusCode,
+		"duration_ms": time.Since(extStart).Milliseconds(),
+	}).Info("google_distance_matrix call done")
 
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("distance matrix returned HTTP %d", resp.StatusCode)

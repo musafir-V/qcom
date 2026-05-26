@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/config"
+	"github.com/qcom/qcom/internal/logging"
 	"github.com/sirupsen/logrus"
 )
 
@@ -91,6 +92,14 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, userID, fileNa
 	ext := strings.ToLower(filepath.Ext(fileName))
 	objectKey := fmt.Sprintf("printdrop/%s/%s%s", userID, fileID, ext)
 
+	log := logging.FromContext(ctx, s.logger)
+	extStart := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":     "PresignPutObject",
+		"bucket": s.bucket,
+		"key":    objectKey,
+	}).Info("s3 call start")
+
 	presignResult, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
 		Key:           aws.String(objectKey),
@@ -99,9 +108,17 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, userID, fileNa
 	}, s3.WithPresignExpires(s.presignExpiry))
 
 	if err != nil {
-		s.logger.WithError(err).WithField("object_key", objectKey).Error("Failed to generate presigned URL")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "PresignPutObject",
+			"duration_ms": time.Since(extStart).Milliseconds(),
+		}).Error("s3 call failed")
 		return nil, fmt.Errorf("failed to generate presigned URL: %w", err)
 	}
+
+	log.WithFields(logrus.Fields{
+		"op":          "PresignPutObject",
+		"duration_ms": time.Since(extStart).Milliseconds(),
+	}).Info("s3 call done")
 
 	return &PresignedUploadResult{
 		FileID:           fileID,
