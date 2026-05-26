@@ -16,11 +16,10 @@ import (
 	"github.com/qcom/qcom/internal/models"
 )
 
-// defaultGeocodeResult is what the mock geocoder returns unless a test overrides it.
+// ── mock geocoder ─────────────────────────────────────────────────────────
+
 const defaultGeocodeResult = "Indiranagar, Bengaluru"
 
-// mockGeocoder is an in-memory service.Geocoder so integration tests never make a
-// real Google Maps call. Tests swap fn to control success/failure behaviour.
 type mockGeocoder struct {
 	fn func(ctx context.Context, lat, lng float64) (string, error)
 }
@@ -32,11 +31,31 @@ func (m *mockGeocoder) ReverseGeocode(ctx context.Context, lat, lng float64) (st
 	return defaultGeocodeResult, nil
 }
 
-// testGeocoder is wired into the test server by setupServer (see upload_api_test.go).
+// testGeocoder is wired into the test server by setupServer (upload_api_test.go).
 var testGeocoder = &mockGeocoder{}
 
-// seedTestDarkstores writes two non-overlapping darkstore polygons to the test
-// table. Idempotent — safe to call from every test.
+// ── mock ETA service ──────────────────────────────────────────────────────
+
+const defaultETAMinutes = 10
+
+// mockETAService implements service.ETAProvider. Tests may swap fn to control
+// success/failure behaviour; nil fn returns defaultETAMinutes.
+type mockETAService struct {
+	fn func(ctx context.Context, darkstore *models.Darkstore, lat, lng float64) (int, error)
+}
+
+func (m *mockETAService) GetETA(ctx context.Context, darkstore *models.Darkstore, lat, lng float64) (int, error) {
+	if m.fn != nil {
+		return m.fn(ctx, darkstore, lat, lng)
+	}
+	return defaultETAMinutes, nil
+}
+
+// testETAService is wired into the test server by setupServer (upload_api_test.go).
+var testETAService = &mockETAService{}
+
+// ── darkstore seeding ─────────────────────────────────────────────────────
+
 func seedTestDarkstores(t *testing.T) {
 	t.Helper()
 
@@ -90,12 +109,14 @@ func seedTestDarkstores(t *testing.T) {
 	}
 }
 
+// ── request helper ────────────────────────────────────────────────────────
+
 func doServiceabilityRequest(t *testing.T, token string, body interface{}) (*http.Response, map[string]interface{}) {
 	t.Helper()
 	return doAddressRequest(t, "POST", "/api/v1/serviceability", token, body)
 }
 
-// ── validation / auth ────────────────────────────────────────────────────
+// ── validation / auth ─────────────────────────────────────────────────────
 
 func TestServiceability_NoAuth(t *testing.T) {
 	resp, _ := doServiceabilityRequest(t, "", map[string]interface{}{
@@ -184,7 +205,7 @@ func TestServiceability_InvalidJSON(t *testing.T) {
 	}
 }
 
-// ── point-in-polygon serviceability ──────────────────────────────────────
+// ── unserviceable ─────────────────────────────────────────────────────────
 
 func TestServiceability_Unserviceable(t *testing.T) {
 	seedTestDarkstores(t)
@@ -202,15 +223,20 @@ func TestServiceability_Unserviceable(t *testing.T) {
 		t.Fatalf("expected serviceable=false, got %v", data["serviceable"])
 	}
 	if _, present := data["resolved_address"]; present {
-		t.Fatal("unserviceable response should have no resolved_address")
+		t.Fatal("unserviceable response must not include resolved_address")
+	}
+	// ETA must be absent for unserviceable locations.
+	if _, present := data["eta_minutes"]; present {
+		t.Fatalf("unserviceable response must not include eta_minutes, got %v", data["eta_minutes"])
 	}
 }
+
+// ── serviceable — geocoded address ────────────────────────────────────────
 
 func TestServiceability_ServiceableGeocoded(t *testing.T) {
 	seedTestDarkstores(t)
 	auth := authenticateUser(t, "+13000000011")
 
-	// User has no saved addresses -> resolution falls back to the geocoder.
 	resp, result := doServiceabilityRequest(t, auth.AccessToken, map[string]interface{}{
 		"latitude": 12.975, "longitude": 77.640,
 	})
@@ -239,6 +265,15 @@ func TestServiceability_ServiceableGeocoded(t *testing.T) {
 	if ra["address_id"] != nil {
 		t.Fatalf("expected address_id null for geocoded result, got %v", ra["address_id"])
 	}
+
+	// ETA must be present and equal to the mock's fixed value.
+	etaRaw, present := data["eta_minutes"]
+	if !present {
+		t.Fatal("serviceable response must include eta_minutes")
+	}
+	if int(etaRaw.(float64)) != defaultETAMinutes {
+		t.Fatalf("expected eta_minutes=%d, got %v", defaultETAMinutes, etaRaw)
+	}
 }
 
 func TestServiceability_SecondDarkstore(t *testing.T) {
@@ -259,9 +294,12 @@ func TestServiceability_SecondDarkstore(t *testing.T) {
 	if data["darkstore_id"].(string) != "DS-TEST-2" {
 		t.Fatalf("expected darkstore_id DS-TEST-2, got %v", data["darkstore_id"])
 	}
+	if _, present := data["eta_minutes"]; !present {
+		t.Fatal("serviceable response must include eta_minutes")
+	}
 }
 
-// ── saved-address resolution ─────────────────────────────────────────────
+// ── serviceable — saved address resolution ────────────────────────────────
 
 func TestServiceability_ServiceableSavedAddress(t *testing.T) {
 	seedTestDarkstores(t)
@@ -299,13 +337,17 @@ func TestServiceability_ServiceableSavedAddress(t *testing.T) {
 	if ra["address_line"].(string) != "Near Test Park" {
 		t.Fatalf("expected address_line from address_line_2, got %v", ra["address_line"])
 	}
+
+	// ETA must be present.
+	if _, present := data["eta_minutes"]; !present {
+		t.Fatal("serviceable response must include eta_minutes")
+	}
 }
 
 func TestServiceability_SavedAddressTooFarFallsBackToGeocode(t *testing.T) {
 	seedTestDarkstores(t)
 	auth := authenticateUser(t, "+13000000021")
 
-	// Saved address is inside DS-TEST-1 but ~1 km from the query point.
 	createTestAddress(t, auth.AccessToken, map[string]interface{}{
 		"latitude":  12.975,
 		"longitude": 77.640,
@@ -328,14 +370,12 @@ func TestServiceability_PicksNearestSavedAddress(t *testing.T) {
 	seedTestDarkstores(t)
 	auth := authenticateUser(t, "+13000000022")
 
-	// Nearest: exactly on the query point.
 	_, nearID := createTestAddress(t, auth.AccessToken, map[string]interface{}{
 		"building_and_floor": "Nearest Building",
 		"latitude":           12.975,
 		"longitude":          77.640,
 		"address_line_2":     "Nearest",
 	})
-	// Farther: ~33 m away, still within the 50 m radius.
 	createTestAddress(t, auth.AccessToken, map[string]interface{}{
 		"building_and_floor": "Farther Building",
 		"latitude":           12.9753,
@@ -364,14 +404,12 @@ func TestServiceability_OtherUsersAddressIgnored(t *testing.T) {
 	userA := authenticateUser(t, "+13000000023")
 	userB := authenticateUser(t, "+13000000024")
 
-	// User A saves an address exactly on the shared query point.
 	createTestAddress(t, userA.AccessToken, map[string]interface{}{
 		"latitude":       12.975,
 		"longitude":      77.640,
 		"address_line_2": "User A home",
 	})
 
-	// User B queries the same point — must not match user A's address.
 	resp, result := doServiceabilityRequest(t, userB.AccessToken, map[string]interface{}{
 		"latitude": 12.975, "longitude": 77.640,
 	})
@@ -385,13 +423,13 @@ func TestServiceability_OtherUsersAddressIgnored(t *testing.T) {
 	}
 }
 
-// ── geocoder failure handling ────────────────────────────────────────────
+// ── graceful-failure handling ─────────────────────────────────────────────
 
 func TestServiceability_GeocodeFailureIsGraceful(t *testing.T) {
 	seedTestDarkstores(t)
 	auth := authenticateUser(t, "+13000000030")
 
-	testGeocoder.fn = func(ctx context.Context, lat, lng float64) (string, error) {
+	testGeocoder.fn = func(_ context.Context, _, _ float64) (string, error) {
 		return "", errors.New("simulated geocode outage")
 	}
 	defer func() { testGeocoder.fn = nil }()
@@ -412,5 +450,39 @@ func TestServiceability_GeocodeFailureIsGraceful(t *testing.T) {
 	}
 	if _, present := data["resolved_address"]; present {
 		t.Fatalf("resolved_address should be omitted when geocoding fails, got %v", data["resolved_address"])
+	}
+	// ETA is independent of geocoding — mock ETA service still returns a value.
+	if _, present := data["eta_minutes"]; !present {
+		t.Fatal("eta_minutes must still be present when only geocoding fails")
+	}
+}
+
+// G1 — ETA service failure is graceful: location remains serviceable but
+// eta_minutes is omitted from the response.
+func TestServiceability_ETAFailureIsGraceful(t *testing.T) {
+	seedTestDarkstores(t)
+	auth := authenticateUser(t, "+13000000040")
+
+	testETAService.fn = func(_ context.Context, _ *models.Darkstore, _, _ float64) (int, error) {
+		return 0, errors.New("simulated ETA outage")
+	}
+	defer func() { testETAService.fn = nil }()
+
+	resp, result := doServiceabilityRequest(t, auth.AccessToken, map[string]interface{}{
+		"latitude": 12.975, "longitude": 77.640,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 even when ETA fails, got %d: %v", resp.StatusCode, result)
+	}
+
+	data := result["data"].(map[string]interface{})
+	if data["serviceable"].(bool) != true {
+		t.Fatal("location must still be serviceable when ETA service fails")
+	}
+	if data["darkstore_id"].(string) != "DS-TEST-1" {
+		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
+	}
+	if _, present := data["eta_minutes"]; present {
+		t.Fatalf("eta_minutes must be omitted when ETA service fails, got %v", data["eta_minutes"])
 	}
 }

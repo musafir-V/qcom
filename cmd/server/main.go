@@ -45,6 +45,7 @@ func main() {
 	pageRepo := repository.NewPageRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	addressRepo := repository.NewAddressRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	darkstoreRepo := repository.NewDarkstoreRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	etaCacheRepo := repository.NewETACacheRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	deRepo := repository.NewDERepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
@@ -57,7 +58,8 @@ func main() {
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
 	geocoder := service.NewGoogleGeocoder(cfg.Google.MapsAPIKey, logger)
-	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, logger)
+	etaService := service.NewETAService(etaCacheRepo, cfg.Google.MapsAPIKey, logger)
+	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger)
 	qrService := service.NewQRService(logger)
 	deService := service.NewDEService(deRepo, qrService, logger)
 

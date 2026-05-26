@@ -28,12 +28,14 @@ type ServiceabilityResult struct {
 	Serviceable     bool             `json:"serviceable"`
 	DarkstoreID     string           `json:"darkstore_id,omitempty"`
 	ResolvedAddress *ResolvedAddress `json:"resolved_address,omitempty"`
+	ETAMinutes      *int             `json:"eta_minutes,omitempty"`
 }
 
 type ServiceabilityService struct {
 	darkstoreRepo  *repository.DarkstoreRepository
 	addressService *AddressService
 	geocoder       Geocoder
+	etaService     ETAProvider
 	logger         *logrus.Logger
 }
 
@@ -41,12 +43,14 @@ func NewServiceabilityService(
 	darkstoreRepo *repository.DarkstoreRepository,
 	addressService *AddressService,
 	geocoder Geocoder,
+	etaService ETAProvider,
 	logger *logrus.Logger,
 ) *ServiceabilityService {
 	return &ServiceabilityService{
 		darkstoreRepo:  darkstoreRepo,
 		addressService: addressService,
 		geocoder:       geocoder,
+		etaService:     etaService,
 		logger:         logger,
 	}
 }
@@ -75,6 +79,13 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 	result := &ServiceabilityResult{
 		Serviceable: true,
 		DarkstoreID: matched.DarkstoreID,
+	}
+
+	etaMinutes, err := s.etaService.GetETA(ctx, matched, lat, lng)
+	if err != nil {
+		s.logger.WithError(err).Warn("ETA calculation failed; returning serviceable result without ETA")
+	} else {
+		result.ETAMinutes = &etaMinutes
 	}
 
 	resolved, err := s.resolveFromSavedAddress(ctx, userID, lat, lng)
