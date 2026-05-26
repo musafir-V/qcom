@@ -133,7 +133,7 @@ func (h *AuthHandlers) InitiateOTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := h.otpService.GenerateOTP(phoneNumber); err != nil {
+	if _, err := h.otpService.GenerateOTP(r.Context(), phoneNumber); err != nil {
 		h.logger.WithError(err).Error("Failed to generate OTP")
 		h.respondWithError(w, http.StatusInternalServerError, "OTP_GENERATION_FAILED", "Failed to generate OTP")
 		return
@@ -171,7 +171,7 @@ func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	valid, err := h.otpService.VerifyOTP(phoneNumber, otp)
+	valid, err := h.otpService.VerifyOTP(r.Context(), phoneNumber, otp)
 	if err != nil || !valid {
 		h.respondWithError(w, http.StatusUnauthorized, "INVALID_OTP", "Invalid or expired OTP")
 		return
