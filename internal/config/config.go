@@ -14,6 +14,7 @@ type Config struct {
 	OTP      OTPConfig
 	S3       S3Config
 	Google   GoogleConfig
+	IsTest   bool
 }
 
 type ServerConfig struct {
@@ -84,6 +85,7 @@ func Load() (*Config, error) {
 		Google: GoogleConfig{
 			MapsAPIKey: getEnv("GOOGLE_MAPS_API_KEY", ""),
 		},
+		IsTest: getEnv("IS_TEST", "false") == "true",
 	}
 
 	if cfg.JWT.SecretKey == "" {
