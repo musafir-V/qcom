@@ -3,11 +3,13 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -29,6 +31,12 @@ func NewDarkstoreRepository(client *dynamodb.Client, tableName string, logger *l
 // ListActive returns every active darkstore. Darkstores are few and rarely
 // change, so a full Scan per request is acceptable for v1.
 func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstore, error) {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op": "ListActive",
+	}).Info("dynamodb call start")
+
 	var darkstores []models.Darkstore
 	var startKey map[string]types.AttributeValue
 
@@ -44,13 +52,19 @@ func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstor
 			ExclusiveStartKey: startKey,
 		})
 		if err != nil {
-			r.logger.WithError(err).Error("Failed to scan darkstores from DynamoDB")
+			log.WithError(err).WithFields(logrus.Fields{
+				"op":          "ListActive",
+				"duration_ms": time.Since(start).Milliseconds(),
+			}).Error("dynamodb call failed")
 			return nil, fmt.Errorf("failed to scan darkstores: %w", err)
 		}
 
 		var page []models.Darkstore
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
-			r.logger.WithError(err).Error("Failed to unmarshal darkstore list")
+			log.WithError(err).WithFields(logrus.Fields{
+				"op":          "ListActive",
+				"duration_ms": time.Since(start).Milliseconds(),
+			}).Error("dynamodb call failed")
 			return nil, fmt.Errorf("failed to unmarshal darkstores: %w", err)
 		}
 		darkstores = append(darkstores, page...)
@@ -61,5 +75,10 @@ func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstor
 		startKey = result.LastEvaluatedKey
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "ListActive",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"count":       len(darkstores),
+	}).Info("dynamodb call done")
 	return darkstores, nil
 }

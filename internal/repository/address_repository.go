@@ -3,11 +3,13 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -27,9 +29,19 @@ func NewAddressRepository(client *dynamodb.Client, tableName string, logger *log
 }
 
 func (r *AddressRepository) Create(ctx context.Context, address *models.Address) error {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":         "Create",
+		"address_id": address.AddressID,
+	}).Info("dynamodb call start")
+
 	item, err := attributevalue.MarshalMap(address)
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to marshal address")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Create",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to marshal address: %w", err)
 	}
 
@@ -41,14 +53,28 @@ func (r *AddressRepository) Create(ctx context.Context, address *models.Address)
 		Item:      item,
 	})
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to create address in DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Create",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to create address: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "Create",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("dynamodb call done")
 	return nil
 }
 
 func (r *AddressRepository) GetByID(ctx context.Context, addressID string) (*models.Address, error) {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":         "GetByID",
+		"address_id": addressID,
+	}).Info("dynamodb call start")
+
 	addr := &models.Address{AddressID: addressID}
 
 	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
@@ -59,24 +85,47 @@ func (r *AddressRepository) GetByID(ctx context.Context, addressID string) (*mod
 		},
 	})
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to get address from DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetByID",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to get address: %w", err)
 	}
 
 	if result.Item == nil {
+		log.WithFields(logrus.Fields{
+			"op":          "GetByID",
+			"duration_ms": time.Since(start).Milliseconds(),
+			"found":       false,
+		}).Info("dynamodb call done")
 		return nil, nil
 	}
 
 	var dbAddr models.Address
 	if err := attributevalue.UnmarshalMap(result.Item, &dbAddr); err != nil {
-		r.logger.WithError(err).Error("Failed to unmarshal address")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetByID",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to unmarshal address: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "GetByID",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"found":       true,
+	}).Info("dynamodb call done")
 	return &dbAddr, nil
 }
 
 func (r *AddressRepository) QueryByUserID(ctx context.Context, userID string) ([]models.Address, error) {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":      "QueryByUserID",
+		"user_id": userID,
+	}).Info("dynamodb call start")
+
 	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
 		IndexName:              aws.String("UserIdIndex"),
@@ -88,20 +137,38 @@ func (r *AddressRepository) QueryByUserID(ctx context.Context, userID string) ([
 		},
 	})
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to query addresses by user ID")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "QueryByUserID",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to query addresses: %w", err)
 	}
 
 	var addresses []models.Address
 	if err := attributevalue.UnmarshalListOfMaps(result.Items, &addresses); err != nil {
-		r.logger.WithError(err).Error("Failed to unmarshal address list")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "QueryByUserID",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to unmarshal addresses: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "QueryByUserID",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"count":       len(addresses),
+	}).Info("dynamodb call done")
 	return addresses, nil
 }
 
 func (r *AddressRepository) UpdateReceiverDetails(ctx context.Context, addressID string, updates map[string]string) (*models.Address, error) {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":         "UpdateReceiverDetails",
+		"address_id": addressID,
+	}).Info("dynamodb call start")
+
 	addr := &models.Address{AddressID: addressID}
 
 	updateExpr := "SET updated_at = :updated_at"
@@ -135,20 +202,37 @@ func (r *AddressRepository) UpdateReceiverDetails(ctx context.Context, addressID
 
 	result, err := r.client.UpdateItem(ctx, input)
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to update address in DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "UpdateReceiverDetails",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to update address: %w", err)
 	}
 
 	var updated models.Address
 	if err := attributevalue.UnmarshalMap(result.Attributes, &updated); err != nil {
-		r.logger.WithError(err).Error("Failed to unmarshal updated address")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "UpdateReceiverDetails",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to unmarshal updated address: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "UpdateReceiverDetails",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("dynamodb call done")
 	return &updated, nil
 }
 
 func (r *AddressRepository) SoftDelete(ctx context.Context, addressID, updatedAt string) error {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":         "SoftDelete",
+		"address_id": addressID,
+	}).Info("dynamodb call start")
+
 	addr := &models.Address{AddressID: addressID}
 
 	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
@@ -164,9 +248,16 @@ func (r *AddressRepository) SoftDelete(ctx context.Context, addressID, updatedAt
 		},
 	})
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to soft-delete address")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "SoftDelete",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to soft-delete address: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "SoftDelete",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("dynamodb call done")
 	return nil
 }

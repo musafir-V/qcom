@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -29,6 +30,13 @@ func NewRefreshTokenRepository(client *dynamodb.Client, tableName string, logger
 
 // Store stores refresh token in DynamoDB with TTL
 func (r *RefreshTokenRepository) Store(ctx context.Context, tokenData models.RefreshTokenData) error {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":  "Store",
+		"jti": tokenData.JTI,
+	}).Info("dynamodb call start")
+
 	// Calculate TTL (expiration time in Unix seconds)
 	ttl := tokenData.ExpiresAt.Unix()
 
@@ -52,15 +60,29 @@ func (r *RefreshTokenRepository) Store(ctx context.Context, tokenData models.Ref
 	})
 
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to store refresh token in DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Store",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "Store",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("dynamodb call done")
 	return nil
 }
 
 // Get retrieves refresh token from DynamoDB
 func (r *RefreshTokenRepository) Get(ctx context.Context, jti string) (*models.RefreshTokenData, error) {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":  "Get",
+		"jti": jti,
+	}).Info("dynamodb call start")
+
 	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
@@ -70,23 +92,48 @@ func (r *RefreshTokenRepository) Get(ctx context.Context, jti string) (*models.R
 	})
 
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Get",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to get refresh token: %w", err)
 	}
 
 	if result.Item == nil {
+		log.WithFields(logrus.Fields{
+			"op":          "Get",
+			"duration_ms": time.Since(start).Milliseconds(),
+			"found":       false,
+		}).Info("dynamodb call done")
 		return nil, fmt.Errorf("refresh token not found")
 	}
 
 	var tokenData models.RefreshTokenData
 	if err := attributevalue.UnmarshalMap(result.Item, &tokenData); err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Get",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to unmarshal token data: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "Get",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"found":       true,
+	}).Info("dynamodb call done")
 	return &tokenData, nil
 }
 
 // Delete removes refresh token from DynamoDB
 func (r *RefreshTokenRepository) Delete(ctx context.Context, jti string) error {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":  "Delete",
+		"jti": jti,
+	}).Info("dynamodb call start")
+
 	_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
@@ -96,14 +143,29 @@ func (r *RefreshTokenRepository) Delete(ctx context.Context, jti string) error {
 	})
 
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Delete",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to delete refresh token: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "Delete",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("dynamodb call done")
 	return nil
 }
 
 // IsRevoked checks if a token is revoked by checking for revoked marker
 func (r *RefreshTokenRepository) IsRevoked(ctx context.Context, jti string) (bool, error) {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":  "IsRevoked",
+		"jti": jti,
+	}).Info("dynamodb call start")
+
 	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
 		Key: map[string]types.AttributeValue{
@@ -113,14 +175,31 @@ func (r *RefreshTokenRepository) IsRevoked(ctx context.Context, jti string) (boo
 	})
 
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "IsRevoked",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return false, err
 	}
 
-	return result.Item != nil, nil
+	revoked := result.Item != nil
+	log.WithFields(logrus.Fields{
+		"op":          "IsRevoked",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"found":       revoked,
+	}).Info("dynamodb call done")
+	return revoked, nil
 }
 
 // MarkRevoked marks a token as revoked with TTL
 func (r *RefreshTokenRepository) MarkRevoked(ctx context.Context, jti string, expiresAt time.Time) error {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":  "MarkRevoked",
+		"jti": jti,
+	}).Info("dynamodb call start")
+
 	ttl := expiresAt.Unix()
 
 	item := map[string]types.AttributeValue{
@@ -136,15 +215,30 @@ func (r *RefreshTokenRepository) MarkRevoked(ctx context.Context, jti string, ex
 	})
 
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "MarkRevoked",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to mark token as revoked: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "MarkRevoked",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("dynamodb call done")
 	return nil
 }
 
 // GetByFamilyID retrieves all tokens for a given family ID
 func (r *RefreshTokenRepository) GetByFamilyID(ctx context.Context, familyID string) ([]models.RefreshTokenData, error) {
-	// Query using GSI (if you create one) or scan with filter
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":        "GetByFamilyID",
+		"family_id": familyID,
+	}).Info("dynamodb call start")
+
+	// Query using GSI (if you create one) or scan with filter expression
 	// For simplicity, using scan with filter expression
 	result, err := r.client.Scan(ctx, &dynamodb.ScanInput{
 		TableName:        aws.String(r.tableName),
@@ -156,13 +250,26 @@ func (r *RefreshTokenRepository) GetByFamilyID(ctx context.Context, familyID str
 	})
 
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetByFamilyID",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to query tokens by family ID: %w", err)
 	}
 
 	var tokens []models.RefreshTokenData
 	if err := attributevalue.UnmarshalListOfMaps(result.Items, &tokens); err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetByFamilyID",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to unmarshal tokens: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "GetByFamilyID",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"count":       len(tokens),
+	}).Info("dynamodb call done")
 	return tokens, nil
 }

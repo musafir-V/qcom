@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
+	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -29,6 +30,13 @@ func NewUserRepository(client *dynamodb.Client, tableName string, logger *logrus
 }
 
 func (r *UserRepository) GetByPhoneNumber(ctx context.Context, phoneNumber string) (*models.User, error) {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":    "GetByPhoneNumber",
+		"phone": phoneNumber,
+	}).Info("dynamodb call start")
+
 	user := &models.User{PhoneNumber: phoneNumber}
 	pk := user.GetPK()
 	sk := user.GetSK()
@@ -42,17 +50,28 @@ func (r *UserRepository) GetByPhoneNumber(ctx context.Context, phoneNumber strin
 	})
 
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to get user from DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetByPhoneNumber",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
 	if result.Item == nil {
+		log.WithFields(logrus.Fields{
+			"op":          "GetByPhoneNumber",
+			"duration_ms": time.Since(start).Milliseconds(),
+			"found":       false,
+		}).Info("dynamodb call done")
 		return nil, nil // User not found
 	}
 
 	var dbUser models.User
 	if err := attributevalue.UnmarshalMap(result.Item, &dbUser); err != nil {
-		r.logger.WithError(err).Error("Failed to unmarshal user from DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetByPhoneNumber",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, fmt.Errorf("failed to unmarshal user: %w", err)
 	}
 
@@ -64,10 +83,22 @@ func (r *UserRepository) GetByPhoneNumber(ctx context.Context, phoneNumber strin
 		}
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "GetByPhoneNumber",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"found":       true,
+	}).Info("dynamodb call done")
 	return &dbUser, nil
 }
 
 func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":    "Create",
+		"phone": user.PhoneNumber,
+	}).Info("dynamodb call start")
+
 	now := time.Now()
 	user.UserID = uuid.New().String()
 	user.CreatedAt = now
@@ -78,7 +109,10 @@ func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 
 	item, err := attributevalue.MarshalMap(user)
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to marshal user for DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Create",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to marshal user: %w", err)
 	}
 
@@ -94,16 +128,34 @@ func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 
 	if err != nil {
 		if _, ok := err.(*types.ConditionalCheckFailedException); ok {
+			log.WithError(err).WithFields(logrus.Fields{
+				"op":          "Create",
+				"duration_ms": time.Since(start).Milliseconds(),
+			}).Error("dynamodb call failed")
 			return fmt.Errorf("user already exists")
 		}
-		r.logger.WithError(err).Error("Failed to create user in DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Create",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to create user: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "Create",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("dynamodb call done")
 	return nil
 }
 
 func (r *UserRepository) Update(ctx context.Context, user *models.User) error {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":    "Update",
+		"phone": user.PhoneNumber,
+	}).Info("dynamodb call start")
+
 	user.UpdatedAt = time.Now()
 
 	pk := user.GetPK()
@@ -130,20 +182,43 @@ func (r *UserRepository) Update(ctx context.Context, user *models.User) error {
 	})
 
 	if err != nil {
-		r.logger.WithError(err).Error("Failed to update user in DynamoDB")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "Update",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return fmt.Errorf("failed to update user: %w", err)
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "Update",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("dynamodb call done")
 	return nil
 }
 
 func (r *UserRepository) GetOrCreate(ctx context.Context, phoneNumber string) (*models.User, error) {
+	log := logging.FromContext(ctx, r.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":    "GetOrCreate",
+		"phone": phoneNumber,
+	}).Info("dynamodb call start")
+
 	user, err := r.GetByPhoneNumber(ctx, phoneNumber)
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetOrCreate",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, err
 	}
 
 	if user != nil {
+		log.WithFields(logrus.Fields{
+			"op":          "GetOrCreate",
+			"duration_ms": time.Since(start).Milliseconds(),
+			"found":       true,
+		}).Info("dynamodb call done")
 		return user, nil
 	}
 
@@ -154,8 +229,17 @@ func (r *UserRepository) GetOrCreate(ctx context.Context, phoneNumber string) (*
 	}
 
 	if err := r.Create(ctx, newUser); err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetOrCreate",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("dynamodb call failed")
 		return nil, err
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "GetOrCreate",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"found":       false,
+	}).Info("dynamodb call done")
 	return newUser, nil
 }
