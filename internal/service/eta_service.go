@@ -59,21 +59,43 @@ func NewETAService(etaRepo ETACacheStore, apiKey string, logger *logrus.Logger) 
 // GetETA returns estimated delivery time in minutes.
 // Flow: H3 cell → DynamoDB cache → Google Distance Matrix → ceil(km×2)+3 → save → return.
 func (s *ETAService) GetETA(ctx context.Context, darkstore *models.Darkstore, userLat, userLng float64) (int, error) {
+	log := logging.FromContext(ctx, s.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":           "GetETA",
+		"lat":          userLat,
+		"lng":          userLng,
+		"darkstore_id": darkstore.DarkstoreID,
+	}).Info("service call start")
+
 	cell, err := h3.LatLngToCell(h3.NewLatLng(userLat, userLng), h3Resolution)
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetETA",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("service call failed")
 		return 0, fmt.Errorf("failed to compute H3 cell: %w", err)
 	}
 	cellKey := fmt.Sprintf("%x", uint64(cell))
 
 	cached, err := s.etaRepo.Get(ctx, cellKey)
 	if err != nil {
-		s.logger.WithError(err).Warn("ETA cache lookup failed; falling back to Google")
+		log.WithError(err).Warn("ETA cache lookup failed; falling back to Google")
 	} else if cached != nil {
+		log.WithFields(logrus.Fields{
+			"op":          "GetETA",
+			"duration_ms": time.Since(start).Milliseconds(),
+			"cache_hit":   true,
+		}).Info("service call done")
 		return *cached, nil
 	}
 
 	distanceMeters, err := s.fetchDistanceMeters(ctx, darkstore.Latitude, darkstore.Longitude, userLat, userLng)
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GetETA",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("service call failed")
 		return 0, fmt.Errorf("failed to fetch distance from Google: %w", err)
 	}
 
@@ -81,9 +103,14 @@ func (s *ETAService) GetETA(ctx context.Context, darkstore *models.Darkstore, us
 	etaMinutes := int(math.Ceil(distanceKm*minutesPerKm)) + packagingMinutes
 
 	if saveErr := s.etaRepo.Save(ctx, cellKey, etaMinutes); saveErr != nil {
-		s.logger.WithError(saveErr).Warn("Failed to cache ETA; returning computed value")
+		log.WithError(saveErr).Warn("Failed to cache ETA; returning computed value")
 	}
 
+	log.WithFields(logrus.Fields{
+		"op":          "GetETA",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"eta_minutes": etaMinutes,
+	}).Info("service call done")
 	return etaMinutes, nil
 }
 

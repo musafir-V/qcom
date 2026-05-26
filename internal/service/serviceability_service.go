@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"time"
 
+	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
@@ -61,21 +63,36 @@ func NewServiceabilityService(
 // CheckServiceability determines whether a coordinate is serviceable and, if so,
 // resolves an address for it — either a nearby saved address or a geocoded one.
 func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID string, lat, lng float64) (*ServiceabilityResult, error) {
+	log := logging.FromContext(ctx, s.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":      "CheckServiceability",
+		"user_id": userID,
+		"lat":     lat,
+		"lng":     lng,
+	}).Info("service call start")
+
 	darkstores, err := s.darkstoreRepo.ListActive(ctx)
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "CheckServiceability",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("service call failed")
 		return nil, err
 	}
 
-	// Polygons are non-overlapping, so the first containing polygon wins.
-	// When IS_TEST is set, the polygon check is bypassed and the first active
-	// darkstore is treated as the match.
 	var matched *models.Darkstore
 	if s.isTest {
 		if len(darkstores) == 0 {
+			log.WithFields(logrus.Fields{
+				"op":          "CheckServiceability",
+				"duration_ms": time.Since(start).Milliseconds(),
+				"serviceable": false,
+			}).Info("service call done")
 			return &ServiceabilityResult{Serviceable: false}, nil
 		}
 		matched = &darkstores[0]
-		s.logger.Warn("IS_TEST is set; bypassing serviceability polygon check")
+		log.Warn("IS_TEST is set; bypassing serviceability polygon check")
 	} else {
 		for i := range darkstores {
 			if darkstores[i].Contains(lat, lng) {
@@ -84,6 +101,11 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 			}
 		}
 		if matched == nil {
+			log.WithFields(logrus.Fields{
+				"op":          "CheckServiceability",
+				"duration_ms": time.Since(start).Milliseconds(),
+				"serviceable": false,
+			}).Info("service call done")
 			return &ServiceabilityResult{Serviceable: false}, nil
 		}
 	}
@@ -95,21 +117,35 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 
 	etaMinutes, err := s.etaService.GetETA(ctx, matched, lat, lng)
 	if err != nil {
-		s.logger.WithError(err).Warn("ETA calculation failed; returning serviceable result without ETA")
+		log.WithError(err).Warn("ETA calculation failed; returning serviceable result without ETA")
 	} else {
 		result.ETAMinutes = &etaMinutes
 	}
 
 	resolved, err := s.resolveFromSavedAddress(ctx, userID, lat, lng)
 	if err != nil {
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "CheckServiceability",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("service call failed")
 		return nil, err
 	}
 	if resolved != nil {
 		result.ResolvedAddress = resolved
+		log.WithFields(logrus.Fields{
+			"op":          "CheckServiceability",
+			"duration_ms": time.Since(start).Milliseconds(),
+			"serviceable": true,
+		}).Info("service call done")
 		return result, nil
 	}
 
 	result.ResolvedAddress = s.resolveFromGeocode(ctx, lat, lng)
+	log.WithFields(logrus.Fields{
+		"op":          "CheckServiceability",
+		"duration_ms": time.Since(start).Milliseconds(),
+		"serviceable": true,
+	}).Info("service call done")
 	return result, nil
 }
 
@@ -151,9 +187,10 @@ func (s *ServiceabilityService) resolveFromSavedAddress(ctx context.Context, use
 // resolveFromGeocode reverse-geocodes the coordinate. A geocoding failure is not
 // fatal — the location is still serviceable; we just return no resolved address.
 func (s *ServiceabilityService) resolveFromGeocode(ctx context.Context, lat, lng float64) *ResolvedAddress {
+	log := logging.FromContext(ctx, s.logger)
 	line, err := s.geocoder.ReverseGeocode(ctx, lat, lng)
 	if err != nil {
-		s.logger.WithError(err).Warn("Reverse geocoding failed; returning serviceable result without a resolved address")
+		log.WithError(err).Warn("Reverse geocoding failed; returning serviceable result without a resolved address")
 		return nil
 	}
 	return &ResolvedAddress{

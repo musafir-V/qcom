@@ -88,11 +88,20 @@ func (s *UploadService) ValidateFileRequest(fileName, fileType string, fileSize 
 }
 
 func (s *UploadService) GeneratePresignedURL(ctx context.Context, userID, fileName, fileType string, fileSize int64) (*PresignedUploadResult, error) {
+	log := logging.FromContext(ctx, s.logger)
+	start := time.Now()
+	log.WithFields(logrus.Fields{
+		"op":        "GeneratePresignedURL",
+		"user_id":   userID,
+		"file_name": fileName,
+		"file_type": fileType,
+		"file_size": fileSize,
+	}).Info("service call start")
+
 	fileID := uuid.New().String()
 	ext := strings.ToLower(filepath.Ext(fileName))
 	objectKey := fmt.Sprintf("printdrop/%s/%s%s", userID, fileID, ext)
 
-	log := logging.FromContext(ctx, s.logger)
 	extStart := time.Now()
 	log.WithFields(logrus.Fields{
 		"op":     "PresignPutObject",
@@ -112,6 +121,10 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, userID, fileNa
 			"op":          "PresignPutObject",
 			"duration_ms": time.Since(extStart).Milliseconds(),
 		}).Error("s3 call failed")
+		log.WithError(err).WithFields(logrus.Fields{
+			"op":          "GeneratePresignedURL",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}).Error("service call failed")
 		return nil, fmt.Errorf("failed to generate presigned URL: %w", err)
 	}
 
@@ -119,6 +132,11 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, userID, fileNa
 		"op":          "PresignPutObject",
 		"duration_ms": time.Since(extStart).Milliseconds(),
 	}).Info("s3 call done")
+
+	log.WithFields(logrus.Fields{
+		"op":          "GeneratePresignedURL",
+		"duration_ms": time.Since(start).Milliseconds(),
+	}).Info("service call done")
 
 	return &PresignedUploadResult{
 		FileID:           fileID,
