@@ -85,7 +85,8 @@ func Load() (*Config, error) {
 		Google: GoogleConfig{
 			MapsAPIKey: getEnv("GOOGLE_MAPS_API_KEY", ""),
 		},
-		IsTest: getEnv("IS_TEST", "false") == "true",
+		// IS_TEST (or IS_TRUE): skip polygon check; use first active darkstore from DDB.
+		IsTest: envBool("IS_TEST") || envBool("IS_TRUE"),
 	}
 
 	if cfg.JWT.SecretKey == "" {
@@ -104,6 +105,10 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+func envBool(key string) bool {
+	return os.Getenv(key) == "true"
 }
 
 func getEnvAsInt(key string, defaultValue int) int {

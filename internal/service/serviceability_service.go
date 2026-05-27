@@ -81,33 +81,14 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 		return nil, err
 	}
 
-	var matched *models.Darkstore
-	if s.isTest {
-		if len(darkstores) == 0 {
-			log.WithFields(logrus.Fields{
-				"op":          "CheckServiceability",
-				"duration_ms": time.Since(start).Milliseconds(),
-				"serviceable": false,
-			}).Info("service call done")
-			return &ServiceabilityResult{Serviceable: false}, nil
-		}
-		matched = &darkstores[0]
-		log.Warn("IS_TEST is set; bypassing serviceability polygon check")
-	} else {
-		for i := range darkstores {
-			if darkstores[i].Contains(lat, lng) {
-				matched = &darkstores[i]
-				break
-			}
-		}
-		if matched == nil {
-			log.WithFields(logrus.Fields{
-				"op":          "CheckServiceability",
-				"duration_ms": time.Since(start).Milliseconds(),
-				"serviceable": false,
-			}).Info("service call done")
-			return &ServiceabilityResult{Serviceable: false}, nil
-		}
+	matched := s.matchDarkstore(log, darkstores, lat, lng)
+	if matched == nil {
+		log.WithFields(logrus.Fields{
+			"op":          "CheckServiceability",
+			"duration_ms": time.Since(start).Milliseconds(),
+			"serviceable": false,
+		}).Info("service call done")
+		return &ServiceabilityResult{Serviceable: false}, nil
 	}
 
 	result := &ServiceabilityResult{
@@ -147,6 +128,25 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 		"serviceable": true,
 	}).Info("service call done")
 	return result, nil
+}
+
+// matchDarkstore picks the darkstore for this request. When IS_TEST/IS_TRUE is set,
+// polygon checks are skipped: the first active darkstore from DDB is used and the
+// rest of the flow (ETA, address resolution) proceeds as normal.
+func (s *ServiceabilityService) matchDarkstore(log *logrus.Entry, darkstores []models.Darkstore, lat, lng float64) *models.Darkstore {
+	if len(darkstores) == 0 {
+		return nil
+	}
+	if s.isTest {
+		log.Warn("IS_TEST/IS_TRUE is set; bypassing serviceability polygon check")
+		return &darkstores[0]
+	}
+	for i := range darkstores {
+		if darkstores[i].Contains(lat, lng) {
+			return &darkstores[i]
+		}
+	}
+	return nil
 }
 
 // resolveFromSavedAddress returns the nearest saved address within 50 m, or nil.
