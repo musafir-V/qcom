@@ -1,12 +1,13 @@
 {
   "logs": {
     "logs_collected": {
-      "journald": {
+      "files": {
         "collect_list": [
           {
+            "file_path": "/var/log/qcom/app.log",
             "log_group_name": "/qcom/production",
             "log_stream_name": "{instance_id}/qcom-server",
-            "units": ["qcom.service"]
+            "timezone": "UTC"
           }
         ]
       }

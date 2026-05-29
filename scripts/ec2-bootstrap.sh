@@ -126,6 +126,29 @@ sudo -u qcom HOME=/app PATH=$PATH:/usr/local/go/bin GOPATH=/app/go make build
 # chmod 600 and owned by qcom:qcom.
 bash "${APP_DIR}/scripts/fetch-env.sh"
 
+# --- Log directory ------------------------------------------------------------
+# The systemd unit writes stdout/stderr to /var/log/qcom/app.log (see
+# deploy/qcom.service). Create the directory here, before the service starts,
+# so systemd doesn't fail trying to open a path that doesn't exist.
+mkdir -p /var/log/qcom
+chown qcom:qcom /var/log/qcom
+
+# --- logrotate for app log ----------------------------------------------------
+# Rotate /var/log/qcom/app.log daily, keep 2 days of history.
+# copytruncate copies the current file then truncates the original in-place —
+# this works while the qcom process has the file open without needing a restart.
+# compress saves disk space on the rotated files.
+cat > /etc/logrotate.d/qcom << 'EOF'
+/var/log/qcom/app.log {
+    daily
+    rotate 2
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+
 # --- Install and start the systemd service ------------------------------------
 # Copy the unit file from the repo into the systemd directory. This means the
 # service definition is version-controlled alongside the code.

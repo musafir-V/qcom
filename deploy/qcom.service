@@ -12,9 +12,10 @@ EnvironmentFile=/app/.env
 ExecStart=/app/qcom/bin/qcom-server
 Restart=on-failure
 RestartSec=5s
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=qcom
+# Append stdout+stderr directly to a file so the CloudWatch agent can tail it.
+# copytruncate logrotate handles rotation without needing a service restart.
+StandardOutput=append:/var/log/qcom/app.log
+StandardError=append:/var/log/qcom/app.log
 
 [Install]
 WantedBy=multi-user.target
