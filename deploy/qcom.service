@@ -1,0 +1,20 @@
+[Unit]
+Description=qcom API server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qcom
+Group=qcom
+WorkingDirectory=/app/qcom
+EnvironmentFile=/app/.env
+ExecStart=/app/qcom/bin/qcom-server
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qcom
+
+[Install]
+WantedBy=multi-user.target
