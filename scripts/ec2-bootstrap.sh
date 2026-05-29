@@ -6,7 +6,7 @@ set -euo pipefail
 
 REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
 GO_VERSION="1.24.3"
-REPO_URL="git@github.com:musafir-V/qcom.git"
+REPO_URL="https://github.com/musafir-V/qcom.git"
 APP_DIR="/app/qcom"
 SERVICE_NAME="qcom"
 
@@ -31,24 +31,8 @@ if ! command -v go &>/dev/null; then
   export PATH=$PATH:/usr/local/go/bin
 fi
 
-# --- Fetch GitHub deploy key from SSM ---
-mkdir -p /home/qcom/.ssh
-chmod 700 /home/qcom/.ssh
-aws ssm get-parameter \
-  --name "/qcom/prod/GITHUB_DEPLOY_KEY" \
-  --with-decryption \
-  --region "${REGION}" \
-  --query "Parameter.Value" \
-  --output text > /home/qcom/.ssh/id_ed25519
-chmod 600 /home/qcom/.ssh/id_ed25519
-chown -R qcom:qcom /home/qcom/.ssh
-
-ssh-keyscan github.com >> /home/qcom/.ssh/known_hosts
-chown qcom:qcom /home/qcom/.ssh/known_hosts
-
-# --- Clone repo ---
-sudo -u qcom GIT_SSH_COMMAND="ssh -i /home/qcom/.ssh/id_ed25519" \
-  git clone "${REPO_URL}" "${APP_DIR}"
+# --- Clone repo (public repo, no deploy key needed) ---
+sudo -u qcom git clone "${REPO_URL}" "${APP_DIR}"
 
 # --- Build binary ---
 cd "${APP_DIR}"
