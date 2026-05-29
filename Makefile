@@ -154,6 +154,10 @@ test: ## Run unit tests
 	@echo "Running unit tests..."
 	@go test -v ./...
 
+test-smoke: ## Run smoke tests against the live API (SMOKE_BASE_URL defaults to https://api.bunzodelivery.com)
+	@echo "Running smoke tests against $${SMOKE_BASE_URL:-https://api.bunzodelivery.com}..."
+	@SMOKE_BASE_URL=$${SMOKE_BASE_URL:-https://api.bunzodelivery.com} go test -v -tags=smoke -timeout 60s ./tests/smoke/...
+
 test-upload: ## Run upload API integration tests (requires Docker)
 	@echo "Running upload API integration tests..."
 	@go test -v -tags=integration -timeout 120s ./tests/integration/...
