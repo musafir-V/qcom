@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# EC2 User Data script. Runs as root on first boot.
+# Installs Go, clones repo, builds binary, installs and starts systemd service.
+
+set -euo pipefail
+
+REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+GO_VERSION="1.24.3"
+REPO_URL="git@github.com:musafir-V/qcom.git"
+APP_DIR="/app/qcom"
+SERVICE_NAME="qcom"
+
+exec > /var/log/qcom-bootstrap.log 2>&1
+
+echo "=== qcom bootstrap started at $(date) ==="
+
+# --- System setup ---
+yum update -y
+yum install -y git make gcc
+
+# --- Create app user ---
+id -u qcom &>/dev/null || useradd -r -s /sbin/nologin -d /app qcom
+mkdir -p /app
+chown qcom:qcom /app
+
+# --- Install Go ---
+if ! command -v go &>/dev/null; then
+  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
+  tar -C /usr/local -xzf /tmp/go.tar.gz
+  echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
+  export PATH=$PATH:/usr/local/go/bin
+fi
+
+# --- Fetch GitHub deploy key from SSM ---
+mkdir -p /home/qcom/.ssh
+chmod 700 /home/qcom/.ssh
+aws ssm get-parameter \
+  --name "/qcom/prod/GITHUB_DEPLOY_KEY" \
+  --with-decryption \
+  --region "${REGION}" \
+  --query "Parameter.Value" \
+  --output text > /home/qcom/.ssh/id_ed25519
+chmod 600 /home/qcom/.ssh/id_ed25519
+chown -R qcom:qcom /home/qcom/.ssh
+
+ssh-keyscan github.com >> /home/qcom/.ssh/known_hosts
+chown qcom:qcom /home/qcom/.ssh/known_hosts
+
+# --- Clone repo ---
+sudo -u qcom GIT_SSH_COMMAND="ssh -i /home/qcom/.ssh/id_ed25519" \
+  git clone "${REPO_URL}" "${APP_DIR}"
+
+# --- Build binary ---
+cd "${APP_DIR}"
+sudo -u qcom HOME=/home/qcom PATH=$PATH:/usr/local/go/bin make build
+
+# --- Fetch env vars from SSM ---
+bash "${APP_DIR}/scripts/fetch-env.sh"
+
+# --- Install systemd service ---
+cp "${APP_DIR}/deploy/qcom.service" /etc/systemd/system/qcom.service
+systemctl daemon-reload
+systemctl enable qcom
+systemctl start qcom
+
+echo "=== qcom bootstrap complete at $(date) ==="
