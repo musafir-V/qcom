@@ -15,11 +15,11 @@ exec > /var/log/qcom-bootstrap.log 2>&1
 echo "=== qcom bootstrap started at $(date) ==="
 
 # --- System setup ---
-yum update -y
-yum install -y git make gcc
+apt-get update -y
+apt-get install -y git make gcc curl
 
 # --- Create app user ---
-id -u qcom &>/dev/null || useradd -r -s /sbin/nologin -d /app qcom
+id -u qcom &>/dev/null || useradd -r -s /usr/sbin/nologin -d /app qcom
 mkdir -p /app
 chown qcom:qcom /app
 

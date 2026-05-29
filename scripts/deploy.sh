@@ -8,7 +8,7 @@ set -euo pipefail
 EC2_HOST="${1:-${QCOM_EC2_HOST:?Set QCOM_EC2_HOST or pass host as first arg}}"
 EC2_KEY="${2:-${QCOM_EC2_KEY:?Set QCOM_EC2_KEY or pass key path as second arg}}"
 
-SSH="ssh -i ${EC2_KEY} -o StrictHostKeyChecking=no ec2-user@${EC2_HOST}"
+SSH="ssh -i ${EC2_KEY} -o StrictHostKeyChecking=no ubuntu@${EC2_HOST}"
 
 echo "=== Deploying qcom to ${EC2_HOST} ==="
 
