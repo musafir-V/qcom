@@ -16,7 +16,13 @@ echo "=== qcom bootstrap started at $(date) ==="
 
 # --- System setup ---
 apt-get update -y
-apt-get install -y git make gcc curl
+apt-get install -y git make gcc curl unzip
+
+# --- Install AWS CLI v2 ---
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+rm -rf /tmp/aws /tmp/awscliv2.zip
 
 # --- Create app user ---
 id -u qcom &>/dev/null || useradd -r -s /usr/sbin/nologin -d /app qcom
