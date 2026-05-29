@@ -66,6 +66,13 @@ test-integration: build docker-up ## Build, start dependencies, and run integrat
 	@chmod +x $(TEST_SCRIPT)
 	@$(TEST_SCRIPT)
 
+deploy: ## Deploy latest master to EC2 (usage: make deploy HOST=<ip> KEY=<path>)
+	@if [ -z "$(HOST)" ] || [ -z "$(KEY)" ]; then \
+		echo "Usage: make deploy HOST=<ec2-ip> KEY=<path-to-pem>"; \
+		exit 1; \
+	fi
+	@QCOM_EC2_HOST=$(HOST) QCOM_EC2_KEY=$(KEY) ./scripts/deploy.sh
+
 clean: ## Clean build artifacts
 	@echo "Cleaning build artifacts..."
 	@rm -rf bin/
