@@ -6,7 +6,8 @@ set -euo pipefail
 
 SSM_PREFIX="/qcom/prod"
 ENV_FILE="/app/.env"
-REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+REGION=$(curl -s -H "X-aws-ec2-metadata-token: ${TOKEN}" http://169.254.169.254/latest/meta-data/placement/region)
 
 echo "Fetching config from SSM prefix ${SSM_PREFIX} in region ${REGION}..."
 
