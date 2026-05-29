@@ -36,7 +36,7 @@ sudo -u qcom git clone "${REPO_URL}" "${APP_DIR}"
 
 # --- Build binary ---
 cd "${APP_DIR}"
-sudo -u qcom HOME=/home/qcom PATH=$PATH:/usr/local/go/bin make build
+sudo -u qcom HOME=/app PATH=$PATH:/usr/local/go/bin GOPATH=/app/go make build
 
 # --- Fetch env vars from SSM ---
 bash "${APP_DIR}/scripts/fetch-env.sh"
