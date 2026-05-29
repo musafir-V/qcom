@@ -30,12 +30,8 @@ func NewOTPRepository(client *dynamodb.Client, tableName string, logger *logrus.
 
 // Store stores OTP data in DynamoDB with TTL
 func (r *OTPRepository) Store(ctx context.Context, phoneNumber string, otpData models.OTPData) error {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":    "Store",
-		"phone": phoneNumber,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "Store", logrus.Fields{"phone": phoneNumber})
+	defer op.End()
 
 	// Calculate TTL (expiration time in Unix seconds)
 	ttl := otpData.ExpiresAt.Unix()
@@ -55,30 +51,16 @@ func (r *OTPRepository) Store(ctx context.Context, phoneNumber string, otpData m
 		TableName: aws.String(r.tableName),
 		Item:      item,
 	})
-
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Store",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return fmt.Errorf("failed to store OTP: %w", err)
+		return op.Fail(fmt.Errorf("failed to store OTP: %w", err))
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "Store",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("dynamodb call done")
 	return nil
 }
 
 // Get retrieves OTP data from DynamoDB
 func (r *OTPRepository) Get(ctx context.Context, phoneNumber string) (*models.OTPData, error) {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":    "Get",
-		"phone": phoneNumber,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "Get", logrus.Fields{"phone": phoneNumber})
+	defer op.End()
 
 	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
@@ -87,49 +69,27 @@ func (r *OTPRepository) Get(ctx context.Context, phoneNumber string) (*models.OT
 			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 		},
 	})
-
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Get",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return nil, fmt.Errorf("failed to get OTP: %w", err)
+		return nil, op.Fail(fmt.Errorf("failed to get OTP: %w", err))
 	}
 
 	if result.Item == nil {
-		log.WithFields(logrus.Fields{
-			"op":          "Get",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"found":       false,
-		}).Info("dynamodb call done")
-		return nil, fmt.Errorf("OTP not found or expired")
+		return nil, op.Outcome("not_found", fmt.Errorf("OTP not found or expired"))
 	}
 
 	var otpData models.OTPData
 	if err := attributevalue.UnmarshalMap(result.Item, &otpData); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Get",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return nil, fmt.Errorf("failed to unmarshal OTP data: %w", err)
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal OTP data: %w", err))
 	}
 
-	log.WithFields(logrus.Fields{
-		"op":          "Get",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"found":       true,
-	}).Info("dynamodb call done")
+	op.With("found", true)
 	return &otpData, nil
 }
 
 // Delete removes OTP data from DynamoDB
 func (r *OTPRepository) Delete(ctx context.Context, phoneNumber string) error {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":    "Delete",
-		"phone": phoneNumber,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "Delete", logrus.Fields{"phone": phoneNumber})
+	defer op.End()
 
 	_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
 		TableName: aws.String(r.tableName),
@@ -138,30 +98,16 @@ func (r *OTPRepository) Delete(ctx context.Context, phoneNumber string) error {
 			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 		},
 	})
-
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Delete",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return fmt.Errorf("failed to delete OTP: %w", err)
+		return op.Fail(fmt.Errorf("failed to delete OTP: %w", err))
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "Delete",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("dynamodb call done")
 	return nil
 }
 
 // StoreTestOTP stores plain OTP for testing purposes
 func (r *OTPRepository) StoreTestOTP(ctx context.Context, phoneNumber, otp string, expiresAt time.Time) error {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":    "StoreTestOTP",
-		"phone": phoneNumber,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "StoreTestOTP", logrus.Fields{"phone": phoneNumber})
+	defer op.End()
 
 	ttl := expiresAt.Unix()
 
@@ -177,18 +123,8 @@ func (r *OTPRepository) StoreTestOTP(ctx context.Context, phoneNumber, otp strin
 		TableName: aws.String(r.tableName),
 		Item:      item,
 	})
-
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "StoreTestOTP",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return fmt.Errorf("failed to store test OTP: %w", err)
+		return op.Fail(fmt.Errorf("failed to store test OTP: %w", err))
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "StoreTestOTP",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("dynamodb call done")
 	return nil
 }

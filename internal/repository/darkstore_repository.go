@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -31,11 +30,8 @@ func NewDarkstoreRepository(client *dynamodb.Client, tableName string, logger *l
 // ListActive returns every active darkstore. Darkstores are few and rarely
 // change, so a full Scan per request is acceptable for v1.
 func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstore, error) {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op": "ListActive",
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "ListActive", nil)
+	defer op.End()
 
 	var darkstores []models.Darkstore
 	var startKey map[string]types.AttributeValue
@@ -52,20 +48,12 @@ func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstor
 			ExclusiveStartKey: startKey,
 		})
 		if err != nil {
-			log.WithError(err).WithFields(logrus.Fields{
-				"op":          "ListActive",
-				"duration_ms": time.Since(start).Milliseconds(),
-			}).Error("dynamodb call failed")
-			return nil, fmt.Errorf("failed to scan darkstores: %w", err)
+			return nil, op.Fail(fmt.Errorf("failed to scan darkstores: %w", err))
 		}
 
 		var page []models.Darkstore
 		if err := attributevalue.UnmarshalListOfMaps(result.Items, &page); err != nil {
-			log.WithError(err).WithFields(logrus.Fields{
-				"op":          "ListActive",
-				"duration_ms": time.Since(start).Milliseconds(),
-			}).Error("dynamodb call failed")
-			return nil, fmt.Errorf("failed to unmarshal darkstores: %w", err)
+			return nil, op.Fail(fmt.Errorf("failed to unmarshal darkstores: %w", err))
 		}
 		darkstores = append(darkstores, page...)
 
@@ -75,10 +63,6 @@ func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstor
 		startKey = result.LastEvaluatedKey
 	}
 
-	log.WithFields(logrus.Fields{
-		"op":          "ListActive",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"count":       len(darkstores),
-	}).Info("dynamodb call done")
+	op.With("count", len(darkstores))
 	return darkstores, nil
 }

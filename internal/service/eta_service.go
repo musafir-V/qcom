@@ -59,58 +59,40 @@ func NewETAService(etaRepo ETACacheStore, apiKey string, logger *logrus.Logger) 
 // GetETA returns estimated delivery time in minutes.
 // Flow: H3 cell → DynamoDB cache → Google Distance Matrix → ceil(km×2)+3 → save → return.
 func (s *ETAService) GetETA(ctx context.Context, darkstore *models.Darkstore, userLat, userLng float64) (int, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":           "GetETA",
+	op := logging.Start(ctx, s.logger, "GetETA", logrus.Fields{
 		"lat":          userLat,
 		"lng":          userLng,
 		"darkstore_id": darkstore.DarkstoreID,
-	}).Info("service call start")
+	})
+	defer op.End()
 
 	cell, err := h3.LatLngToCell(h3.NewLatLng(userLat, userLng), h3Resolution)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GetETA",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return 0, fmt.Errorf("failed to compute H3 cell: %w", err)
+		return 0, op.Fail(fmt.Errorf("failed to compute H3 cell: %w", err))
 	}
 	cellKey := fmt.Sprintf("%x", uint64(cell))
 
 	cached, err := s.etaRepo.Get(ctx, cellKey)
 	if err != nil {
-		log.WithError(err).Warn("ETA cache lookup failed; falling back to Google")
+		op.Logger().WithError(err).Warn("ETA cache lookup failed; falling back to Google")
 	} else if cached != nil {
-		log.WithFields(logrus.Fields{
-			"op":          "GetETA",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"cache_hit":   true,
-		}).Info("service call done")
+		op.With("cache_hit", true).With("eta_minutes", *cached)
 		return *cached, nil
 	}
 
 	distanceMeters, err := s.fetchDistanceMeters(ctx, darkstore.Latitude, darkstore.Longitude, userLat, userLng)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GetETA",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return 0, fmt.Errorf("failed to fetch distance from Google: %w", err)
+		return 0, op.Fail(fmt.Errorf("failed to fetch distance from Google: %w", err))
 	}
 
 	distanceKm := float64(distanceMeters) / 1000.0
 	etaMinutes := int(math.Ceil(distanceKm*minutesPerKm)) + packagingMinutes
 
 	if saveErr := s.etaRepo.Save(ctx, cellKey, etaMinutes); saveErr != nil {
-		log.WithError(saveErr).Warn("Failed to cache ETA; returning computed value")
+		op.Logger().WithError(saveErr).Warn("Failed to cache ETA; returning computed value")
 	}
 
-	log.WithFields(logrus.Fields{
-		"op":          "GetETA",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"eta_minutes": etaMinutes,
-	}).Info("service call done")
+	op.With("cache_hit", false).With("eta_minutes", etaMinutes)
 	return etaMinutes, nil
 }
 
@@ -141,29 +123,18 @@ func (s *ETAService) fetchDistanceMeters(ctx context.Context, originLat, originL
 		return 0, fmt.Errorf("failed to build distance matrix request: %w", err)
 	}
 
-	log := logging.FromContext(ctx, s.logger)
-	extStart := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":          "fetchDistanceMeters",
+	op := logging.Start(ctx, s.logger, "fetchDistanceMeters", logrus.Fields{
 		"origin":      formatLatLng(originLat, originLng),
 		"destination": formatLatLng(destLat, destLng),
-	}).Info("google_distance_matrix call start")
+	})
+	defer op.End()
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "fetchDistanceMeters",
-			"duration_ms": time.Since(extStart).Milliseconds(),
-		}).Error("google_distance_matrix call failed")
-		return 0, fmt.Errorf("distance matrix request failed: %w", err)
+		return 0, op.Fail(fmt.Errorf("distance matrix request failed: %w", err))
 	}
 	defer resp.Body.Close()
-
-	log.WithFields(logrus.Fields{
-		"op":          "fetchDistanceMeters",
-		"status_code": resp.StatusCode,
-		"duration_ms": time.Since(extStart).Milliseconds(),
-	}).Info("google_distance_matrix call done")
+	op.With("status_code", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("distance matrix returned HTTP %d", resp.StatusCode)

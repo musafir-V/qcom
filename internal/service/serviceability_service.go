@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"time"
 
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
@@ -63,34 +62,25 @@ func NewServiceabilityService(
 // CheckServiceability determines whether a coordinate is serviceable and, if so,
 // resolves an address for it — either a nearby saved address or a geocoded one.
 func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID string, lat, lng float64) (*ServiceabilityResult, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":      "CheckServiceability",
+	op := logging.Start(ctx, s.logger, "CheckServiceability", logrus.Fields{
 		"user_id": userID,
 		"lat":     lat,
 		"lng":     lng,
-	}).Info("service call start")
+	})
+	defer op.End()
 
 	darkstores, err := s.darkstoreRepo.ListActive(ctx)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "CheckServiceability",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
 
-	matched := s.matchDarkstore(log, darkstores, lat, lng)
+	matched := s.matchDarkstore(op, darkstores, lat, lng)
 	if matched == nil {
-		log.WithFields(logrus.Fields{
-			"op":          "CheckServiceability",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"serviceable": false,
-		}).Info("service call done")
+		op.With("serviceable", false)
 		return &ServiceabilityResult{Serviceable: false}, nil
 	}
 
+	op.With("serviceable", true).With("darkstore_id", matched.DarkstoreID)
 	result := &ServiceabilityResult{
 		Serviceable: true,
 		DarkstoreID: matched.DarkstoreID,
@@ -98,47 +88,33 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 
 	etaMinutes, err := s.etaService.GetETA(ctx, matched, lat, lng)
 	if err != nil {
-		log.WithError(err).Warn("ETA calculation failed; returning serviceable result without ETA")
+		op.Logger().WithError(err).Warn("ETA calculation failed; returning serviceable result without ETA")
 	} else {
 		result.ETAMinutes = &etaMinutes
 	}
 
 	resolved, err := s.resolveFromSavedAddress(ctx, userID, lat, lng)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "CheckServiceability",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
 	if resolved != nil {
 		result.ResolvedAddress = resolved
-		log.WithFields(logrus.Fields{
-			"op":          "CheckServiceability",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"serviceable": true,
-		}).Info("service call done")
 		return result, nil
 	}
 
 	result.ResolvedAddress = s.resolveFromGeocode(ctx, lat, lng)
-	log.WithFields(logrus.Fields{
-		"op":          "CheckServiceability",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"serviceable": true,
-	}).Info("service call done")
 	return result, nil
 }
 
 // matchDarkstore picks the darkstore for this request. When IS_TEST/IS_TRUE is set,
 // polygon checks are skipped: the first active darkstore from DDB is used and the
 // rest of the flow (ETA, address resolution) proceeds as normal.
-func (s *ServiceabilityService) matchDarkstore(log *logrus.Entry, darkstores []models.Darkstore, lat, lng float64) *models.Darkstore {
+func (s *ServiceabilityService) matchDarkstore(op *logging.Op, darkstores []models.Darkstore, lat, lng float64) *models.Darkstore {
 	if len(darkstores) == 0 {
 		return nil
 	}
 	if s.isTest {
-		log.Warn("IS_TEST/IS_TRUE is set; bypassing serviceability polygon check")
+		op.Logger().Warn("IS_TEST/IS_TRUE is set; bypassing serviceability polygon check")
 		return &darkstores[0]
 	}
 	for i := range darkstores {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -30,12 +29,8 @@ func NewPageRepository(client *dynamodb.Client, tableName string, logger *logrus
 
 // GetPageByKey fetches page data from DynamoDB by partition key
 func (r *PageRepository) GetPageByKey(ctx context.Context, pk string) (map[string]interface{}, error) {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op": "GetPageByKey",
-		"pk": pk,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "GetPageByKey", logrus.Fields{"pk": pk})
+	defer op.End()
 
 	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
@@ -44,21 +39,12 @@ func (r *PageRepository) GetPageByKey(ctx context.Context, pk string) (map[strin
 			"SK": &types.AttributeValueMemberS{Value: pk}, // Using same value for SK
 		},
 	})
-
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GetPageByKey",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return nil, fmt.Errorf("failed to get page: %w", err)
+		return nil, op.Fail(fmt.Errorf("failed to get page: %w", err))
 	}
 
 	if result.Item == nil {
-		log.WithFields(logrus.Fields{
-			"op":          "GetPageByKey",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"found":       false,
-		}).Info("dynamodb call done")
+		op.With("found", false)
 		return nil, nil // Page not found
 	}
 
@@ -68,11 +54,7 @@ func (r *PageRepository) GetPageByKey(ctx context.Context, pk string) (map[strin
 		pageData[key] = convertAttributeValue(value)
 	}
 
-	log.WithFields(logrus.Fields{
-		"op":          "GetPageByKey",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"found":       true,
-	}).Info("dynamodb call done")
+	op.With("found", true)
 	return pageData, nil
 }
 

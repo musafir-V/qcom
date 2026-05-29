@@ -70,29 +70,18 @@ func (g *GoogleGeocoder) ReverseGeocode(ctx context.Context, lat, lng float64) (
 		return "", fmt.Errorf("failed to build geocode request: %w", err)
 	}
 
-	log := logging.FromContext(ctx, g.logger)
-	extStart := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":  "ReverseGeocode",
+	op := logging.Start(ctx, g.logger, "ReverseGeocode", logrus.Fields{
 		"lat": lat,
 		"lng": lng,
-	}).Info("google_geocode call start")
+	})
+	defer op.End()
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "ReverseGeocode",
-			"duration_ms": time.Since(extStart).Milliseconds(),
-		}).Error("google_geocode call failed")
-		return "", fmt.Errorf("geocode request failed: %w", err)
+		return "", op.Fail(fmt.Errorf("geocode request failed: %w", err))
 	}
 	defer resp.Body.Close()
-
-	log.WithFields(logrus.Fields{
-		"op":          "ReverseGeocode",
-		"status_code": resp.StatusCode,
-		"duration_ms": time.Since(extStart).Milliseconds(),
-	}).Info("google_geocode call done")
+	op.With("status_code", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("geocode request returned HTTP %d", resp.StatusCode)

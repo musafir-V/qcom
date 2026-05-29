@@ -34,12 +34,8 @@ func NewAddressService(repo *repository.AddressRepository, logger *logrus.Logger
 }
 
 func (s *AddressService) CreateAddress(ctx context.Context, userID string, addr *models.Address) (*models.Address, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":      "CreateAddress",
-		"user_id": userID,
-	}).Info("service call start")
+	op := logging.Start(ctx, s.logger, "CreateAddress", logrus.Fields{"user_id": userID})
+	defer op.End()
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	addr.AddressID = uuid.New().String()
@@ -53,215 +49,113 @@ func (s *AddressService) CreateAddress(ctx context.Context, userID string, addr 
 	}
 
 	if err := s.repo.Create(ctx, addr); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "CreateAddress",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "CreateAddress",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("service call done")
 	return addr, nil
 }
 
 func (s *AddressService) GetAddressByID(ctx context.Context, addressID, userID string) (*models.Address, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":         "GetAddressByID",
+	op := logging.Start(ctx, s.logger, "GetAddressByID", logrus.Fields{
 		"address_id": addressID,
 		"user_id":    userID,
-	}).Info("service call start")
+	})
+	defer op.End()
 
 	addr, err := s.repo.GetByID(ctx, addressID)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GetAddressByID",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
 
 	if addr == nil || !addr.IsActive {
-		log.WithFields(logrus.Fields{
-			"op":          "GetAddressByID",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "not_found",
-		}).Info("service call done")
-		return nil, ErrAddressNotFound
+		return nil, op.Outcome("not_found", ErrAddressNotFound)
 	}
-
 	if addr.UserID != userID {
-		log.WithFields(logrus.Fields{
-			"op":          "GetAddressByID",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "forbidden",
-		}).Info("service call done")
-		return nil, ErrForbidden
+		return nil, op.Outcome("forbidden", ErrForbidden)
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "GetAddressByID",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("service call done")
 	return addr, nil
 }
 
 func (s *AddressService) GetMyAddresses(ctx context.Context, userID string) ([]models.Address, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":      "GetMyAddresses",
-		"user_id": userID,
-	}).Info("service call start")
+	op := logging.Start(ctx, s.logger, "GetMyAddresses", logrus.Fields{"user_id": userID})
+	defer op.End()
 
 	addresses, err := s.repo.QueryByUserID(ctx, userID)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GetMyAddresses",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
 
 	if addresses == nil {
 		addresses = []models.Address{}
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "GetMyAddresses",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"count":       len(addresses),
-	}).Info("service call done")
+	op.With("count", len(addresses))
 	return addresses, nil
 }
 
 func (s *AddressService) UpdateReceiverDetails(ctx context.Context, addressID, userID string, updates map[string]string) (*models.Address, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":         "UpdateReceiverDetails",
+	op := logging.Start(ctx, s.logger, "UpdateReceiverDetails", logrus.Fields{
 		"address_id": addressID,
 		"user_id":    userID,
-	}).Info("service call start")
+	})
+	defer op.End()
 
 	addr, err := s.repo.GetByID(ctx, addressID)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "UpdateReceiverDetails",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
 
 	if addr == nil || !addr.IsActive {
-		log.WithFields(logrus.Fields{
-			"op":          "UpdateReceiverDetails",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "not_found",
-		}).Info("service call done")
-		return nil, ErrAddressNotFound
+		return nil, op.Outcome("not_found", ErrAddressNotFound)
 	}
-
 	if addr.UserID != userID {
-		log.WithFields(logrus.Fields{
-			"op":          "UpdateReceiverDetails",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "forbidden",
-		}).Info("service call done")
-		return nil, ErrForbidden
+		return nil, op.Outcome("forbidden", ErrForbidden)
 	}
 
 	updates["updated_at"] = time.Now().UTC().Format(time.RFC3339)
 
 	updated, err := s.repo.UpdateReceiverDetails(ctx, addressID, updates)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "UpdateReceiverDetails",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "UpdateReceiverDetails",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("service call done")
 	return updated, nil
 }
 
 func (s *AddressService) RemoveAddress(ctx context.Context, addressID, userID string) error {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":         "RemoveAddress",
+	op := logging.Start(ctx, s.logger, "RemoveAddress", logrus.Fields{
 		"address_id": addressID,
 		"user_id":    userID,
-	}).Info("service call start")
+	})
+	defer op.End()
 
 	addr, err := s.repo.GetByID(ctx, addressID)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "RemoveAddress",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return err
+		return op.Fail(err)
 	}
 
 	if addr == nil || !addr.IsActive {
-		log.WithFields(logrus.Fields{
-			"op":          "RemoveAddress",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "not_found",
-		}).Info("service call done")
-		return ErrAddressNotFound
+		return op.Outcome("not_found", ErrAddressNotFound)
 	}
-
 	if addr.UserID != userID {
-		log.WithFields(logrus.Fields{
-			"op":          "RemoveAddress",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "forbidden",
-		}).Info("service call done")
-		return ErrForbidden
+		return op.Outcome("forbidden", ErrForbidden)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err := s.repo.SoftDelete(ctx, addressID, now); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "RemoveAddress",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return err
+		return op.Fail(err)
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "RemoveAddress",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("service call done")
 	return nil
 }
 
 func (s *AddressService) GetSuggestedAddresses(ctx context.Context, userID string, lat, lng float64) ([]models.SuggestedAddress, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":      "GetSuggestedAddresses",
+	op := logging.Start(ctx, s.logger, "GetSuggestedAddresses", logrus.Fields{
 		"user_id": userID,
 		"lat":     lat,
 		"lng":     lng,
-	}).Info("service call start")
+	})
+	defer op.End()
 
 	addresses, err := s.repo.QueryByUserID(ctx, userID)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GetSuggestedAddresses",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
 
 	var suggested []models.SuggestedAddress
@@ -279,10 +173,6 @@ func (s *AddressService) GetSuggestedAddresses(ctx context.Context, userID strin
 		return suggested[i].DistanceMeters < suggested[j].DistanceMeters
 	})
 
-	log.WithFields(logrus.Fields{
-		"op":          "GetSuggestedAddresses",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"count":       len(suggested),
-	}).Info("service call done")
+	op.With("count", len(suggested))
 	return suggested, nil
 }

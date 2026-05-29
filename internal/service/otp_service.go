@@ -30,9 +30,8 @@ func NewOTPService(otpRepo *repository.OTPRepository, cfg *config.OTPConfig, log
 }
 
 func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (string, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{"op": "GenerateOTP", "phone": phoneNumber}).Info("service call start")
+	op := logging.Start(ctx, s.logger, "GenerateOTP", logrus.Fields{"phone": phoneNumber})
+	defer op.End()
 
 	// TODO: uncomment random OTP generation before production
 	// otp, err := s.generateRandomOTP(s.cfg.Length)
@@ -43,11 +42,7 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 
 	hashedOTP, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GenerateOTP",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return "", fmt.Errorf("failed to hash OTP: %w", err)
+		return "", op.Fail(fmt.Errorf("failed to hash OTP: %w", err))
 	}
 
 	otpData := models.OTPData{
@@ -59,81 +54,48 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	}
 
 	if err := s.otpRepo.Store(ctx, phoneNumber, otpData); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GenerateOTP",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return "", err
+		return "", op.Fail(err)
 	}
 
 	if err := s.otpRepo.StoreTestOTP(ctx, phoneNumber, otp, otpData.ExpiresAt); err != nil {
-		log.WithError(err).Warn("Failed to store test OTP")
+		op.Logger().WithError(err).Warn("Failed to store test OTP")
 	}
 
-	log.WithFields(logrus.Fields{
+	op.Logger().WithFields(logrus.Fields{
 		"phone": phoneNumber,
 		"otp":   otp,
 	}).Info("OTP generated (logged for development)")
-
-	log.WithFields(logrus.Fields{
-		"op":          "GenerateOTP",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("service call done")
 	return otp, nil
 }
 
 func (s *OTPService) VerifyOTP(ctx context.Context, phoneNumber, otp string) (bool, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{"op": "VerifyOTP", "phone": phoneNumber}).Info("service call start")
+	op := logging.Start(ctx, s.logger, "VerifyOTP", logrus.Fields{"phone": phoneNumber})
+	defer op.End()
 
 	otpData, err := s.otpRepo.Get(ctx, phoneNumber)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "VerifyOTP",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return false, err
+		return false, op.Fail(err)
 	}
 
 	if time.Now().After(otpData.ExpiresAt) {
 		s.otpRepo.Delete(ctx, phoneNumber)
-		log.WithFields(logrus.Fields{
-			"op":          "VerifyOTP",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "expired",
-		}).Info("service call done")
-		return false, fmt.Errorf("OTP expired")
+		return false, op.Outcome("expired", fmt.Errorf("OTP expired"))
 	}
 
 	if otpData.Attempts >= s.cfg.MaxAttempts {
 		s.otpRepo.Delete(ctx, phoneNumber)
-		log.WithFields(logrus.Fields{
-			"op":          "VerifyOTP",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "max_attempts",
-		}).Info("service call done")
-		return false, fmt.Errorf("maximum attempts exceeded")
+		return false, op.Outcome("max_attempts", fmt.Errorf("maximum attempts exceeded"))
 	}
 
 	err = bcrypt.CompareHashAndPassword([]byte(otpData.OTPHash), []byte(otp))
 	if err != nil {
 		otpData.Attempts++
 		s.otpRepo.Store(ctx, phoneNumber, *otpData)
-		log.WithFields(logrus.Fields{
-			"op":          "VerifyOTP",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"outcome":     "invalid",
-		}).Info("service call done")
-		return false, fmt.Errorf("invalid OTP")
+		return false, op.Outcome("invalid", fmt.Errorf("invalid OTP"))
 	}
 
 	s.otpRepo.Delete(ctx, phoneNumber)
-	log.WithFields(logrus.Fields{
-		"op":          "VerifyOTP",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"outcome":     "verified",
-	}).Info("service call done")
+	op.With("outcome", "verified")
 	return true, nil
 }
 

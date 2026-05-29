@@ -26,12 +26,8 @@ func NewDERepository(client *dynamodb.Client, tableName string, logger *logrus.L
 }
 
 func (r *DERepository) Create(ctx context.Context, de *models.DeliveryExecutive) error {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":    "Create",
-		"phone": de.PhoneNumber,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "Create", logrus.Fields{"phone": de.PhoneNumber})
+	defer op.End()
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	de.CreatedAt = now
@@ -40,11 +36,7 @@ func (r *DERepository) Create(ctx context.Context, de *models.DeliveryExecutive)
 
 	item, err := attributevalue.MarshalMap(de)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Create",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return fmt.Errorf("failed to marshal DE: %w", err)
+		return op.Fail(fmt.Errorf("failed to marshal DE: %w", err))
 	}
 	item["PK"] = &types.AttributeValueMemberS{Value: de.GetPK()}
 	item["SK"] = &types.AttributeValueMemberS{Value: de.GetSK()}
@@ -57,33 +49,16 @@ func (r *DERepository) Create(ctx context.Context, de *models.DeliveryExecutive)
 	if err != nil {
 		var condErr *types.ConditionalCheckFailedException
 		if errors.As(err, &condErr) {
-			log.WithError(err).WithFields(logrus.Fields{
-				"op":          "Create",
-				"duration_ms": time.Since(start).Milliseconds(),
-			}).Error("dynamodb call failed")
-			return fmt.Errorf("delivery executive already registered with this number")
+			return op.Outcome("already_exists", fmt.Errorf("delivery executive already registered with this number"))
 		}
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Create",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return fmt.Errorf("failed to create DE: %w", err)
+		return op.Fail(fmt.Errorf("failed to create DE: %w", err))
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "Create",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("dynamodb call done")
 	return nil
 }
 
 func (r *DERepository) GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error) {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":    "GetByPhone",
-		"phone": phone,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "GetByPhone", logrus.Fields{"phone": phone})
+	defer op.End()
 
 	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
@@ -93,46 +68,26 @@ func (r *DERepository) GetByPhone(ctx context.Context, phone string) (*models.De
 		},
 	})
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GetByPhone",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return nil, fmt.Errorf("failed to get DE: %w", err)
+		return nil, op.Fail(fmt.Errorf("failed to get DE: %w", err))
 	}
 	if result.Item == nil {
-		log.WithFields(logrus.Fields{
-			"op":          "GetByPhone",
-			"duration_ms": time.Since(start).Milliseconds(),
-			"found":       false,
-		}).Info("dynamodb call done")
+		op.With("found", false)
 		return nil, nil
 	}
 
 	var de models.DeliveryExecutive
 	if err := attributevalue.UnmarshalMap(result.Item, &de); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GetByPhone",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return nil, fmt.Errorf("failed to unmarshal DE: %w", err)
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal DE: %w", err))
 	}
 	de.PhoneNumber = phone
 
-	log.WithFields(logrus.Fields{
-		"op":          "GetByPhone",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"found":       true,
-	}).Info("dynamodb call done")
+	op.With("found", true)
 	return &de, nil
 }
 
 func (r *DERepository) Exists(ctx context.Context, phone string) (bool, error) {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":    "Exists",
-		"phone": phone,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "Exists", logrus.Fields{"phone": phone})
+	defer op.End()
 
 	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(r.tableName),
@@ -143,32 +98,22 @@ func (r *DERepository) Exists(ctx context.Context, phone string) (bool, error) {
 		ProjectionExpression: aws.String("PK"),
 	})
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Exists",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return false, fmt.Errorf("failed to check DE existence: %w", err)
+		return false, op.Fail(fmt.Errorf("failed to check DE existence: %w", err))
 	}
 
 	found := result.Item != nil
-	log.WithFields(logrus.Fields{
-		"op":          "Exists",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"found":       found,
-	}).Info("dynamodb call done")
+	op.With("found", found)
 	return found, nil
 }
 
 // UpdateStatus transitions the DE to a new status and updates related fields.
 // Pass empty strings for storeID and orderID to clear those fields.
 func (r *DERepository) UpdateStatus(ctx context.Context, phone string, status models.DEStatus, storeID, orderID string) error {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":     "UpdateStatus",
+	op := logging.Start(ctx, r.logger, "UpdateStatus", logrus.Fields{
 		"phone":  phone,
 		"status": string(status),
-	}).Info("dynamodb call start")
+	})
+	defer op.End()
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -218,29 +163,16 @@ func (r *DERepository) UpdateStatus(ctx context.Context, phone string, status mo
 		ExpressionAttributeValues: values,
 	})
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "UpdateStatus",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return fmt.Errorf("failed to update DE status: %w", err)
+		return op.Fail(fmt.Errorf("failed to update DE status: %w", err))
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "UpdateStatus",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("dynamodb call done")
 	return nil
 }
 
 // FindEligibleByStore returns all DEs with status=eligible at the given store.
 // Uses a table scan with filter — add DEDutyIndex GSI for production scale.
 func (r *DERepository) FindEligibleByStore(ctx context.Context, storeID string) ([]*models.DeliveryExecutive, error) {
-	log := logging.FromContext(ctx, r.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":       "FindEligibleByStore",
-		"store_id": storeID,
-	}).Info("dynamodb call start")
+	op := logging.Start(ctx, r.logger, "FindEligibleByStore", logrus.Fields{"store_id": storeID})
+	defer op.End()
 
 	dutyKey := "DE_ELIGIBLE#" + storeID
 
@@ -252,30 +184,19 @@ func (r *DERepository) FindEligibleByStore(ctx context.Context, storeID string) 
 		},
 	})
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "FindEligibleByStore",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("dynamodb call failed")
-		return nil, fmt.Errorf("failed to find eligible DEs: %w", err)
+		return nil, op.Fail(fmt.Errorf("failed to find eligible DEs: %w", err))
 	}
 
 	var des []*models.DeliveryExecutive
 	for _, item := range result.Items {
 		var de models.DeliveryExecutive
 		if err := attributevalue.UnmarshalMap(item, &de); err != nil {
-			log.WithError(err).WithFields(logrus.Fields{
-				"op":          "FindEligibleByStore",
-				"duration_ms": time.Since(start).Milliseconds(),
-			}).Warn("dynamodb call failed")
+			op.Logger().WithError(err).Warn("failed to unmarshal an eligible DE; skipping")
 			continue
 		}
 		des = append(des, &de)
 	}
 
-	log.WithFields(logrus.Fields{
-		"op":          "FindEligibleByStore",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"count":       len(des),
-	}).Info("dynamodb call done")
+	op.With("count", len(des))
 	return des, nil
 }

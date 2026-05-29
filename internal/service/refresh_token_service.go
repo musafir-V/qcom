@@ -25,14 +25,12 @@ func NewRefreshTokenService(tokenRepo *repository.RefreshTokenRepository, logger
 }
 
 func (s *RefreshTokenService) Store(ctx context.Context, jti, entityID, entityType, phone, familyID string, expiresAt time.Time) error {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":          "Store",
+	op := logging.Start(ctx, s.logger, "Store", logrus.Fields{
 		"jti":         jti,
 		"entity_id":   entityID,
 		"entity_type": entityType,
-	}).Info("service call start")
+	})
+	defer op.End()
 
 	tokenData := models.RefreshTokenData{
 		JTI:        jti,
@@ -46,139 +44,71 @@ func (s *RefreshTokenService) Store(ctx context.Context, jti, entityID, entityTy
 	}
 
 	if err := s.tokenRepo.Store(ctx, tokenData); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Store",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return err
+		return op.Fail(err)
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "Store",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("service call done")
 	return nil
 }
 
 func (s *RefreshTokenService) Get(ctx context.Context, jti string) (*models.RefreshTokenData, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":  "Get",
-		"jti": jti,
-	}).Info("service call start")
+	op := logging.Start(ctx, s.logger, "Get", logrus.Fields{"jti": jti})
+	defer op.End()
 
 	data, err := s.tokenRepo.Get(ctx, jti)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Get",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, err
+		return nil, op.Fail(err)
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "Get",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"found":       data != nil,
-	}).Info("service call done")
+	op.With("found", data != nil)
 	return data, nil
 }
 
 func (s *RefreshTokenService) Revoke(ctx context.Context, jti string) error {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":  "Revoke",
-		"jti": jti,
-	}).Info("service call start")
+	op := logging.Start(ctx, s.logger, "Revoke", logrus.Fields{"jti": jti})
+	defer op.End()
 
 	tokenData, err := s.Get(ctx, jti)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Revoke",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return err
+		return op.Fail(err)
 	}
 
 	tokenData.Revoked = true
 	if err := s.tokenRepo.Store(ctx, *tokenData); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Revoke",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return fmt.Errorf("failed to revoke refresh token: %w", err)
+		return op.Fail(fmt.Errorf("failed to revoke refresh token: %w", err))
 	}
 
 	if err := s.tokenRepo.MarkRevoked(ctx, jti, tokenData.ExpiresAt); err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "Revoke",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return fmt.Errorf("failed to mark token as revoked: %w", err)
+		return op.Fail(fmt.Errorf("failed to mark token as revoked: %w", err))
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "Revoke",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("service call done")
 	return nil
 }
 
 func (s *RefreshTokenService) IsRevoked(ctx context.Context, jti string) (bool, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":  "IsRevoked",
-		"jti": jti,
-	}).Info("service call start")
+	op := logging.Start(ctx, s.logger, "IsRevoked", logrus.Fields{"jti": jti})
+	defer op.End()
 
 	revoked, err := s.tokenRepo.IsRevoked(ctx, jti)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "IsRevoked",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return false, err
+		return false, op.Fail(err)
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "IsRevoked",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"revoked":     revoked,
-	}).Info("service call done")
+	op.With("revoked", revoked)
 	return revoked, nil
 }
 
 func (s *RefreshTokenService) RevokeFamily(ctx context.Context, familyID string) error {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":        "RevokeFamily",
-		"family_id": familyID,
-	}).Info("service call start")
+	op := logging.Start(ctx, s.logger, "RevokeFamily", logrus.Fields{"family_id": familyID})
+	defer op.End()
 
 	tokens, err := s.tokenRepo.GetByFamilyID(ctx, familyID)
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "RevokeFamily",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return err
+		return op.Fail(err)
 	}
 
 	for _, token := range tokens {
 		if err := s.Revoke(ctx, token.JTI); err != nil {
-			log.WithError(err).WithField("jti", token.JTI).Error("Failed to revoke token in family")
+			op.Logger().WithError(err).WithField("jti", token.JTI).Error("Failed to revoke token in family")
 		}
 	}
 
-	log.WithFields(logrus.Fields{
-		"op":          "RevokeFamily",
-		"duration_ms": time.Since(start).Milliseconds(),
-		"count":       len(tokens),
-	}).Info("service call done")
+	op.With("count", len(tokens))
 	return nil
 }
 

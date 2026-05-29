@@ -18,12 +18,12 @@ import (
 const maxFileSize int64 = 50 * 1024 * 1024 // 50 MB
 
 var allowedMimeTypes = map[string]string{
-	"application/pdf":                                                          "pdf",
-	"application/msword":                                                       "doc",
-	"application/vnd.openxmlformats-officedocument.wordprocessingml.document":  "docx",
-	"image/jpeg":                                                               "jpg",
-	"image/png":                                                                "png",
-	"image/heic":                                                               "heic",
+	"application/pdf":                                                         "pdf",
+	"application/msword":                                                      "doc",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+	"image/jpeg":                                                              "jpg",
+	"image/png":                                                               "png",
+	"image/heic":                                                              "heic",
 }
 
 var allowedExtensions = map[string]bool{
@@ -32,10 +32,10 @@ var allowedExtensions = map[string]bool{
 }
 
 type UploadService struct {
-	presignClient  *s3.PresignClient
-	bucket         string
-	presignExpiry  time.Duration
-	logger         *logrus.Logger
+	presignClient *s3.PresignClient
+	bucket        string
+	presignExpiry time.Duration
+	logger        *logrus.Logger
 }
 
 type PresignedUploadResult struct {
@@ -88,26 +88,22 @@ func (s *UploadService) ValidateFileRequest(fileName, fileType string, fileSize 
 }
 
 func (s *UploadService) GeneratePresignedURL(ctx context.Context, userID, fileName, fileType string, fileSize int64) (*PresignedUploadResult, error) {
-	log := logging.FromContext(ctx, s.logger)
-	start := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":        "GeneratePresignedURL",
+	op := logging.Start(ctx, s.logger, "GeneratePresignedURL", logrus.Fields{
 		"user_id":   userID,
 		"file_name": fileName,
 		"file_type": fileType,
 		"file_size": fileSize,
-	}).Info("service call start")
+	})
+	defer op.End()
 
 	fileID := uuid.New().String()
 	ext := strings.ToLower(filepath.Ext(fileName))
 	objectKey := fmt.Sprintf("printdrop/%s/%s%s", userID, fileID, ext)
 
-	extStart := time.Now()
-	log.WithFields(logrus.Fields{
-		"op":     "PresignPutObject",
+	presignOp := logging.Start(ctx, s.logger, "PresignPutObject", logrus.Fields{
 		"bucket": s.bucket,
 		"key":    objectKey,
-	}).Info("s3 call start")
+	})
 
 	presignResult, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(s.bucket),
@@ -117,26 +113,11 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, userID, fileNa
 	}, s3.WithPresignExpires(s.presignExpiry))
 
 	if err != nil {
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "PresignPutObject",
-			"duration_ms": time.Since(extStart).Milliseconds(),
-		}).Error("s3 call failed")
-		log.WithError(err).WithFields(logrus.Fields{
-			"op":          "GeneratePresignedURL",
-			"duration_ms": time.Since(start).Milliseconds(),
-		}).Error("service call failed")
-		return nil, fmt.Errorf("failed to generate presigned URL: %w", err)
+		presignOp.Fail(err)
+		presignOp.End()
+		return nil, op.Fail(fmt.Errorf("failed to generate presigned URL: %w", err))
 	}
-
-	log.WithFields(logrus.Fields{
-		"op":          "PresignPutObject",
-		"duration_ms": time.Since(extStart).Milliseconds(),
-	}).Info("s3 call done")
-
-	log.WithFields(logrus.Fields{
-		"op":          "GeneratePresignedURL",
-		"duration_ms": time.Since(start).Milliseconds(),
-	}).Info("service call done")
+	presignOp.End()
 
 	return &PresignedUploadResult{
 		FileID:           fileID,
