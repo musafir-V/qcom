@@ -1,0 +1,15 @@
+{
+  "logs": {
+    "logs_collected": {
+      "journald": {
+        "collect_list": [
+          {
+            "log_group_name": "/qcom/production",
+            "log_stream_name": "{instance_id}/qcom-server",
+            "units": ["qcom.service"]
+          }
+        ]
+      }
+    }
+  }
+}
