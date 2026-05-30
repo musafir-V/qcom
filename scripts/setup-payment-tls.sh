@@ -87,7 +87,30 @@ Add this CNAME at your DNS provider, then run: $0 wait-cert
 Cert ARN: $arn
 EOF
 }
-cmd_wait_cert()       { die "not implemented yet (Task 6)"; }
+cmd_wait_cert() {
+  local arn
+  arn=$(cert_arn_for_domain "$DOMAIN" "$REGION")
+  [[ -n "$arn" ]] || die "no cert for $DOMAIN — run request-cert first"
+
+  local deadline=$(( $(date +%s) + WAIT_CERT_TIMEOUT_SECONDS ))
+  log "Waiting for cert $arn to be ISSUED (timeout ${WAIT_CERT_TIMEOUT_SECONDS}s)..."
+  while :; do
+    local status
+    status=$(aws acm describe-certificate \
+      --region "$REGION" \
+      --certificate-arn "$arn" \
+      --query 'Certificate.Status' --output text)
+    log "  status=$status"
+    case "$status" in
+      ISSUED)  log "Cert issued."; return 0 ;;
+      FAILED|VALIDATION_TIMED_OUT|REVOKED) die "cert ended in terminal status: $status" ;;
+    esac
+    if (( $(date +%s) >= deadline )); then
+      die "timed out waiting for cert $arn"
+    fi
+    sleep 15
+  done
+}
 cmd_security_groups() { die "not implemented yet (Task 7)"; }
 cmd_target_group()    { die "not implemented yet (Task 8)"; }
 cmd_alb()             { die "not implemented yet (Task 9)"; }
