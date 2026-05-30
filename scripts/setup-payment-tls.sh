@@ -111,7 +111,65 @@ cmd_wait_cert() {
     sleep 15
   done
 }
-cmd_security_groups() { die "not implemented yet (Task 7)"; }
+cmd_security_groups() {
+  local vpc_id
+  vpc_id=$(vpc_of_instance "$INSTANCE_ID" "$REGION")
+  [[ -n "$vpc_id" && "$vpc_id" != "None" ]] || die "could not resolve VPC for $INSTANCE_ID"
+  log "VPC: $vpc_id"
+
+  local alb_sg
+  alb_sg=$(sg_id_by_name "$ALB_SG_NAME" "$vpc_id" "$REGION")
+  if [[ -z "$alb_sg" ]]; then
+    log "Creating SG $ALB_SG_NAME..."
+    alb_sg=$(aws ec2 create-security-group \
+      --region "$REGION" \
+      --group-name "$ALB_SG_NAME" \
+      --description "Ingress for ${NAME_PREFIX} ALB (443/80 from internet)" \
+      --vpc-id "$vpc_id" \
+      --query GroupId --output text)
+    log "Created SG: $alb_sg"
+  else
+    log "SG $ALB_SG_NAME already exists: $alb_sg"
+  fi
+
+  for port in 443 80; do
+    aws ec2 authorize-security-group-ingress \
+      --region "$REGION" \
+      --group-id "$alb_sg" \
+      --ip-permissions "IpProtocol=tcp,FromPort=$port,ToPort=$port,IpRanges=[{CidrIp=0.0.0.0/0,Description=public-${port}}]" \
+      2>&1 | grep -v 'InvalidPermission.Duplicate' || true
+  done
+  log "ALB SG ingress 443/80 ensured"
+
+  local ec2_sgs
+  ec2_sgs=$(aws ec2 describe-instances \
+    --region "$REGION" \
+    --instance-ids "$INSTANCE_ID" \
+    --query 'Reservations[0].Instances[0].SecurityGroups[].GroupId' \
+    --output text)
+  [[ -n "$ec2_sgs" ]] || die "EC2 $INSTANCE_ID has no security groups (?)"
+
+  local ec2_sg
+  ec2_sg=$(awk '{print $1}' <<<"$ec2_sgs")
+  log "EC2 SG to modify: $ec2_sg"
+
+  aws ec2 authorize-security-group-ingress \
+    --region "$REGION" \
+    --group-id "$ec2_sg" \
+    --ip-permissions "IpProtocol=tcp,FromPort=${TARGET_PORT},ToPort=${TARGET_PORT},UserIdGroupPairs=[{GroupId=${alb_sg},Description=from-${NAME_PREFIX}-alb}]" \
+    2>&1 | grep -v 'InvalidPermission.Duplicate' || true
+  log "EC2 SG ingress :${TARGET_PORT} from ${alb_sg} ensured"
+
+  if aws ec2 describe-security-groups \
+       --region "$REGION" --group-ids "$ec2_sg" \
+       --query "SecurityGroups[0].IpPermissions[?FromPort==\`${TARGET_PORT}\`].IpRanges[?CidrIp=='0.0.0.0/0'] | []" \
+       --output text | grep -q .; then
+    log "WARN: EC2 SG $ec2_sg still allows ${TARGET_PORT} from 0.0.0.0/0. Revoke manually after verifying the ALB works."
+  fi
+
+  echo "ALB_SG=$alb_sg"
+  echo "EC2_SG=$ec2_sg"
+}
 cmd_target_group()    { die "not implemented yet (Task 8)"; }
 cmd_alb()             { die "not implemented yet (Task 9)"; }
 cmd_listeners()       { die "not implemented yet (Task 10)"; }
