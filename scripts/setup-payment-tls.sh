@@ -295,7 +295,46 @@ cmd_listeners() {
     log "HTTP:80 listener already exists; skipping."
   fi
 }
-cmd_status()          { die "not implemented yet (Task 11)"; }
+cmd_status() {
+  local cert_arn alb_arn tg_arn
+  cert_arn=$(cert_arn_for_domain "$DOMAIN" "$REGION")
+  alb_arn=$(alb_arn_by_name "$ALB_NAME" "$REGION")
+  tg_arn=$(tg_arn_by_name "$TG_NAME" "$REGION")
+
+  echo "=== payment TLS status ($REGION) ==="
+
+  if [[ -n "$cert_arn" ]]; then
+    local cert_status
+    cert_status=$(aws acm describe-certificate \
+      --region "$REGION" --certificate-arn "$cert_arn" \
+      --query 'Certificate.Status' --output text)
+    echo "Cert:    $cert_arn  ($cert_status)"
+  else
+    echo "Cert:    <not created>"
+  fi
+
+  if [[ -n "$alb_arn" ]]; then
+    local dns
+    dns=$(alb_dns_by_arn "$alb_arn" "$REGION")
+    echo "ALB DNS: $dns"
+    echo "         (add CNAME: $DOMAIN -> $dns)"
+    aws elbv2 describe-listeners \
+      --region "$REGION" --load-balancer-arn "$alb_arn" \
+      --query 'Listeners[].{Port:Port,Protocol:Protocol}' --output table
+  else
+    echo "ALB:     <not created>"
+  fi
+
+  if [[ -n "$tg_arn" ]]; then
+    echo "Target health:"
+    aws elbv2 describe-target-health \
+      --region "$REGION" --target-group-arn "$tg_arn" \
+      --query 'TargetHealthDescriptions[].{Id:Target.Id,Port:Target.Port,State:TargetHealth.State,Reason:TargetHealth.Reason}' \
+      --output table
+  else
+    echo "TG:      <not created>"
+  fi
+}
 cmd_all()             { die "not implemented yet (Task 12)"; }
 
 main() {
