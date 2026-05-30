@@ -208,7 +208,45 @@ cmd_target_group() {
 
   echo "TG_ARN=$tg_arn"
 }
-cmd_alb()             { die "not implemented yet (Task 9)"; }
+cmd_alb() {
+  local vpc_id
+  vpc_id=$(vpc_of_instance "$INSTANCE_ID" "$REGION")
+  [[ -n "$vpc_id" && "$vpc_id" != "None" ]] || die "could not resolve VPC for $INSTANCE_ID"
+
+  local alb_sg
+  alb_sg=$(sg_id_by_name "$ALB_SG_NAME" "$vpc_id" "$REGION")
+  [[ -n "$alb_sg" ]] || die "$ALB_SG_NAME not found — run security-groups first"
+
+  local subnets=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && subnets+=("$line")
+  done < <(public_subnets_in_vpc "$vpc_id" "$REGION" 2)
+  (( ${#subnets[@]} >= 2 )) || die "need 2 public subnets in different AZs; found ${#subnets[@]} in $vpc_id"
+  log "Using subnets: ${subnets[*]}"
+
+  local alb_arn
+  alb_arn=$(alb_arn_by_name "$ALB_NAME" "$REGION")
+  if [[ -z "$alb_arn" ]]; then
+    log "Creating ALB $ALB_NAME..."
+    alb_arn=$(aws elbv2 create-load-balancer \
+      --region "$REGION" \
+      --name "$ALB_NAME" \
+      --type application --scheme internet-facing --ip-address-type ipv4 \
+      --subnets "${subnets[@]}" \
+      --security-groups "$alb_sg" \
+      --query 'LoadBalancers[0].LoadBalancerArn' --output text)
+    log "Created ALB: $alb_arn"
+    log "Waiting for ALB to be active..."
+    aws elbv2 wait load-balancer-available --region "$REGION" --load-balancer-arns "$alb_arn"
+  else
+    log "ALB $ALB_NAME already exists: $alb_arn"
+  fi
+
+  local dns
+  dns=$(alb_dns_by_arn "$alb_arn" "$REGION")
+  echo "ALB_ARN=$alb_arn"
+  echo "ALB_DNS=$dns"
+}
 cmd_listeners()       { die "not implemented yet (Task 10)"; }
 cmd_status()          { die "not implemented yet (Task 11)"; }
 cmd_all()             { die "not implemented yet (Task 12)"; }
