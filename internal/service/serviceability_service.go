@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
@@ -17,11 +18,25 @@ const (
 )
 
 // ResolvedAddress is the address surfaced to the customer on a serviceable location.
+//
+// The structured fields (AddressLine1/AddressLine2/BuildingAndFloor/Receiver*/Lat/Lng)
+// are populated only when Source == "saved_address". For Source == "geocoded" only
+// AddressLine and Source are set; everything else is omitted from the JSON.
 type ResolvedAddress struct {
 	AddressLine string  `json:"address_line"`
 	Tag         *string `json:"tag"`
 	AddressID   *string `json:"address_id"`
 	Source      string  `json:"source"`
+
+	// Saved-address structured fields. omitempty keeps the geocoded response
+	// shape unchanged — these only appear when we matched a saved address.
+	AddressLine1     string   `json:"address_line_1,omitempty"`
+	AddressLine2     string   `json:"address_line_2,omitempty"`
+	BuildingAndFloor string   `json:"building_and_floor,omitempty"`
+	ReceiverName     string   `json:"receiver_name,omitempty"`
+	ReceiverPhone    string   `json:"receiver_phone,omitempty"`
+	Latitude         *float64 `json:"latitude,omitempty"`
+	Longitude        *float64 `json:"longitude,omitempty"`
 }
 
 // ServiceabilityResult is the outcome of a serviceability check.
@@ -146,18 +161,41 @@ func (s *ServiceabilityService) resolveFromSavedAddress(ctx context.Context, use
 		return nil, nil
 	}
 
-	line := nearest.AddressLine2
-	if line == "" {
-		line = nearest.AddressLine1
-	}
+	// AddressLine is the full address as a single, comma-joined string:
+	// "<building_and_floor>, <address_line_1>, <address_line_2>". Empty parts
+	// are skipped so the result is never ", , Foo" or "Foo, , ". The structured
+	// fields below are also returned so the client can render differently if
+	// it wants.
+	line := joinNonEmpty(", ", nearest.BuildingAndFloor, nearest.AddressLine1, nearest.AddressLine2)
 	tag := nearest.Label
 	id := nearest.AddressID
+	addrLat := nearest.Latitude
+	addrLng := nearest.Longitude
 	return &ResolvedAddress{
-		AddressLine: line,
-		Tag:         &tag,
-		AddressID:   &id,
-		Source:      sourceSavedAddress,
+		AddressLine:      line,
+		Tag:              &tag,
+		AddressID:        &id,
+		Source:           sourceSavedAddress,
+		AddressLine1:     nearest.AddressLine1,
+		AddressLine2:     nearest.AddressLine2,
+		BuildingAndFloor: nearest.BuildingAndFloor,
+		ReceiverName:     nearest.ReceiverName,
+		ReceiverPhone:    nearest.ReceiverPhone,
+		Latitude:         &addrLat,
+		Longitude:        &addrLng,
 	}, nil
+}
+
+// joinNonEmpty joins the non-empty parts with sep. Used to build a display-friendly
+// address line from heterogeneous fields without producing ", , Foo" style strings.
+func joinNonEmpty(sep string, parts ...string) string {
+	nonEmpty := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	return strings.Join(nonEmpty, sep)
 }
 
 // resolveFromGeocode reverse-geocodes the coordinate. A geocoding failure is not

@@ -265,6 +265,15 @@ func TestServiceability_ServiceableGeocoded(t *testing.T) {
 	if ra["address_id"] != nil {
 		t.Fatalf("expected address_id null for geocoded result, got %v", ra["address_id"])
 	}
+	// Saved-address-only structured fields must be omitted from a geocoded response.
+	for _, f := range []string{
+		"address_line_1", "address_line_2", "building_and_floor",
+		"receiver_name", "receiver_phone", "latitude", "longitude",
+	} {
+		if v, present := ra[f]; present {
+			t.Fatalf("geocoded response must not include %q, got %v", f, v)
+		}
+	}
 
 	// ETA must be present and equal to the mock's fixed value.
 	etaRaw, present := data["eta_minutes"]
@@ -306,10 +315,14 @@ func TestServiceability_ServiceableSavedAddress(t *testing.T) {
 	auth := authenticateUser(t, "+13000000020")
 
 	_, addrID := createTestAddress(t, auth.AccessToken, map[string]interface{}{
-		"latitude":       12.975,
-		"longitude":      77.640,
-		"address_line_2": "Near Test Park",
-		"label":          "home",
+		"latitude":           12.975,
+		"longitude":          77.640,
+		"address_line_1":     "MG Road",
+		"address_line_2":     "Near Test Park",
+		"building_and_floor": "Flat 4B, Sapphire Heights",
+		"receiver_name":      "Ada Lovelace",
+		"receiver_phone":     "+13000000020",
+		"label":              "home",
 	})
 
 	resp, result := doServiceabilityRequest(t, auth.AccessToken, map[string]interface{}{
@@ -334,9 +347,39 @@ func TestServiceability_ServiceableSavedAddress(t *testing.T) {
 	if ra["tag"].(string) != "home" {
 		t.Fatalf("expected tag home, got %v", ra["tag"])
 	}
-	if ra["address_line"].(string) != "Near Test Park" {
-		t.Fatalf("expected address_line from address_line_2, got %v", ra["address_line"])
+	// address_line is the comma-joined full address built from
+	// building_and_floor + address_line_1 + address_line_2 (empties skipped).
+	expectedLine := "Flat 4B, Sapphire Heights, MG Road, Near Test Park"
+	if ra["address_line"].(string) != expectedLine {
+		t.Fatalf("expected address_line %q, got %v", expectedLine, ra["address_line"])
 	}
+
+	// New structured fields must be populated on the saved-address path.
+	if ra["address_line_1"].(string) != "MG Road" {
+		t.Fatalf("expected address_line_1=MG Road, got %v", ra["address_line_1"])
+	}
+	if ra["address_line_2"].(string) != "Near Test Park" {
+		t.Fatalf("expected address_line_2=Near Test Park, got %v", ra["address_line_2"])
+	}
+	if ra["building_and_floor"].(string) != "Flat 4B, Sapphire Heights" {
+		t.Fatalf("expected building_and_floor=Flat 4B, Sapphire Heights, got %v", ra["building_and_floor"])
+	}
+	if ra["receiver_name"].(string) != "Ada Lovelace" {
+		t.Fatalf("expected receiver_name=Ada Lovelace, got %v", ra["receiver_name"])
+	}
+	if ra["receiver_phone"].(string) != "+13000000020" {
+		t.Fatalf("expected receiver_phone=+13000000020, got %v", ra["receiver_phone"])
+	}
+	if lat, ok := ra["latitude"].(float64); !ok || lat != 12.975 {
+		t.Fatalf("expected latitude=12.975, got %v", ra["latitude"])
+	}
+	if lng, ok := ra["longitude"].(float64); !ok || lng != 77.640 {
+		t.Fatalf("expected longitude=77.640, got %v", ra["longitude"])
+	}
+
+	// Geocoded responses must NOT include these structured fields. Sanity-check
+	// the contract by re-running the geocoded test path and asserting absence.
+	// (Covered by TestServiceability_ServiceableGeocoded extension below.)
 
 	// ETA must be present.
 	if _, present := data["eta_minutes"]; !present {
@@ -394,8 +437,12 @@ func TestServiceability_PicksNearestSavedAddress(t *testing.T) {
 	if ra["address_id"].(string) != nearID {
 		t.Fatalf("expected nearest address %s, got %v", nearID, ra["address_id"])
 	}
-	if ra["address_line"].(string) != "Nearest" {
-		t.Fatalf("expected address_line Nearest, got %v", ra["address_line"])
+	// "Nearest" address was created with building_and_floor="Nearest Building"
+	// and address_line_2="Nearest"; createTestAddress defaults address_line_1
+	// to "Sector 62, Noida". address_line is the comma-joined full address.
+	expectedLine := "Nearest Building, Sector 62, Noida, Nearest"
+	if ra["address_line"].(string) != expectedLine {
+		t.Fatalf("expected address_line %q, got %v", expectedLine, ra["address_line"])
 	}
 }
 
