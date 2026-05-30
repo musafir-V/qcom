@@ -52,7 +52,7 @@ func createTestAddress(t *testing.T, token string, overrides map[string]interfac
 		"address_line_2":     "Near Metro",
 		"latitude":           28.627235,
 		"longitude":          77.364715,
-		"tag_key":              "home",
+		"tag":              "home",
 	}
 	for k, v := range overrides {
 		body[k] = v
@@ -80,7 +80,7 @@ func TestCreateAddress_Success(t *testing.T) {
 		"address_line_2":     "Near Metro",
 		"latitude":           28.627235,
 		"longitude":          77.364715,
-		"tag_key":              "home",
+		"tag":              "home",
 	})
 
 	if resp.StatusCode != http.StatusCreated {
@@ -100,12 +100,12 @@ func TestCreateAddress_Success(t *testing.T) {
 	if data["is_active"].(bool) != true {
 		t.Fatal("expected is_active=true")
 	}
-	if data["tag_key"].(string) != "home" {
-		t.Fatalf("tag_key mismatch")
+	if data["tag"].(string) != "home" {
+		t.Fatalf("tag mismatch")
 	}
 }
 
-func TestCreateAddress_DefaultTagKey(t *testing.T) {
+func TestCreateAddress_DefaultTag(t *testing.T) {
 	auth := authenticateUser(t, "+12000000002")
 
 	resp, result := doAddressRequest(t, "POST", "/api/v1/addresses", auth.AccessToken, map[string]interface{}{
@@ -122,8 +122,8 @@ func TestCreateAddress_DefaultTagKey(t *testing.T) {
 	}
 
 	data := result["data"].(map[string]interface{})
-	if data["tag_key"].(string) != "other" {
-		t.Fatalf("expected default tag_key 'other', got %s", data["tag_key"])
+	if data["tag"].(string) != "other" {
+		t.Fatalf("expected default tag 'other', got %s", data["tag"])
 	}
 }
 
@@ -209,7 +209,7 @@ func TestCreateAddress_InvalidCoordinates(t *testing.T) {
 	}
 }
 
-func TestCreateAddress_InvalidTagKey(t *testing.T) {
+func TestCreateAddress_InvalidTag(t *testing.T) {
 	auth := authenticateUser(t, "+12000000007")
 
 	resp, result := doAddressRequest(t, "POST", "/api/v1/addresses", auth.AccessToken, map[string]interface{}{
@@ -219,15 +219,15 @@ func TestCreateAddress_InvalidTagKey(t *testing.T) {
 		"address_line_1":     "Street 1",
 		"latitude":           28.0,
 		"longitude":          77.0,
-		"tag_key":              "garage",
+		"tag":              "garage",
 	})
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 	errObj := result["error"].(map[string]interface{})
-	if errObj["code"] != "INVALID_TAG_KEY" {
-		t.Fatalf("expected INVALID_TAG_KEY, got %v", errObj["code"])
+	if errObj["code"] != "INVALID_TAG" {
+		t.Fatalf("expected INVALID_TAG, got %v", errObj["code"])
 	}
 }
 
@@ -305,10 +305,10 @@ func TestGetAddressByID_Forbidden(t *testing.T) {
 
 func TestGetMyAddresses_Success(t *testing.T) {
 	auth := authenticateUser(t, "+12000000020")
-	createTestAddress(t, auth.AccessToken, map[string]interface{}{"tag_key": "home"})
+	createTestAddress(t, auth.AccessToken, map[string]interface{}{"tag": "home"})
 	createTestAddress(t, auth.AccessToken, map[string]interface{}{
 		"building_and_floor": "House 2",
-		"tag_key":              "work",
+		"tag":              "work",
 	})
 
 	resp, result := doAddressRequest(t, "GET", "/api/v1/addresses", auth.AccessToken, nil)
@@ -535,7 +535,7 @@ func TestSuggestAddresses_ReturnsNearby(t *testing.T) {
 	createTestAddress(t, auth.AccessToken, map[string]interface{}{
 		"latitude":  28.627235,
 		"longitude": 77.364715,
-		"tag_key":     "home",
+		"tag":     "home",
 	})
 
 	// Query from the same coordinates
@@ -701,9 +701,9 @@ func TestCrossUserIsolation(t *testing.T) {
 	auth1 := authenticateUser(t, "+12000000060")
 	auth2 := authenticateUser(t, "+12000000061")
 
-	createTestAddress(t, auth1.AccessToken, map[string]interface{}{"tag_key": "home"})
-	createTestAddress(t, auth1.AccessToken, map[string]interface{}{"tag_key": "work"})
-	createTestAddress(t, auth2.AccessToken, map[string]interface{}{"tag_key": "home"})
+	createTestAddress(t, auth1.AccessToken, map[string]interface{}{"tag": "home"})
+	createTestAddress(t, auth1.AccessToken, map[string]interface{}{"tag": "work"})
+	createTestAddress(t, auth2.AccessToken, map[string]interface{}{"tag": "home"})
 
 	// User1 should see 2
 	resp1, result1 := doAddressRequest(t, "GET", "/api/v1/addresses", auth1.AccessToken, nil)

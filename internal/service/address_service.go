@@ -44,8 +44,8 @@ func (s *AddressService) CreateAddress(ctx context.Context, userID string, addr 
 	addr.CreatedAt = now
 	addr.UpdatedAt = now
 
-	if addr.TagKey == "" {
-		addr.TagKey = "other"
+	if addr.Tag == "" {
+		addr.Tag = "other"
 	}
 
 	if err := s.repo.Create(ctx, addr); err != nil {

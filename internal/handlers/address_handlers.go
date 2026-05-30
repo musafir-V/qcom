@@ -32,7 +32,7 @@ type CreateAddressRequest struct {
 	AddressLine2     string  `json:"address_line_2"`
 	Latitude         float64 `json:"latitude"`
 	Longitude        float64 `json:"longitude"`
-	TagKey           string  `json:"tag_key"`
+	Tag              string  `json:"tag"`
 }
 
 type UpdateReceiverRequest struct {
@@ -42,7 +42,7 @@ type UpdateReceiverRequest struct {
 
 var phoneRegex = regexp.MustCompile(`^\+[1-9]\d{1,14}$`)
 var uuidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-var validTagKeys = map[string]bool{"home": true, "work": true, "other": true}
+var validTags = map[string]bool{"home": true, "work": true, "other": true}
 
 func (h *AddressHandlers) extractUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	val := r.Context().Value("entity_id")
@@ -114,8 +114,8 @@ func (h *AddressHandlers) CreateAddress(w http.ResponseWriter, r *http.Request) 
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Longitude must be between -180 and 180")
 		return
 	}
-	if req.TagKey != "" && !validTagKeys[req.TagKey] {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_TAG_KEY", "tag_key must be one of: home, work, other")
+	if req.Tag != "" && !validTags[req.Tag] {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_TAG", "tag must be one of: home, work, other")
 		return
 	}
 
@@ -127,7 +127,7 @@ func (h *AddressHandlers) CreateAddress(w http.ResponseWriter, r *http.Request) 
 		AddressLine2:     req.AddressLine2,
 		Latitude:         req.Latitude,
 		Longitude:        req.Longitude,
-		TagKey:           req.TagKey,
+		Tag:              req.Tag,
 	}
 
 	created, err := h.addressService.CreateAddress(r.Context(), userID, addr)

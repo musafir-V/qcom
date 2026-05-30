@@ -12,7 +12,7 @@ type Address struct {
 	AddressLine2     string  `json:"address_line_2,omitempty" dynamodbav:"address_line_2,omitempty"`
 	Latitude         float64 `json:"latitude" dynamodbav:"latitude"`
 	Longitude        float64 `json:"longitude" dynamodbav:"longitude"`
-	TagKey           string  `json:"tag_key,omitempty" dynamodbav:"label,omitempty"`
+	Tag              string  `json:"tag,omitempty" dynamodbav:"label,omitempty"`
 	IsActive         bool    `json:"is_active" dynamodbav:"is_active"`
 	CreatedAt        string  `json:"created_at" dynamodbav:"created_at"`
 	UpdatedAt        string  `json:"updated_at" dynamodbav:"updated_at"`
