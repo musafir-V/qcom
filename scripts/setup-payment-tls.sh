@@ -217,11 +217,14 @@ cmd_alb() {
   alb_sg=$(sg_id_by_name "$ALB_SG_NAME" "$vpc_id" "$REGION")
   [[ -n "$alb_sg" ]] || die "$ALB_SG_NAME not found — run security-groups first"
 
+  # Take all public subnets (one per AZ). The ALB must have a subnet in the
+  # same AZ as every target it is expected to reach — taking all public AZs
+  # is the simplest way to make that true now and after future scale-outs.
   local subnets=()
   while IFS= read -r line; do
     [[ -n "$line" ]] && subnets+=("$line")
-  done < <(public_subnets_in_vpc "$vpc_id" "$REGION" 2)
-  (( ${#subnets[@]} >= 2 )) || die "need 2 public subnets in different AZs; found ${#subnets[@]} in $vpc_id"
+  done < <(public_subnets_in_vpc "$vpc_id" "$REGION" 32)
+  (( ${#subnets[@]} >= 2 )) || die "need at least 2 public subnets in different AZs; found ${#subnets[@]} in $vpc_id"
   log "Using subnets: ${subnets[*]}"
 
   local alb_arn
@@ -288,8 +291,17 @@ cmd_listeners() {
       --region "$REGION" \
       --load-balancer-arn "$alb_arn" \
       --protocol HTTP --port 80 \
-      --default-actions \
-        'Type=redirect,RedirectConfig={Protocol=HTTPS,Port=443,Host=#{host},Path=/#{path},Query=#{query},StatusCode=HTTP_301}' >/dev/null
+      --default-actions '[{
+        "Type": "redirect",
+        "RedirectConfig": {
+          "Protocol": "HTTPS",
+          "Port": "443",
+          "Host": "#{host}",
+          "Path": "/#{path}",
+          "Query": "#{query}",
+          "StatusCode": "HTTP_301"
+        }
+      }]' >/dev/null
     log "HTTP:80 redirect listener created."
   else
     log "HTTP:80 listener already exists; skipping."
