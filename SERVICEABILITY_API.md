@@ -108,21 +108,14 @@ Content-Type: application/json
 
 ### `resolved_address` fields
 
-| Field | Type | Present when | Description |
+| Field | Type | Always present in the object? | Description |
 |---|---|---|---|
-| `address_line` | string | always | The full address as a single string. For saved addresses, this is `building_and_floor`, `address_line_1`, and `address_line_2` joined with `, ` (empty parts skipped) — e.g. `"Flat 4B, Sapphire Heights, MG Road, Near Test Park"`. For geocoded addresses, this is the formatted address from Google. |
-| `tag` | string \| null | always (null on geocoded) | The customer's label for the address (`home`, `work`, `other`, etc.). |
-| `address_id` | string \| null | always (null on geocoded) | UUID of the matched saved address. The app should prefer this for downstream operations. |
-| `source` | string | always | `"saved_address"` or `"geocoded"`. The app should style the row differently for each — saved addresses can be tapped to confirm, geocoded ones should prompt the user to save. |
-| `address_line_1` | string | `source = "saved_address"` | Full first line of the saved address (street, locality). Omitted on the geocoded path. |
-| `address_line_2` | string | `source = "saved_address"` | Second line of the saved address (landmark, area). Omitted on the geocoded path. |
-| `building_and_floor` | string | `source = "saved_address"` | Building name + floor/flat, as the customer typed it. Omitted on the geocoded path. |
-| `receiver_name` | string | `source = "saved_address"` | Name of the person receiving the order at this address. Lets the checkout flow pre-fill without an extra round trip. Omitted on the geocoded path. |
-| `receiver_phone` | string | `source = "saved_address"` | Receiver phone in E.164. Same pre-fill purpose. Omitted on the geocoded path. |
-| `latitude` | number | `source = "saved_address"` | The saved coordinate — may differ slightly from the query coordinate (we matched within 50 m). Omitted on the geocoded path. |
-| `longitude` | number | `source = "saved_address"` | Same. Omitted on the geocoded path. |
+| `address_line` | string | yes | The full address as a single string. For saved addresses, this is `building_and_floor`, `address_line_1`, and `address_line_2` joined with `, ` (empty parts skipped) — e.g. `"Flat 4B, Sapphire Heights, MG Road, Near Test Park"`. For geocoded addresses, this is the formatted address from Google. |
+| `tag` | string \| null | yes (null on geocoded) | The customer's label for the address (`home`, `work`, `other`, etc.). |
+| `address_id` | string \| null | yes (null on geocoded) | UUID of the matched saved address. The app should prefer this for downstream operations. |
+| `source` | string | yes | `"saved_address"` or `"geocoded"`. The app should style the row differently for each — saved addresses can be tapped to confirm, geocoded ones should prompt the user to save. |
 
-> **Why `address_line` *and* the structured fields?** `address_line` gives the app a ready-to-render full address (correct for the saved-address path *and* the geocoded path) so the simplest call sites just print it. The structured fields are there for screens that need the parts separately — e.g. address-confirmation screens that show "Building/Floor" on its own line, or checkout flows that pre-fill `receiver_name`/`receiver_phone` without re-fetching the address record. On the geocoded path the structured fields are simply omitted, so the client should check for their presence (or for `source == "saved_address"`) before using them.
+> The response shape is intentionally minimal. If the app needs receiver name/phone or other structured address parts, fetch the full record by `address_id` via `GET /api/v1/addresses/{id}`.
 
 ---
 
@@ -155,21 +148,14 @@ The response shape is deliberately sparse — fields are *omitted*, not nulled, 
       "address_line": "Flat 4B, Sapphire Heights, MG Road, Near Test Park",
       "tag": "home",
       "address_id": "addr_8d3e...",
-      "source": "saved_address",
-      "address_line_1": "MG Road",
-      "address_line_2": "Near Test Park",
-      "building_and_floor": "Flat 4B, Sapphire Heights",
-      "receiver_name": "Ada Lovelace",
-      "receiver_phone": "+13000000020",
-      "latitude": 12.975,
-      "longitude": 77.640
+      "source": "saved_address"
     },
     "eta_minutes": 12
   }
 }
 ```
 
-**App should:** Render catalog; show "Delivery to **home** in **12 min**" at the top. The structured fields below give a full address composition (`"Flat 4B, Sapphire Heights, MG Road, Near Test Park"`) and pre-fill `receiver_name` / `receiver_phone` for checkout — no need to re-fetch the address record by `address_id`.
+**App should:** Render catalog; show "Delivery to **home** in **12 min**" at the top. Pre-fill `address_id` for the eventual checkout.
 
 ---
 
@@ -186,14 +172,7 @@ The response shape is deliberately sparse — fields are *omitted*, not nulled, 
       "address_line": "Flat 4B, Sapphire Heights, MG Road, Near Test Park",
       "tag": "home",
       "address_id": "addr_8d3e...",
-      "source": "saved_address",
-      "address_line_1": "MG Road",
-      "address_line_2": "Near Test Park",
-      "building_and_floor": "Flat 4B, Sapphire Heights",
-      "receiver_name": "Ada Lovelace",
-      "receiver_phone": "+13000000020",
-      "latitude": 12.975,
-      "longitude": 77.640
+      "source": "saved_address"
     }
   }
 }
