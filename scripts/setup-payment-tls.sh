@@ -247,7 +247,54 @@ cmd_alb() {
   echo "ALB_ARN=$alb_arn"
   echo "ALB_DNS=$dns"
 }
-cmd_listeners()       { die "not implemented yet (Task 10)"; }
+cmd_listeners() {
+  local alb_arn tg_arn cert_arn
+  alb_arn=$(alb_arn_by_name "$ALB_NAME" "$REGION")
+  tg_arn=$(tg_arn_by_name "$TG_NAME" "$REGION")
+  cert_arn=$(cert_arn_for_domain "$DOMAIN" "$REGION")
+  [[ -n "$alb_arn"  ]] || die "ALB $ALB_NAME not found — run alb first"
+  [[ -n "$tg_arn"   ]] || die "TG $TG_NAME not found — run target-group first"
+  [[ -n "$cert_arn" ]] || die "cert for $DOMAIN not found — run request-cert first"
+
+  local cert_status
+  cert_status=$(aws acm describe-certificate \
+    --region "$REGION" --certificate-arn "$cert_arn" \
+    --query 'Certificate.Status' --output text)
+  [[ "$cert_status" == "ISSUED" ]] || die "cert is $cert_status (need ISSUED) — run wait-cert first"
+
+  local existing
+  existing=$(aws elbv2 describe-listeners \
+    --region "$REGION" --load-balancer-arn "$alb_arn" \
+    --query 'Listeners[].Port' --output text)
+  log "Existing listener ports: ${existing:-<none>}"
+
+  if ! grep -qw 443 <<<"$existing"; then
+    log "Creating HTTPS:443 listener..."
+    aws elbv2 create-listener \
+      --region "$REGION" \
+      --load-balancer-arn "$alb_arn" \
+      --protocol HTTPS --port 443 \
+      --ssl-policy "$SSL_POLICY" \
+      --certificates "CertificateArn=$cert_arn" \
+      --default-actions "Type=forward,TargetGroupArn=$tg_arn" >/dev/null
+    log "HTTPS:443 listener created."
+  else
+    log "HTTPS:443 listener already exists; skipping."
+  fi
+
+  if ! grep -qw 80 <<<"$existing"; then
+    log "Creating HTTP:80 redirect listener..."
+    aws elbv2 create-listener \
+      --region "$REGION" \
+      --load-balancer-arn "$alb_arn" \
+      --protocol HTTP --port 80 \
+      --default-actions \
+        'Type=redirect,RedirectConfig={Protocol=HTTPS,Port=443,Host=#{host},Path=/#{path},Query=#{query},StatusCode=HTTP_301}' >/dev/null
+    log "HTTP:80 redirect listener created."
+  else
+    log "HTTP:80 listener already exists; skipping."
+  fi
+}
 cmd_status()          { die "not implemented yet (Task 11)"; }
 cmd_all()             { die "not implemented yet (Task 12)"; }
 
