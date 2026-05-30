@@ -321,7 +321,7 @@ func TestServiceability_ServiceableSavedAddress(t *testing.T) {
 		"address_line_1":     "MG Road",
 		"address_line_2":     "Near Test Park",
 		"building_and_floor": "Flat 4B, Sapphire Heights",
-		"label":              "home",
+		"tag_key":            "home",
 	})
 
 	resp, result := doServiceabilityRequest(t, auth.AccessToken, map[string]interface{}{

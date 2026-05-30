@@ -151,7 +151,7 @@ func (s *ServiceabilityService) resolveFromSavedAddress(ctx context.Context, use
 	// "<building_and_floor>, <address_line_1>, <address_line_2>". Empty parts
 	// are skipped so the result is never ", , Foo" or "Foo, , ".
 	line := joinNonEmpty(", ", nearest.BuildingAndFloor, nearest.AddressLine1, nearest.AddressLine2)
-	tag := nearest.Label
+	tag := nearest.TagKey
 	id := nearest.AddressID
 	return &ResolvedAddress{
 		AddressLine: line,

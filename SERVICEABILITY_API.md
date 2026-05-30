@@ -111,7 +111,7 @@ Content-Type: application/json
 | Field | Type | Always present in the object? | Description |
 |---|---|---|---|
 | `address_line` | string | yes | The full address as a single string. For saved addresses, this is `building_and_floor`, `address_line_1`, and `address_line_2` joined with `, ` (empty parts skipped) — e.g. `"Flat 4B, Sapphire Heights, MG Road, Near Test Park"`. For geocoded addresses, this is the formatted address from Google. |
-| `tag` | string \| null | yes (null on geocoded) | The customer's label for the address (`home`, `work`, `other`, etc.). |
+| `tag` | string \| null | yes (null on geocoded) | The customer's `tag_key` for the address (`home`, `work`, `other`, etc.). |
 | `address_id` | string \| null | yes (null on geocoded) | UUID of the matched saved address. The app should prefer this for downstream operations. |
 | `source` | string | yes | `"saved_address"` or `"geocoded"`. The app should style the row differently for each — saved addresses can be tapped to confirm, geocoded ones should prompt the user to save. |
 

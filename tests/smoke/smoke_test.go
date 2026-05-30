@@ -230,7 +230,7 @@ func TestSmoke_AddressLifecycle(t *testing.T) {
 		"address_line_1":     "MG Road",
 		"latitude":           12.975,
 		"longitude":          77.640,
-		"label":              "home",
+		"tag_key":            "home",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("create address: expected 201, got %d: %v", resp.StatusCode, result)

@@ -345,7 +345,7 @@ curl -X POST http://localhost:8080/api/v1/addresses \
     "address_line_2": "Near City Centre Metro Station",
     "latitude": 28.627235,
     "longitude": 77.364715,
-    "label": "home"
+    "tag_key": "home"
   }'
 ```
 
@@ -362,7 +362,7 @@ curl -X POST http://localhost:8080/api/v1/addresses \
     "address_line_2": "Near City Centre Metro Station",
     "latitude": 28.627235,
     "longitude": 77.364715,
-    "label": "home",
+    "tag_key": "home",
     "is_active": true,
     "created_at": "2026-04-04T10:30:00Z",
     "updated_at": "2026-04-04T10:30:00Z"
@@ -396,7 +396,7 @@ curl -X GET http://localhost:8080/api/v1/addresses/$ADDRESS_ID \
     "address_line_2": "Near City Centre Metro Station",
     "latitude": 28.627235,
     "longitude": 77.364715,
-    "label": "home",
+    "tag_key": "home",
     "is_active": true
   }
 }
@@ -419,7 +419,7 @@ curl -X GET http://localhost:8080/api/v1/addresses \
       "address_id": "a1b2c3d4-...",
       "receiver_name": "Shivang Awasthi",
       "building_and_floor": "Tower B, 4th Floor, Flat 402",
-      "label": "home",
+      "tag_key": "home",
       "is_active": true
     }
   ],
