@@ -170,7 +170,44 @@ cmd_security_groups() {
   echo "ALB_SG=$alb_sg"
   echo "EC2_SG=$ec2_sg"
 }
-cmd_target_group()    { die "not implemented yet (Task 8)"; }
+cmd_target_group() {
+  local vpc_id
+  vpc_id=$(vpc_of_instance "$INSTANCE_ID" "$REGION")
+  [[ -n "$vpc_id" && "$vpc_id" != "None" ]] || die "could not resolve VPC for $INSTANCE_ID"
+
+  local tg_arn
+  tg_arn=$(tg_arn_by_name "$TG_NAME" "$REGION")
+  if [[ -z "$tg_arn" ]]; then
+    log "Creating target group $TG_NAME..."
+    tg_arn=$(aws elbv2 create-target-group \
+      --region "$REGION" \
+      --name "$TG_NAME" \
+      --protocol HTTP --port "$TARGET_PORT" \
+      --vpc-id "$vpc_id" \
+      --target-type instance \
+      --health-check-protocol HTTP \
+      --health-check-path "$HEALTH_PATH" \
+      --health-check-port traffic-port \
+      --health-check-interval-seconds 30 \
+      --health-check-timeout-seconds 5 \
+      --healthy-threshold-count 2 \
+      --unhealthy-threshold-count 2 \
+      --matcher HttpCode=200 \
+      --query 'TargetGroups[0].TargetGroupArn' --output text)
+    log "Created TG: $tg_arn"
+  else
+    log "Target group $TG_NAME already exists: $tg_arn"
+  fi
+
+  log "Registering target ${INSTANCE_ID}:${TARGET_PORT}..."
+  aws elbv2 register-targets \
+    --region "$REGION" \
+    --target-group-arn "$tg_arn" \
+    --targets "Id=${INSTANCE_ID},Port=${TARGET_PORT}" >/dev/null
+  log "Target registered."
+
+  echo "TG_ARN=$tg_arn"
+}
 cmd_alb()             { die "not implemented yet (Task 9)"; }
 cmd_listeners()       { die "not implemented yet (Task 10)"; }
 cmd_status()          { die "not implemented yet (Task 11)"; }
