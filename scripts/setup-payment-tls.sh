@@ -335,7 +335,19 @@ cmd_status() {
     echo "TG:      <not created>"
   fi
 }
-cmd_all()             { die "not implemented yet (Task 12)"; }
+cmd_all() {
+  cmd_request_cert
+  log "------------------------------------------------------------"
+  log "If you have not added the DNS validation CNAME printed above,"
+  log "add it now. wait-cert will block until ACM sees it."
+  log "------------------------------------------------------------"
+  cmd_wait_cert
+  cmd_security_groups
+  cmd_target_group
+  cmd_alb
+  cmd_listeners
+  cmd_status
+}
 
 main() {
   require_tools
