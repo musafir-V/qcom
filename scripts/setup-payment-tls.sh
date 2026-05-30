@@ -46,7 +46,47 @@ EOF
 }
 
 # Subcommand stubs — filled in by later tasks.
-cmd_request_cert()    { die "not implemented yet (Task 5)"; }
+cmd_request_cert() {
+  local arn
+  arn=$(cert_arn_for_domain "$DOMAIN" "$REGION")
+
+  if [[ -z "$arn" ]]; then
+    log "Requesting ACM cert for $DOMAIN in $REGION..."
+    arn=$(aws acm request-certificate \
+      --region "$REGION" \
+      --domain-name "$DOMAIN" \
+      --validation-method DNS \
+      --tags Key=Name,Value="${NAME_PREFIX}-cert" \
+      --query CertificateArn --output text)
+    log "Created: $arn"
+    sleep 5
+  else
+    log "Cert already exists: $arn"
+  fi
+
+  local name value type
+  read -r name type value < <(aws acm describe-certificate \
+    --region "$REGION" \
+    --certificate-arn "$arn" \
+    --query 'Certificate.DomainValidationOptions[0].ResourceRecord.[Name,Type,Value]' \
+    --output text)
+
+  if [[ "$name" == "None" || -z "$name" ]]; then
+    die "ACM has not yet published the validation record. Re-run request-cert in a few seconds."
+  fi
+
+  cat <<EOF
+
+==== ACM DNS validation ====
+Add this CNAME at your DNS provider, then run: $0 wait-cert
+
+  Name:  $name
+  Type:  $type
+  Value: $value
+
+Cert ARN: $arn
+EOF
+}
 cmd_wait_cert()       { die "not implemented yet (Task 6)"; }
 cmd_security_groups() { die "not implemented yet (Task 7)"; }
 cmd_target_group()    { die "not implemented yet (Task 8)"; }
