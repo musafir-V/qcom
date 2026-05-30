@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up TLS termination at payment.banzodelivery.com in front of an EC2 host.
+# Set up TLS termination at payment.bunzodelivery.com in front of an EC2 host.
 # See docs/superpowers/specs/2026-05-30-payment-tls-termination-design.md
 set -euo pipefail
 
@@ -10,7 +10,7 @@ source "${SCRIPT_DIR}/payment-tls-lib.sh"
 # --- Config (override via env) -----------------------------------------------
 REGION="${AWS_REGION:-ap-southeast-2}"
 INSTANCE_ID="${INSTANCE_ID:-i-00dc197caba8ab3eb}"
-DOMAIN="${DOMAIN:-payment.banzodelivery.com}"
+DOMAIN="${DOMAIN:-payment.bunzodelivery.com}"
 TARGET_PORT="${TARGET_PORT:-8080}"
 HEALTH_PATH="${HEALTH_PATH:-/actuator/health}"
 NAME_PREFIX="${NAME_PREFIX:-payment}"

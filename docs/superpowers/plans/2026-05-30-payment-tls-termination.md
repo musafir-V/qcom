@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Wire up HTTPS termination at `payment.banzodelivery.com` in front of EC2 `i-00dc197caba8ab3eb:8080` (product-service) by adding two shell scripts under `scripts/` that drive the AWS CLI to create an ACM certificate, security groups, target group, ALB, and listeners.
+**Goal:** Wire up HTTPS termination at `payment.bunzodelivery.com` in front of EC2 `i-00dc197caba8ab3eb:8080` (product-service) by adding two shell scripts under `scripts/` that drive the AWS CLI to create an ACM certificate, security groups, target group, ALB, and listeners.
 
 **Architecture:** Two new files only. `scripts/payment-tls-lib.sh` holds sourced helper functions. `scripts/setup-payment-tls.sh` is the orchestrator with subcommands. Every resource is named `payment-*`, every create operation is idempotent. No existing files change.
 
@@ -226,7 +226,7 @@ Run:
 
 ```bash
 source scripts/payment-tls-lib.sh
-echo "cert: '$(cert_arn_for_domain payment.banzodelivery.com ap-southeast-2)'"
+echo "cert: '$(cert_arn_for_domain payment.bunzodelivery.com ap-southeast-2)'"
 echo "tg:   '$(tg_arn_by_name payment-tg ap-southeast-2)'"
 echo "alb:  '$(alb_arn_by_name payment-alb ap-southeast-2)'"
 ```
@@ -251,7 +251,7 @@ git commit -m "feat(infra): payment-tls-lib cert/SG/TG/ALB lookups by name"
 
 ```bash
 #!/usr/bin/env bash
-# Set up TLS termination at payment.banzodelivery.com in front of an EC2 host.
+# Set up TLS termination at payment.bunzodelivery.com in front of an EC2 host.
 # See docs/superpowers/specs/2026-05-30-payment-tls-termination-design.md
 set -euo pipefail
 
@@ -262,7 +262,7 @@ source "${SCRIPT_DIR}/payment-tls-lib.sh"
 # --- Config (override via env) -----------------------------------------------
 REGION="${AWS_REGION:-ap-southeast-2}"
 INSTANCE_ID="${INSTANCE_ID:-i-00dc197caba8ab3eb}"
-DOMAIN="${DOMAIN:-payment.banzodelivery.com}"
+DOMAIN="${DOMAIN:-payment.bunzodelivery.com}"
 TARGET_PORT="${TARGET_PORT:-8080}"
 HEALTH_PATH="${HEALTH_PATH:-/actuator/health}"
 NAME_PREFIX="${NAME_PREFIX:-payment}"
@@ -966,18 +966,18 @@ No file changes — verifies the deployed infrastructure works.
 Take the `ALB_DNS` value from `status` and add at the external DNS provider:
 
 ```
-payment.banzodelivery.com  CNAME  <ALB_DNS>
+payment.bunzodelivery.com  CNAME  <ALB_DNS>
 ```
 
 - [ ] **Step 2: Wait for DNS to propagate, then test HTTPS**
 
-Run: `curl -sv https://payment.banzodelivery.com/actuator/health`
+Run: `curl -sv https://payment.bunzodelivery.com/actuator/health`
 Expected: `HTTP/2 200`, valid TLS chain (`* SSL certificate verify ok.`), body returned by product-service.
 
 - [ ] **Step 3: Verify HTTP→HTTPS redirect**
 
-Run: `curl -sv http://payment.banzodelivery.com/actuator/health`
-Expected: `HTTP/1.1 301 Moved Permanently` with `Location: https://payment.banzodelivery.com/actuator/health`.
+Run: `curl -sv http://payment.bunzodelivery.com/actuator/health`
+Expected: `HTTP/1.1 301 Moved Permanently` with `Location: https://payment.bunzodelivery.com/actuator/health`.
 
 - [ ] **Step 4: Verify path/query pass-through**
 
@@ -987,7 +987,7 @@ curl -sv "http://localhost:${TARGET_PORT:-8080}/<path>?x=1"
 ```
 Then run from your laptop:
 ```bash
-curl -sv "https://payment.banzodelivery.com/<path>?x=1"
+curl -sv "https://payment.bunzodelivery.com/<path>?x=1"
 ```
 Expected: same response body for both.
 

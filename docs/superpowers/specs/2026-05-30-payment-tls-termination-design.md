@@ -6,7 +6,7 @@
 
 ## Goal
 
-Expose the `product-service` running on EC2 instance `i-00dc197caba8ab3eb:8080` (region `ap-southeast-2`) to the public internet at `https://payment.banzodelivery.com`, with TLS terminated at the edge so the EC2 host itself continues to speak plain HTTP. The setup must:
+Expose the `product-service` running on EC2 instance `i-00dc197caba8ab3eb:8080` (region `ap-southeast-2`) to the public internet at `https://payment.bunzodelivery.com`, with TLS terminated at the edge so the EC2 host itself continues to speak plain HTTP. The setup must:
 
 - Forward path, query string, and method to the backend unchanged.
 - Use an AWS-managed certificate (auto-renewing).
@@ -28,13 +28,13 @@ Alternatives considered and rejected:
 
 ```
 Client
-   │  HTTPS payment.banzodelivery.com
+   │  HTTPS payment.bunzodelivery.com
    ▼
 External DNS provider
    │  CNAME → <alb-dns-name>.elb.ap-southeast-2.amazonaws.com
    ▼
 Application Load Balancer  (ap-southeast-2, internet-facing, 2 AZs)
-   ├─ Listener :443 HTTPS — ACM cert for payment.banzodelivery.com
+   ├─ Listener :443 HTTPS — ACM cert for payment.bunzodelivery.com
    └─ Listener :80  HTTP  — redirect 301 to HTTPS
                                 │
                                 │ forward (plain HTTP, path/query unchanged)
@@ -56,7 +56,7 @@ Read the VPC of `i-00dc197caba8ab3eb`. Pick two **public** subnets in different 
 
 ### 2. ACM certificate (`payment-cert`)
 - Region: `ap-southeast-2`.
-- Domain: `payment.banzodelivery.com`.
+- Domain: `payment.bunzodelivery.com`.
 - Validation method: `DNS`.
 - Script outputs the one validation CNAME (name + value) for the user to add at the DNS provider, then polls `aws acm describe-certificate` until `Status=ISSUED`.
 
@@ -83,16 +83,16 @@ This is the lockdown step: with the new rule in place, the EC2's port 8080 is re
 - **HTTP `:80`** — default action `redirect` to HTTPS, port `443`, status `HTTP_301`, host/path/query preserved.
 
 ### 7. DNS (manual at external provider)
-Add CNAME `payment.banzodelivery.com` → `<alb-dns-name>.elb.ap-southeast-2.amazonaws.com`.
+Add CNAME `payment.bunzodelivery.com` → `<alb-dns-name>.elb.ap-southeast-2.amazonaws.com`.
 
 ## Data flow
 
-A request to `https://payment.banzodelivery.com/foo/bar?x=1`:
+A request to `https://payment.bunzodelivery.com/foo/bar?x=1`:
 
 1. Client resolves the CNAME to the ALB DNS, then to one of the ALB's AZ IPs.
 2. TLS handshake terminates at the ALB using the ACM cert.
 3. ALB forwards over plain HTTP inside AWS to the target group.
-4. Target group sends the request to `i-00dc197caba8ab3eb:8080` with the original method, path (`/foo/bar`), query (`x=1`), body, and headers, plus `X-Forwarded-For`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, and `X-Forwarded-Host: payment.banzodelivery.com`.
+4. Target group sends the request to `i-00dc197caba8ab3eb:8080` with the original method, path (`/foo/bar`), query (`x=1`), body, and headers, plus `X-Forwarded-For`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, and `X-Forwarded-Host: payment.bunzodelivery.com`.
 5. product-service responds; ALB writes the response back over the TLS connection.
 
 The ALB does no path rewriting and no header stripping beyond the standard ELB-managed headers.
@@ -112,9 +112,9 @@ Concerns are at the script level, not the runtime path (the runtime path is just
 Manual verification after setup, since this is one-off infrastructure:
 
 1. `./scripts/setup-payment-tls.sh status` — prints cert ARN, ALB DNS, target health. Target must be `healthy`.
-2. `curl -v https://payment.banzodelivery.com/actuator/health` — expect `HTTP/2 200` and valid TLS chain.
-3. `curl -v http://payment.banzodelivery.com/actuator/health` — expect `301` to the HTTPS URL.
-4. `curl -v https://payment.banzodelivery.com/some/known/product-service/path` — expect the same response product-service returns directly on `:8080` from inside the VPC.
+2. `curl -v https://payment.bunzodelivery.com/actuator/health` — expect `HTTP/2 200` and valid TLS chain.
+3. `curl -v http://payment.bunzodelivery.com/actuator/health` — expect `301` to the HTTPS URL.
+4. `curl -v https://payment.bunzodelivery.com/some/known/product-service/path` — expect the same response product-service returns directly on `:8080` from inside the VPC.
 5. If the EC2 has a public IP, from outside AWS attempt `curl -v http://<ec2-public-ip>:8080/` — expect timeout / refused, confirming the lockdown. (Skip if the EC2 is private-only — the lockdown is already implied.)
 
 ## Scripts
@@ -128,7 +128,7 @@ Single orchestrator with subcommands. Config at the top, overridable by env var:
 ```bash
 REGION="${AWS_REGION:-ap-southeast-2}"
 INSTANCE_ID="${INSTANCE_ID:-i-00dc197caba8ab3eb}"
-DOMAIN="${DOMAIN:-payment.banzodelivery.com}"
+DOMAIN="${DOMAIN:-payment.bunzodelivery.com}"
 TARGET_PORT="${TARGET_PORT:-8080}"
 HEALTH_PATH="${HEALTH_PATH:-/actuator/health}"
 NAME_PREFIX="${NAME_PREFIX:-payment}"
@@ -164,8 +164,8 @@ Sourced helpers (`log`, `require_cmd`, `vpc_of_instance`, `public_subnets_in_vpc
 1. Run `./scripts/setup-payment-tls.sh request-cert`. Copy the validation CNAME printed and add it at the DNS provider.
 2. Run `./scripts/setup-payment-tls.sh wait-cert`. Wait until it reports `ISSUED`.
 3. Run `./scripts/setup-payment-tls.sh all` (or the remaining subcommands one by one).
-4. Add the CNAME `payment.banzodelivery.com → <ALB DNS name>` at the DNS provider (the script prints the exact value).
-5. Verify with `curl -v https://payment.banzodelivery.com/actuator/health`.
+4. Add the CNAME `payment.bunzodelivery.com → <ALB DNS name>` at the DNS provider (the script prints the exact value).
+5. Verify with `curl -v https://payment.bunzodelivery.com/actuator/health`.
 
 ## Open questions
 
