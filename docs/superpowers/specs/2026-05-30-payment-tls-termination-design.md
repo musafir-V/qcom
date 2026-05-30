@@ -6,18 +6,18 @@
 
 ## Goal
 
-Expose the `product-service` running on EC2 instance `i-00dc197caba8ab3eb:8080` (region `ap-southeast-2`) to the public internet at `https://payment.bunzodelivery.com`, with TLS terminated at the edge so the EC2 host itself continues to speak plain HTTP. The setup must:
+Expose the `product-service` running on EC2 instance `i-00dc197caba8ab3eb:8082` (region `ap-southeast-2`) to the public internet at `https://payment.bunzodelivery.com`, with TLS terminated at the edge so the EC2 host itself continues to speak plain HTTP. The setup must:
 
 - Forward path, query string, and method to the backend unchanged.
 - Use an AWS-managed certificate (auto-renewing).
-- Lock backend port 8080 down so it is reachable only from the load balancer, not from the public internet.
+- Lock backend port 8082 down so it is reachable only from the load balancer, not from the public internet.
 - Be reproducible from shell scripts that match the existing pattern in `scripts/`.
 
 Out of scope: WAF, access logging, sticky sessions, multi-region failover, blue/green, autoscaling the backend.
 
 ## Approach
 
-**Application Load Balancer + ACM (selected).** AWS-managed ALB in `ap-southeast-2`, HTTPS listener with an ACM certificate, forwarding plain HTTP to the EC2 instance on port 8080. DNS is managed at an external provider, so the user adds two CNAMEs by hand: one for ACM DNS validation, one for `payment` → ALB DNS name.
+**Application Load Balancer + ACM (selected).** AWS-managed ALB in `ap-southeast-2`, HTTPS listener with an ACM certificate, forwarding plain HTTP to the EC2 instance on port 8082. DNS is managed at an external provider, so the user adds two CNAMEs by hand: one for ACM DNS validation, one for `payment` → ALB DNS name.
 
 Alternatives considered and rejected:
 
@@ -39,12 +39,12 @@ Application Load Balancer  (ap-southeast-2, internet-facing, 2 AZs)
                                 │
                                 │ forward (plain HTTP, path/query unchanged)
                                 ▼
-                          Target Group  (type=instance, port 8080)
+                          Target Group  (type=instance, port 8082)
                           Health check: GET /actuator/health, matcher 200
                                 │
                                 ▼
-                          EC2 i-00dc197caba8ab3eb (product-service:8080)
-                          SG ingress 8080 only from payment-alb-sg
+                          EC2 i-00dc197caba8ab3eb (product-service:8082)
+                          SG ingress 8082 only from payment-alb-sg
 ```
 
 ## Components
@@ -62,14 +62,14 @@ Read the VPC of `i-00dc197caba8ab3eb`. Pick two **public** subnets in different 
 
 ### 3. Security groups
 - **Create `payment-alb-sg`** in the same VPC. Ingress: `tcp/443` from `0.0.0.0/0`, `tcp/80` from `0.0.0.0/0`. Egress: all.
-- **Modify the EC2's existing security group**: add ingress rule `tcp/8080` sourced from `payment-alb-sg`. Wrapped to ignore `InvalidPermission.Duplicate` so re-runs are safe.
+- **Modify the EC2's existing security group**: add ingress rule `tcp/8082` sourced from `payment-alb-sg`. Wrapped to ignore `InvalidPermission.Duplicate` so re-runs are safe.
 
-This is the lockdown step: with the new rule in place, the EC2's port 8080 is reachable only from the ALB. The existing SG should not have a public `0.0.0.0/0` rule on 8080 after this; the script will warn if one is found.
+This is the lockdown step: with the new rule in place, the EC2's port 8082 is reachable only from the ALB. The existing SG should not have a public `0.0.0.0/0` rule on 8082 after this; the script will warn if one is found.
 
 ### 4. Target group (`payment-tg`)
-- Type: `instance`, protocol `HTTP`, port `8080`, VPC = the EC2's VPC.
+- Type: `instance`, protocol `HTTP`, port `8082`, VPC = the EC2's VPC.
 - Health check: protocol `HTTP`, path `/actuator/health`, port `traffic-port`, matcher `200`, healthy threshold `2`, unhealthy threshold `2`, interval `30s`, timeout `5s`.
-- Register target `i-00dc197caba8ab3eb` on port `8080`.
+- Register target `i-00dc197caba8ab3eb` on port `8082`.
 
 ### 5. Application Load Balancer (`payment-alb`)
 - Scheme: `internet-facing`.
@@ -92,7 +92,7 @@ A request to `https://payment.bunzodelivery.com/foo/bar?x=1`:
 1. Client resolves the CNAME to the ALB DNS, then to one of the ALB's AZ IPs.
 2. TLS handshake terminates at the ALB using the ACM cert.
 3. ALB forwards over plain HTTP inside AWS to the target group.
-4. Target group sends the request to `i-00dc197caba8ab3eb:8080` with the original method, path (`/foo/bar`), query (`x=1`), body, and headers, plus `X-Forwarded-For`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, and `X-Forwarded-Host: payment.bunzodelivery.com`.
+4. Target group sends the request to `i-00dc197caba8ab3eb:8082` with the original method, path (`/foo/bar`), query (`x=1`), body, and headers, plus `X-Forwarded-For`, `X-Forwarded-Proto: https`, `X-Forwarded-Port: 443`, and `X-Forwarded-Host: payment.bunzodelivery.com`.
 5. product-service responds; ALB writes the response back over the TLS connection.
 
 The ALB does no path rewriting and no header stripping beyond the standard ELB-managed headers.
@@ -114,8 +114,8 @@ Manual verification after setup, since this is one-off infrastructure:
 1. `./scripts/setup-payment-tls.sh status` — prints cert ARN, ALB DNS, target health. Target must be `healthy`.
 2. `curl -v https://payment.bunzodelivery.com/actuator/health` — expect `HTTP/2 200` and valid TLS chain.
 3. `curl -v http://payment.bunzodelivery.com/actuator/health` — expect `301` to the HTTPS URL.
-4. `curl -v https://payment.bunzodelivery.com/some/known/product-service/path` — expect the same response product-service returns directly on `:8080` from inside the VPC.
-5. If the EC2 has a public IP, from outside AWS attempt `curl -v http://<ec2-public-ip>:8080/` — expect timeout / refused, confirming the lockdown. (Skip if the EC2 is private-only — the lockdown is already implied.)
+4. `curl -v https://payment.bunzodelivery.com/some/known/product-service/path` — expect the same response product-service returns directly on `:8082` from inside the VPC.
+5. If the EC2 has a public IP, from outside AWS attempt `curl -v http://<ec2-public-ip>:8082/` — expect timeout / refused, confirming the lockdown. (Skip if the EC2 is private-only — the lockdown is already implied.)
 
 ## Scripts
 
@@ -129,7 +129,7 @@ Single orchestrator with subcommands. Config at the top, overridable by env var:
 REGION="${AWS_REGION:-ap-southeast-2}"
 INSTANCE_ID="${INSTANCE_ID:-i-00dc197caba8ab3eb}"
 DOMAIN="${DOMAIN:-payment.bunzodelivery.com}"
-TARGET_PORT="${TARGET_PORT:-8080}"
+TARGET_PORT="${TARGET_PORT:-8082}"
 HEALTH_PATH="${HEALTH_PATH:-/actuator/health}"
 NAME_PREFIX="${NAME_PREFIX:-payment}"
 ```
@@ -140,7 +140,7 @@ Subcommands:
 | ----------------- | -------------------------------------------------------------------------- |
 | `request-cert`    | Step 2 — create cert if absent, print validation CNAME, exit.              |
 | `wait-cert`       | Poll ACM until `Status=ISSUED` (default 30 min timeout).                   |
-| `security-groups` | Step 3 — create `payment-alb-sg`, add `:8080` ingress from it to EC2 SG.   |
+| `security-groups` | Step 3 — create `payment-alb-sg`, add `:8082` ingress from it to EC2 SG.   |
 | `target-group`    | Step 4 — create TG, register target.                                       |
 | `alb`             | Step 5 — create ALB, print DNS name.                                       |
 | `listeners`       | Step 6 — create HTTPS and HTTP listeners.                                  |
@@ -170,3 +170,25 @@ Sourced helpers (`log`, `require_cmd`, `vpc_of_instance`, `public_subnets_in_vpc
 ## Open questions
 
 None blocking. To revisit later: WAF in front of the ALB, access logging to S3, and whether `payment-alb` should be promoted to a shared multi-service ALB if more services move behind it.
+
+## Deployment record (2026-05-30)
+
+Live in `ap-southeast-2`, account `119312949433`:
+
+| Resource | Identifier |
+| --- | --- |
+| Domain | `payment.bunzodelivery.com` |
+| ACM cert | `arn:aws:acm:ap-southeast-2:119312949433:certificate/1df0841f-cab4-4f20-a9ba-5fd885c3634d` (ISSUED) |
+| ALB | `payment-alb` → `payment-alb-1784154248.ap-southeast-2.elb.amazonaws.com` (AZs 2a/2b/2c) |
+| ALB SG | `sg-08802945bdb83853d` (443/80 from `0.0.0.0/0`) |
+| Target group | `payment-tg`, `i-00dc197caba8ab3eb:8082` healthy |
+| EC2 SG ingress | `tcp/8082` from `sg-08802945bdb83853d` |
+
+Verified end-to-end:
+- `curl https://payment.bunzodelivery.com/actuator/health` → `200 {"status":"UP", ...}` (Spring Boot Actuator)
+- `curl -I http://payment.bunzodelivery.com/actuator/health` → `301` to HTTPS
+
+Mid-flight corrections that landed in the script and are now baked into the design:
+- Original brief said `payment.banzodelivery.com`; actual domain is `bunzodelivery.com`.
+- Original brief said target port `8080`; product-service is actually on `8082`.
+- ALB now spans all public subnets in the VPC, not just two — needed because the EC2 lives in `ap-southeast-2c`, which the original 2-subnet pick excluded.
