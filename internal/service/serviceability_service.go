@@ -12,6 +12,7 @@ import (
 
 const (
 	serviceableAddressRadiusMeters = 50.0
+	testModeETAMinutes             = 7
 
 	sourceSavedAddress = "saved_address"
 	sourceGeocoded     = "geocoded"
@@ -87,11 +88,17 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 		DarkstoreID: matched.DarkstoreID,
 	}
 
-	etaMinutes, err := s.etaService.GetETA(ctx, matched, lat, lng)
-	if err != nil {
-		op.Logger().WithError(err).Warn("ETA calculation failed; returning serviceable result without ETA")
+	if s.isTest {
+		op.Logger().Warn("IS_TEST/IS_TRUE is set; using hardcoded ETA")
+		testETA := testModeETAMinutes
+		result.ETAMinutes = &testETA
 	} else {
-		result.ETAMinutes = &etaMinutes
+		etaMinutes, err := s.etaService.GetETA(ctx, matched, lat, lng)
+		if err != nil {
+			op.Logger().WithError(err).Warn("ETA calculation failed; returning serviceable result without ETA")
+		} else {
+			result.ETAMinutes = &etaMinutes
+		}
 	}
 
 	resolved, err := s.resolveFromSavedAddress(ctx, userID, lat, lng)
