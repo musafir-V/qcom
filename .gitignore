@@ -1,0 +1,2 @@
+# Full-table DynamoDB exports contain production user/OTP data — do not commit.
+data/dynamodb-export-*.json

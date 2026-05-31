@@ -4,10 +4,15 @@
 # Run this script after starting DynamoDB local
 
 TABLE_NAME="${DYNAMODB_TABLE_NAME:-QComTable}"
-ENDPOINT="${DYNAMODB_ENDPOINT:-http://localhost:8000}"
+ENDPOINT="${DYNAMODB_ENDPOINT:-}"
 REGION="${DYNAMODB_REGION:-us-east-1}"
 
-echo "Creating DynamoDB table: $TABLE_NAME"
+endpoint_args=()
+if [[ -n "$ENDPOINT" ]]; then
+  endpoint_args=(--endpoint-url "$ENDPOINT")
+fi
+
+echo "Creating DynamoDB table: $TABLE_NAME (region=$REGION)"
 
 aws dynamodb create-table \
   --table-name "$TABLE_NAME" \
@@ -18,7 +23,7 @@ aws dynamodb create-table \
     AttributeName=PK,KeyType=HASH \
     AttributeName=SK,KeyType=RANGE \
   --billing-mode PAY_PER_REQUEST \
-  --endpoint-url "$ENDPOINT" \
+  "${endpoint_args[@]}" \
   --region "$REGION" \
   --no-cli-pager
 
@@ -43,7 +48,7 @@ aws dynamodb update-table \
       }
     }
   ]' \
-  --endpoint-url "$ENDPOINT" \
+  "${endpoint_args[@]}" \
   --region "$REGION" \
   --no-cli-pager 2>/dev/null || echo "GSI may already exist, continuing..."
 
@@ -66,7 +71,7 @@ aws dynamodb update-table \
       }
     }
   ]' \
-  --endpoint-url "$ENDPOINT" \
+  "${endpoint_args[@]}" \
   --region "$REGION" \
   --no-cli-pager 2>/dev/null || echo "DEDutyIndex GSI may already exist, continuing..."
 
@@ -77,7 +82,7 @@ echo "Enabling TTL on table..."
 aws dynamodb update-time-to-live \
   --table-name "$TABLE_NAME" \
   --time-to-live-specification "Enabled=true,AttributeName=TTL" \
-  --endpoint-url "$ENDPOINT" \
+  "${endpoint_args[@]}" \
   --region "$REGION" \
   --no-cli-pager
 

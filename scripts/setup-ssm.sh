@@ -24,8 +24,8 @@ echo "Enter values when prompted. Leave blank to keep existing value."
 echo ""
 
 read -r -p "JWT_SECRET_KEY (min 32 chars): " JWT_SECRET_KEY
-read -r -p "DYNAMODB_REGION [ap-south-1]: " DYNAMODB_REGION
-DYNAMODB_REGION="${DYNAMODB_REGION:-ap-south-1}"
+read -r -p "DYNAMODB_REGION [ap-southeast-2]: " DYNAMODB_REGION
+DYNAMODB_REGION="${DYNAMODB_REGION:-ap-southeast-2}"
 read -r -p "DYNAMODB_TABLE_NAME [QComTable]: " DYNAMODB_TABLE_NAME
 DYNAMODB_TABLE_NAME="${DYNAMODB_TABLE_NAME:-QComTable}"
 read -r -p "S3_REGION [ap-southeast-2]: " S3_REGION

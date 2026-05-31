@@ -11,9 +11,18 @@ import (
 	"strings"
 	"time"
 
+	h3 "github.com/uber/h3-go/v4"
+
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/sirupsen/logrus"
 )
+
+// geocodeH3Resolution is the H3 resolution used to key the reverse-geocode
+// cache. r=9 ≈ 170 m hex — small enough that "sublocality, locality" is
+// constant inside a cell, large enough for a high hit rate. Distinct from
+// h3Resolution (r=7) used by ETAService because the two cache different
+// signals at different granularities.
+const geocodeH3Resolution = 9
 
 // ErrGeocoderNotConfigured is returned when no GOOGLE_MAPS_API_KEY is set.
 var ErrGeocoderNotConfigured = errors.New("geocoder not configured: GOOGLE_MAPS_API_KEY is missing")
@@ -144,4 +153,80 @@ func extractAddressLine(body googleGeocodeResponse) string {
 		return body.Results[0].FormattedAddress
 	}
 	return strings.Join(parts, ", ")
+}
+
+// GeocodeCacheStore is the persistence contract used by CachedGeocoder for
+// reverse-geocode look-ups and writes. GeocodeCacheRepository satisfies it.
+type GeocodeCacheStore interface {
+	Get(ctx context.Context, h3Cell string) (*string, error)
+	Save(ctx context.Context, h3Cell string, address string) error
+}
+
+// CachedGeocoder decorates an inner Geocoder with an H3-cell-keyed cache.
+// Flow: H3 cell → cache → inner geocoder → save → return.
+//
+// Cache failures never break the request: a Get error falls back to the inner
+// geocoder, and a Save error is logged but the geocoded address is still
+// returned. Inner-geocoder errors propagate unchanged so callers see the same
+// behaviour as the bare geocoder.
+type CachedGeocoder struct {
+	inner  Geocoder
+	cache  GeocodeCacheStore
+	logger *logrus.Logger
+}
+
+// NewCachedGeocoder wraps inner with cache. inner must be non-nil; cache may
+// be any GeocodeCacheStore implementation.
+func NewCachedGeocoder(inner Geocoder, cache GeocodeCacheStore, logger *logrus.Logger) *CachedGeocoder {
+	return &CachedGeocoder{inner: inner, cache: cache, logger: logger}
+}
+
+// ReverseGeocode returns a "Sublocality, Locality" string for the given
+// coordinate, served from the H3-cell cache when available.
+func (g *CachedGeocoder) ReverseGeocode(ctx context.Context, lat, lng float64) (string, error) {
+	op := logging.Start(ctx, g.logger, "ReverseGeocode.Cached", logrus.Fields{
+		"lat": lat,
+		"lng": lng,
+	})
+	defer op.End()
+
+	cellKey, err := geocodeCellKey(lat, lng)
+	if err != nil {
+		// H3 failure shouldn't sink the whole request — fall through to the
+		// inner geocoder uncached. This branch is effectively unreachable for
+		// valid coordinates.
+		op.Logger().WithError(err).Warn("H3 cell computation failed; bypassing cache")
+		return g.inner.ReverseGeocode(ctx, lat, lng)
+	}
+	op.With("h3_cell", cellKey)
+
+	cached, err := g.cache.Get(ctx, cellKey)
+	if err != nil {
+		op.Logger().WithError(err).Warn("Geocode cache lookup failed; falling back to inner geocoder")
+	} else if cached != nil {
+		op.With("cache_hit", true)
+		return *cached, nil
+	}
+
+	address, err := g.inner.ReverseGeocode(ctx, lat, lng)
+	if err != nil {
+		return "", err
+	}
+
+	if saveErr := g.cache.Save(ctx, cellKey, address); saveErr != nil {
+		op.Logger().WithError(saveErr).Warn("Failed to cache geocode result; returning value")
+	}
+
+	op.With("cache_hit", false)
+	return address, nil
+}
+
+// geocodeCellKey reduces a coordinate to its H3 r=9 cell, formatted as the
+// canonical lowercase hex string used as the cache primary key.
+func geocodeCellKey(lat, lng float64) (string, error) {
+	cell, err := h3.LatLngToCell(h3.NewLatLng(lat, lng), geocodeH3Resolution)
+	if err != nil {
+		return "", fmt.Errorf("failed to compute H3 cell: %w", err)
+	}
+	return fmt.Sprintf("%x", uint64(cell)), nil
 }

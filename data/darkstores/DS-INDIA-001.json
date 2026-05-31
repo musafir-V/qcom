@@ -1,0 +1,15 @@
+{
+  "darkstore_id": "DS-INDIA-001",
+  "name": "Indiranagar Darkstore",
+  "latitude": 12.9719,
+  "longitude": 77.6412,
+  "is_active": true,
+  "created_at": "2026-05-27T00:00:00Z",
+  "updated_at": "2026-05-31T00:00:00Z",
+  "polygon": [
+    {"lat": 12.96, "lng": 77.62},
+    {"lat": 12.96, "lng": 77.66},
+    {"lat": 12.99, "lng": 77.66},
+    {"lat": 12.99, "lng": 77.62}
+  ]
+}

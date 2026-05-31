@@ -135,7 +135,7 @@ All parameters live under `/qcom/prod/` as `SecureString` type. The EC2 instance
 | Parameter path | Env var it maps to | Notes |
 |---|---|---|
 | `/qcom/prod/JWT_SECRET_KEY` | `JWT_SECRET_KEY` | Required — must be 32+ chars |
-| `/qcom/prod/DYNAMODB_REGION` | `DYNAMODB_REGION` | e.g. `ap-south-1` |
+| `/qcom/prod/DYNAMODB_REGION` | `DYNAMODB_REGION` | `ap-southeast-2` (same region as EC2/ALB) |
 | `/qcom/prod/DYNAMODB_TABLE_NAME` | `DYNAMODB_TABLE_NAME` | e.g. `QComTable` |
 | `/qcom/prod/S3_REGION` | `S3_REGION` | e.g. `ap-southeast-2` |
 | `/qcom/prod/S3_BUCKET` | `S3_BUCKET` | e.g. `printdrop-documents` |
