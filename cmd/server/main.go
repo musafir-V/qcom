@@ -74,6 +74,7 @@ func main() {
 	deService := service.NewDEService(deRepo, qrService, referralService, logger)
 
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, javaOrderClient, distanceService, logger)
 
@@ -99,9 +100,10 @@ func main() {
 	deHandlers := handlers.NewDEHandlers(deService, qrService, logger)
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
+	tripHandlers := handlers.NewTripHandlers(tripService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -203,6 +205,7 @@ func setupRouter(
 	deHandlers *handlers.DEHandlers,
 	referralHandlers *handlers.ReferralHandlers,
 	configHandlers *handlers.ConfigHandlers,
+	tripHandlers *handlers.TripHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -263,7 +266,15 @@ func setupRouter(
 	deProtected.Use(authMiddleware.RequireDEAuth)
 	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST", "OPTIONS")
+	deProtected.HandleFunc("/duty/end", deHandlers.EndDuty).Methods("POST", "OPTIONS")
+	deProtected.HandleFunc("/trip", tripHandlers.GetCurrentTrip).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET", "OPTIONS")
+
+	// Trip progression endpoints (require DE auth)
+	tripRoutes := api.PathPrefix("/trip").Subrouter()
+	tripRoutes.Use(authMiddleware.RequireDEAuth)
+	tripRoutes.HandleFunc("/{tripId}/task/{taskId}/status/update",
+		tripHandlers.UpdateTaskStatus).Methods("POST", "OPTIONS")
 
 	return router
 }
