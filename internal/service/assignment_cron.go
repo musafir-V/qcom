@@ -58,7 +58,9 @@ func NewAssignmentCron(
 // Call Stop() to drain and shut down cleanly.
 func (c *AssignmentCron) Start() {
 	c.logger.Info("assignment cron: starting")
+	c.wg.Add(1)
 	go func() {
+		defer c.wg.Done()
 		ticker := time.NewTicker(cronInterval)
 		defer ticker.Stop()
 		for {
@@ -80,15 +82,12 @@ func (c *AssignmentCron) Stop() {
 }
 
 func (c *AssignmentCron) runTick() {
-	c.wg.Add(1)
-	defer c.wg.Done()
-
-	// Panic recovery — log and release lock if held
+	// Panic recovery — log only. The deferred lock-release below already runs
+	// on panic via LIFO defer ordering, so we must not release again here
+	// (a double-release could delete another instance's freshly-acquired lock).
 	defer func() {
 		if r := recover(); r != nil {
 			c.logger.WithField("panic", r).Error("assignment cron: panic recovered")
-			ctx := context.Background()
-			_ = c.cronLockRepo.Release(ctx)
 		}
 	}()
 
