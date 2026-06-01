@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
@@ -31,7 +32,7 @@ func TestGenerateQRCode_Format(t *testing.T) {
 // A2 — embedded hour matches the current Zambia hour
 func TestGenerateQRCode_CurrentHour(t *testing.T) {
 	svc := newTestQRService()
-	now := time.Now().In(zambiaLoc)
+	now := time.Now().In(timezone.ZambiaLocation())
 
 	code := svc.GenerateQRCode("111")
 
