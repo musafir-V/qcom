@@ -113,13 +113,11 @@ dev-test: ## Start server with local containers for manual API testing
 	@echo ""
 	@echo "Dependencies:"
 	@echo "  - DynamoDB: http://localhost:8000"
-	@echo "  - Redis: localhost:6379"
 	@echo ""
 	@echo "Environment variables set:"
 	@echo "  - DYNAMODB_ENDPOINT=http://localhost:8000"
 	@echo "  - DYNAMODB_REGION=us-east-1"
 	@echo "  - DYNAMODB_TABLE_NAME=QComTable"
-	@echo "  - REDIS_ENDPOINT=localhost:6379"
 	@echo "  - PORT=8080"
 	@echo ""
 	@echo "Server will start with these settings."
@@ -137,9 +135,6 @@ dev-test: ## Start server with local containers for manual API testing
 	DYNAMODB_ENDPOINT=http://localhost:8000 \
 	DYNAMODB_REGION=us-east-1 \
 	DYNAMODB_TABLE_NAME=QComTable \
-	REDIS_ENDPOINT=localhost:6379 \
-	REDIS_PASSWORD= \
-	REDIS_DB=0 \
 	S3_ENDPOINT=http://localhost:4566 \
 	S3_REGION=ap-southeast-2 \
 	S3_BUCKET=printdrop-documents \

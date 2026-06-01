@@ -2,17 +2,11 @@
 
 ## Overview
 
-The QCom authentication service now uses **DynamoDB exclusively** for all data storage, eliminating the need for Redis/Valkey. This simplifies the architecture and reduces operational complexity, especially for AWS deployments.
+The QCom authentication service uses **DynamoDB exclusively** for all data storage. This simplifies the architecture and reduces operational complexity, especially for AWS deployments.
 
 ## What Changed
 
-### ✅ Removed
-- Redis/Valkey dependencies
-- go-redis client library
-- Redis configuration and connection management
-- Complex cache integration issues
-
-### ✅ Added
+### Added
 - `OTPRepository` - DynamoDB storage for OTPs with TTL
 - `RefreshTokenRepository` - DynamoDB storage for refresh tokens with TTL
 - Automatic expiration using DynamoDB TTL feature
@@ -164,8 +158,6 @@ export OTP_MAX_ATTEMPTS="5"
 export PORT="8080"
 ```
 
-**Note:** No Redis environment variables needed!
-
 ## Setup Instructions
 
 ### 1. Start DynamoDB (Local Development)
@@ -263,13 +255,13 @@ export JWT_SECRET_KEY="$(aws secretsmanager get-secret-value --secret-id jwt-sec
 ## Benefits
 
 ### ✅ Simplified Architecture
-- **Single Data Store**: Only DynamoDB, no separate cache
-- **Fewer Dependencies**: No Redis client library
-- **Less Configuration**: Fewer environment variables
+- **Single Data Store**: Only DynamoDB
+- **Fewer Dependencies**: AWS SDK only
+- **Less Configuration**: Minimal environment variables
 
 ### ✅ Operational Simplicity
-- **No Cache Maintenance**: No Redis/Valkey cluster to manage
-- **No Connection Issues**: No cache connectivity problems
+- **Fully Managed**: No separate cache cluster to manage
+- **No Connection Issues**: Single data store connectivity
 - **Automatic Cleanup**: TTL handles expiration automatically
 
 ### ✅ AWS Native
@@ -347,16 +339,6 @@ aws dynamodb scan \
 - **Throughput**: Scales to millions of requests per second
 - **Consistency**: Strong consistency available
 
-### Compared to Redis
-
-| Feature | Redis | DynamoDB |
-|---------|-------|----------|
-| Latency | Sub-millisecond | Single-digit ms |
-| Management | Self-managed | Fully managed |
-| Scaling | Manual | Automatic |
-| Persistence | Optional | Always persistent |
-| Cost | Instance-based | Pay-per-request |
-
 ## Troubleshooting
 
 ### TTL Not Working
@@ -386,15 +368,6 @@ aws dynamodb list-tables --endpoint-url http://localhost:8000
 # Check application logs
 tail -f /tmp/server.log
 ```
-
-## Migration from Redis
-
-If you were using Redis before:
-
-1. ✅ **No Data Migration Needed**: Start fresh with DynamoDB
-2. ✅ **Remove Redis**: Stop and remove Redis containers
-3. ✅ **Update Environment**: Remove REDIS_* environment variables
-4. ✅ **Deploy**: Deploy new version with DynamoDB-only code
 
 ## Summary
 

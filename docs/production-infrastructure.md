@@ -46,7 +46,7 @@ EC2 Instance (managed by ASG: qcom-asg)
   Secrets loaded from SSM Parameter Store at boot
     │
     ▼
-AWS DynamoDB + ElastiCache Redis + S3
+AWS DynamoDB + S3
   (pre-existing, not managed by this setup)
 ```
 
@@ -367,7 +367,7 @@ sudo journalctl -u qcom -n 100 --no-pager
 ```
 
 Common issues:
-- `code=exited, status=1` → the binary crashed on startup. Check logs for the error. Most likely a missing env var or failed DB/Redis connection.
+- `code=exited, status=1` → the binary crashed on startup. Check logs for the error. Most likely a missing env var or failed DynamoDB connection.
 - `code=exited, status=203/EXEC` → the binary file doesn't exist at `/app/qcom/bin/qcom-server`. Run the bootstrap manually or re-deploy.
 
 **Step 4: Check /app/.env exists and has content**

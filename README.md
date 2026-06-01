@@ -115,7 +115,6 @@ export JWT_SECRET_KEY="<your-generated-key>"
 export DYNAMODB_ENDPOINT="http://localhost:8000"
 export DYNAMODB_REGION="us-east-1"
 export DYNAMODB_TABLE_NAME="QComTable"
-export REDIS_ENDPOINT="localhost:6379"
 export PORT="8080"
 ```
 

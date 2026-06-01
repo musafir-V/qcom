@@ -31,7 +31,7 @@ You should see a table header (even if empty). If you see "Cannot connect to the
 ### 3. Run Integration Tests
 
 ```bash
-cd /Users/shivang.awasthi/Desktop/qcom
+cd /Users/shivangawasthi/bunzo/qcom
 make test-integration
 ```
 
@@ -41,23 +41,22 @@ The test suite will:
 
 1. **Start Docker Containers**
    - DynamoDB Local (port 8000)
-   - Redis (port 6379)
 
 2. **Create DynamoDB Table**
    - Creates `QComTable` with proper schema
 
 3. **Start Application Server**
    - Runs on port 8080
-   - Connects to DynamoDB and Redis
+   - Connects to DynamoDB
 
 4. **Run Test Suite**
    - ✅ Health check endpoint
-   - ✅ OTP initiation (tests Redis write)
-   - ✅ OTP verification (tests Redis read)
+   - ✅ OTP initiation (tests DynamoDB write)
+   - ✅ OTP verification (tests DynamoDB read)
    - ✅ Invalid OTP handling
    - ✅ JWT token generation
    - ✅ Protected endpoint access
-   - ✅ Token refresh (tests Redis token storage)
+   - ✅ Token refresh (tests DynamoDB token storage)
    - ✅ Logout functionality
 
 5. **Cleanup**
@@ -101,21 +100,7 @@ Failed: 0
 
 If you cannot run Docker, you can test manually:
 
-### 1. Install Redis Locally
-
-**macOS:**
-```bash
-brew install redis
-redis-server
-```
-
-**Ubuntu:**
-```bash
-sudo apt-get install redis-server
-sudo systemctl start redis
-```
-
-### 2. Install AWS CLI and Start DynamoDB Local
+### 1. Install AWS CLI and Start DynamoDB Local
 
 ```bash
 # Download DynamoDB Local
@@ -128,7 +113,7 @@ tar -xzf dynamodb_local_latest.tar.gz
 java -Djava.library.path=./DynamoDBLocal_lib -jar DynamoDBLocal.jar -sharedDb -inMemory
 ```
 
-### 3. Create DynamoDB Table
+### 2. Create DynamoDB Table
 
 ```bash
 aws dynamodb create-table \
@@ -144,12 +129,10 @@ aws dynamodb create-table \
     --region us-east-1
 ```
 
-### 4. Start the Application
+### 3. Start the Application
 
 ```bash
 export JWT_SECRET_KEY="test-secret-key-32-characters-long"
-export REDIS_ENDPOINT="localhost:6379"
-export REDIS_PASSWORD=""
 export DYNAMODB_ENDPOINT="http://localhost:8000"
 export DYNAMODB_TABLE_NAME="QComTable"
 export PORT="8080"
@@ -157,7 +140,7 @@ export PORT="8080"
 ./bin/qcom-server
 ```
 
-### 5. Test Manually
+### 4. Test Manually
 
 ```bash
 # Test health
@@ -187,8 +170,7 @@ killall Docker && open -a Docker
 
 ### Port Already in Use
 ```bash
-# Check what's using ports 6379 or 8000
-lsof -i :6379
+# Check what's using port 8000
 lsof -i :8000
 
 # Kill process if needed
@@ -206,15 +188,6 @@ aws dynamodb list-tables \
     --region us-east-1
 ```
 
-### Redis Connection Error
-```bash
-# Test Redis connection
-redis-cli ping
-
-# Check Redis logs
-docker logs qcom-redis
-```
-
 ## Quick Test Command
 
 Once Docker is running, just run:
@@ -223,4 +196,3 @@ make test-integration
 ```
 
 This single command handles everything automatically!
-
