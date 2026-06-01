@@ -232,3 +232,92 @@ func (r *DERepository) FindEligibleByStore(ctx context.Context, storeID string) 
 	op.With("count", len(des))
 	return des, nil
 }
+
+// FindEligibleByStoreFIFO returns eligible DEs for a store sorted by updated_at ascending.
+// Uses the DEDutyIndex GSI (PK: duty_index_key).
+func (r *DERepository) FindEligibleByStoreFIFO(ctx context.Context, storeID string) ([]*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, r.logger, "FindEligibleByStoreFIFO", logrus.Fields{"store_id": storeID})
+	defer op.End()
+
+	dutyKey := "DE_ELIGIBLE#" + storeID
+
+	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		IndexName:              aws.String("DEDutyIndex"),
+		KeyConditionExpression: aws.String("duty_index_key = :duty_key"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":duty_key": &types.AttributeValueMemberS{Value: dutyKey},
+		},
+		ScanIndexForward: aws.Bool(true), // ascending updated_at = FIFO
+	})
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to find eligible DEs: %w", err))
+	}
+
+	var des []*models.DeliveryExecutive
+	for _, item := range result.Items {
+		var de models.DeliveryExecutive
+		if err := attributevalue.UnmarshalMap(item, &de); err != nil {
+			op.Logger().WithError(err).Warn("failed to unmarshal DE; skipping")
+			continue
+		}
+		des = append(des, &de)
+	}
+
+	op.With("count", len(des))
+	return des, nil
+}
+
+// IncrementDailyCount atomically increments the DE's daily trip count,
+// resetting it to 1 if the stored date differs from today (Zambia timezone).
+// Also increments TotalTripsCompleted unconditionally.
+// Returns the new daily count after increment.
+func (r *DERepository) IncrementDailyCount(ctx context.Context, phone, todayZambia string) (int, error) {
+	op := logging.Start(ctx, r.logger, "IncrementDailyCount", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	// First fetch current state
+	de, err := r.GetByPhone(ctx, phone)
+	if err != nil || de == nil {
+		return 0, op.Fail(fmt.Errorf("failed to fetch DE for daily count: %w", err))
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	var newCount int
+	var expr string
+	var values map[string]types.AttributeValue
+
+	if de.DailyCountDate != todayZambia {
+		// New day — reset to 1
+		newCount = 1
+		expr = "SET daily_trip_count = :one, daily_count_date = :today, total_trips_completed = total_trips_completed + :one, updated_at = :now"
+		values = map[string]types.AttributeValue{
+			":one":   &types.AttributeValueMemberN{Value: "1"},
+			":today": &types.AttributeValueMemberS{Value: todayZambia},
+			":now":   &types.AttributeValueMemberS{Value: now},
+		}
+	} else {
+		// Same day — increment
+		newCount = de.DailyTripCount + 1
+		expr = "SET daily_trip_count = daily_trip_count + :one, total_trips_completed = total_trips_completed + :one, updated_at = :now"
+		values = map[string]types.AttributeValue{
+			":one": &types.AttributeValueMemberN{Value: "1"},
+			":now": &types.AttributeValueMemberS{Value: now},
+		}
+	}
+
+	_, err = r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:          aws.String(expr),
+		ExpressionAttributeValues: values,
+	})
+	if err != nil {
+		return 0, op.Fail(fmt.Errorf("failed to increment daily count: %w", err))
+	}
+
+	return newCount, nil
+}

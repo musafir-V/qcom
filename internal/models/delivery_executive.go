@@ -18,12 +18,17 @@ type DeliveryExecutive struct {
 	Status      DEStatus `json:"status" dynamodbav:"status"`
 	// Set to "DE_ELIGIBLE#{storeId}" when eligible, cleared otherwise.
 	// Used by DEDutyIndex GSI to let the assignment cron query eligible DEs by store.
-	DutyIndexKey   string `json:"duty_index_key,omitempty" dynamodbav:"duty_index_key,omitempty"`
-	CurrentStoreID string `json:"current_store_id,omitempty" dynamodbav:"current_store_id,omitempty"`
-	CurrentOrderID string `json:"current_order_id,omitempty" dynamodbav:"current_order_id,omitempty"`
-	ReferralCode   string `json:"referral_code,omitempty" dynamodbav:"referral_code,omitempty"`
-	CreatedAt      string `json:"created_at" dynamodbav:"created_at"`
-	UpdatedAt      string `json:"updated_at" dynamodbav:"updated_at"`
+	DutyIndexKey        string `json:"duty_index_key,omitempty" dynamodbav:"duty_index_key,omitempty"`
+	CurrentStoreID      string `json:"current_store_id,omitempty" dynamodbav:"current_store_id,omitempty"`
+	CurrentOrderID      string `json:"current_order_id,omitempty" dynamodbav:"current_order_id,omitempty"`
+	CurrentTripID       string `json:"current_trip_id,omitempty" dynamodbav:"current_trip_id,omitempty"`
+	TotalTripsCompleted int    `json:"total_trips_completed" dynamodbav:"total_trips_completed"`
+	DailyTripCount      int    `json:"daily_trip_count" dynamodbav:"daily_trip_count"`
+	DailyCountDate      string `json:"daily_count_date,omitempty" dynamodbav:"daily_count_date,omitempty"`
+	LastDisbursedAt     string `json:"last_disbursed_at,omitempty" dynamodbav:"last_disbursed_at,omitempty"`
+	ReferralCode        string `json:"referral_code,omitempty" dynamodbav:"referral_code,omitempty"`
+	CreatedAt           string `json:"created_at" dynamodbav:"created_at"`
+	UpdatedAt           string `json:"updated_at" dynamodbav:"updated_at"`
 }
 
 func (de *DeliveryExecutive) GetPK() string {
