@@ -52,8 +52,6 @@ func main() {
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
-	_ = tripRepo     // wired for Phase 2/3
-	_ = cronLockRepo // wired for Phase 2/3
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -74,6 +72,10 @@ func main() {
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
 	deService := service.NewDEService(deRepo, qrService, referralService, logger)
+
+	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
+	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, javaOrderClient, distanceService, logger)
 
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
@@ -115,6 +117,8 @@ func main() {
 		}
 	}()
 
+	assignmentCron.Start()
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -122,6 +126,9 @@ func main() {
 	logger.Info("Shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	logger.Info("Stopping assignment cron...")
+	assignmentCron.Stop()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.WithError(err).Fatal("Server forced to shutdown")
