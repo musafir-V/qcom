@@ -182,6 +182,7 @@ func setupInfra() error {
 			{AttributeName: aws.String("SK"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
 			{AttributeName: aws.String("user_id"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
 			{AttributeName: aws.String("created_at"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
+			{AttributeName: aws.String("referral_code"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
 		},
 		KeySchema: []dynamodbtypes.KeySchemaElement{
 			{AttributeName: aws.String("PK"), KeyType: dynamodbtypes.KeyTypeHash},
@@ -193,6 +194,15 @@ func setupInfra() error {
 				KeySchema: []dynamodbtypes.KeySchemaElement{
 					{AttributeName: aws.String("user_id"), KeyType: dynamodbtypes.KeyTypeHash},
 					{AttributeName: aws.String("created_at"), KeyType: dynamodbtypes.KeyTypeRange},
+				},
+				Projection: &dynamodbtypes.Projection{
+					ProjectionType: dynamodbtypes.ProjectionTypeAll,
+				},
+			},
+			{
+				IndexName: aws.String("ReferralCodeIndex"),
+				KeySchema: []dynamodbtypes.KeySchemaElement{
+					{AttributeName: aws.String("referral_code"), KeyType: dynamodbtypes.KeyTypeHash},
 				},
 				Projection: &dynamodbtypes.Projection{
 					ProjectionType: dynamodbtypes.ProjectionTypeAll,
@@ -301,6 +311,8 @@ func setupServer() (*httptest.Server, error) {
 	addressRepo := repository.NewAddressRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	darkstoreRepo := repository.NewDarkstoreRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	deRepo := repository.NewDERepository(dynamo, cfg.DynamoDB.TableName, logger)
+	referralRepo := repository.NewReferralRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamo, cfg.DynamoDB.TableName, logger)
 
 	// Services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -313,7 +325,8 @@ func setupServer() (*httptest.Server, error) {
 	addressService := service.NewAddressService(addressRepo, logger)
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, testGeocoder, testETAService, logger, false)
 	qrService := service.NewQRService(logger)
-	deService := service.NewDEService(deRepo, qrService, logger)
+	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
+	deService := service.NewDEService(deRepo, qrService, referralService, logger)
 
 	// Handlers
 	authHandlers := handlers.NewAuthHandlers(otpService, jwtService, refreshTokenService, userRepo, deRepo, logger)
@@ -322,12 +335,14 @@ func setupServer() (*httptest.Server, error) {
 	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
 	serviceabilityHandlers := handlers.NewServiceabilityHandlers(serviceabilityService, logger)
 	deHandlers := handlers.NewDEHandlers(deService, qrService, logger)
+	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
+	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 
 	// Middleware
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
 
 	// Router
-	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, authMiddleware, logger)
+	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, authMiddleware, logger)
 	server := httptest.NewServer(router)
 
 	fmt.Printf("Test server started at %s\n", server.URL)
@@ -341,6 +356,8 @@ func buildRouter(
 	addressHandlers *handlers.AddressHandlers,
 	serviceabilityHandlers *handlers.ServiceabilityHandlers,
 	deHandlers *handlers.DEHandlers,
+	referralHandlers *handlers.ReferralHandlers,
+	configHandlers *handlers.ConfigHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -364,6 +381,9 @@ func buildRouter(
 
 	// QR display (no auth)
 	api.HandleFunc("/stores/{storeId}/qr", deHandlers.GetStoreQR).Methods("GET")
+
+	// Payout config update (no auth)
+	api.HandleFunc("/config/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH")
 
 	protected := api.PathPrefix("/").Subrouter()
 	protected.Use(authMiddleware.RequireAuth)
@@ -391,6 +411,7 @@ func buildRouter(
 	deProtected.Use(authMiddleware.RequireDEAuth)
 	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET")
 	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST")
+	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET")
 
 	return router
 }

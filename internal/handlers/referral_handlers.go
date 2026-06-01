@@ -1,0 +1,68 @@
+package handlers
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/qcom/qcom/internal/service"
+	"github.com/sirupsen/logrus"
+)
+
+type ReferralHandlers struct {
+	referralService *service.ReferralService
+	logger          *logrus.Logger
+}
+
+func NewReferralHandlers(referralService *service.ReferralService, logger *logrus.Logger) *ReferralHandlers {
+	return &ReferralHandlers{referralService: referralService, logger: logger}
+}
+
+// GET /api/v1/de/referral
+// Returns the DE's referral code and the list of DEs they have referred with status.
+func (h *ReferralHandlers) GetReferralScreen(w http.ResponseWriter, r *http.Request) {
+	deID, _ := r.Context().Value("entity_id").(string)
+	phone, _ := r.Context().Value("phone").(string)
+
+	code, refs, err := h.referralService.GetReferralScreen(r.Context(), deID, phone)
+	if err != nil {
+		h.logger.WithError(err).Error("failed to get referral screen")
+		h.respondWithError(w, http.StatusInternalServerError, "REFERRAL_FETCH_FAILED", "Failed to fetch referral details")
+		return
+	}
+
+	type referralItem struct {
+		ReferredDEID      string `json:"referred_de_id"`
+		Status            string `json:"status"`
+		CreatedAt         string `json:"created_at"`
+		WindowExpiresAt   string `json:"window_expires_at"`
+		PayoutTriggeredAt string `json:"payout_triggered_at,omitempty"`
+	}
+
+	items := make([]referralItem, 0, len(refs))
+	for _, ref := range refs {
+		items = append(items, referralItem{
+			ReferredDEID:      ref.ReferredDEID,
+			Status:            string(ref.Status),
+			CreatedAt:         ref.CreatedAt,
+			WindowExpiresAt:   ref.WindowExpiresAt,
+			PayoutTriggeredAt: ref.PayoutTriggeredAt,
+		})
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"referral_code": code,
+		"referrals":     items,
+	})
+}
+
+func (h *ReferralHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(payload)
+}
+
+func (h *ReferralHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
+	h.respondWithJSON(w, status, ErrorResponse{
+		Error: ErrorDetail{Code: code, Message: message},
+	})
+}

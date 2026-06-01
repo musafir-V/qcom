@@ -77,6 +77,29 @@ aws dynamodb update-table \
 
 echo "DEDutyIndex GSI setup complete!"
 
+# Add ReferralCodeIndex GSI for O(1) referrer lookup by 6-digit referral code
+echo "Adding ReferralCodeIndex GSI..."
+aws dynamodb update-table \
+  --table-name "$TABLE_NAME" \
+  --attribute-definitions \
+    AttributeName=referral_code,AttributeType=S \
+  --global-secondary-index-updates '[
+    {
+      "Create": {
+        "IndexName": "ReferralCodeIndex",
+        "KeySchema": [
+          {"AttributeName": "referral_code", "KeyType": "HASH"}
+        ],
+        "Projection": {"ProjectionType": "ALL"}
+      }
+    }
+  ]' \
+  "${endpoint_args[@]}" \
+  --region "$REGION" \
+  --no-cli-pager 2>/dev/null || echo "ReferralCodeIndex GSI may already exist, continuing..."
+
+echo "ReferralCodeIndex GSI setup complete!"
+
 # Enable TTL on the table
 echo "Enabling TTL on table..."
 aws dynamodb update-time-to-live \

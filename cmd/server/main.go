@@ -48,6 +48,8 @@ func main() {
 	etaCacheRepo := repository.NewETACacheRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	geocodeCacheRepo := repository.NewGeocodeCacheRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	deRepo := repository.NewDERepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	referralRepo := repository.NewReferralRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -66,7 +68,8 @@ func main() {
 	etaService := service.NewETAService(etaCacheRepo, cfg.Google.MapsAPIKey, logger)
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest)
 	qrService := service.NewQRService(logger)
-	deService := service.NewDEService(deRepo, qrService, logger)
+	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
+	deService := service.NewDEService(deRepo, qrService, referralService, logger)
 
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
@@ -88,9 +91,11 @@ func main() {
 	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
 	serviceabilityHandlers := handlers.NewServiceabilityHandlers(serviceabilityService, logger)
 	deHandlers := handlers.NewDEHandlers(deService, qrService, logger)
+	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
+	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -185,6 +190,8 @@ func setupRouter(
 	addressHandlers *handlers.AddressHandlers,
 	serviceabilityHandlers *handlers.ServiceabilityHandlers,
 	deHandlers *handlers.DEHandlers,
+	referralHandlers *handlers.ReferralHandlers,
+	configHandlers *handlers.ConfigHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -214,6 +221,9 @@ func setupRouter(
 	// QR code display endpoint (no auth required — shown on darkstore screen)
 	api.HandleFunc("/stores/{storeId}/qr", deHandlers.GetStoreQR).Methods("GET", "OPTIONS")
 
+	// Payout config update endpoint (no auth — ops/runtime tuning)
+	api.HandleFunc("/config/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH", "OPTIONS")
+
 	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()
 	protected.Use(authMiddleware.RequireAuth)
@@ -242,6 +252,7 @@ func setupRouter(
 	deProtected.Use(authMiddleware.RequireDEAuth)
 	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST", "OPTIONS")
+	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET", "OPTIONS")
 
 	return router
 }

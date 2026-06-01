@@ -23,10 +23,11 @@ func NewDEHandlers(deService *service.DEService, qrService *service.QRService, l
 // POST /api/v1/de/register
 func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		PhoneNumber string `json:"phone_number"`
-		Name        string `json:"name"`
-		ProfileURL  string `json:"profile_url"`
-		NRCURL      string `json:"nrc_url"`
+		PhoneNumber  string `json:"phone_number"`
+		Name         string `json:"name"`
+		ProfileURL   string `json:"profile_url"`
+		NRCURL       string `json:"nrc_url"`
+		ReferralCode string `json:"referral_code"` // optional
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
@@ -55,10 +56,11 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	de, err := h.deService.Register(r.Context(), service.RegisterDERequest{
-		PhoneNumber: req.PhoneNumber,
-		Name:        req.Name,
-		ProfileURL:  req.ProfileURL,
-		NRCURL:      req.NRCURL,
+		PhoneNumber:  req.PhoneNumber,
+		Name:         req.Name,
+		ProfileURL:   req.ProfileURL,
+		NRCURL:       req.NRCURL,
+		ReferralCode: req.ReferralCode,
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already registered") {
@@ -71,11 +73,12 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
-		"de_id":        de.DEID,
-		"phone_number": de.PhoneNumber,
-		"name":         de.Name,
-		"status":       de.Status,
-		"created_at":   de.CreatedAt,
+		"de_id":         de.DEID,
+		"phone_number":  de.PhoneNumber,
+		"name":          de.Name,
+		"status":        de.Status,
+		"referral_code": de.ReferralCode,
+		"created_at":    de.CreatedAt,
 	})
 }
 

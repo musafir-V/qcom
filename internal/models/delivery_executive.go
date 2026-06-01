@@ -21,6 +21,7 @@ type DeliveryExecutive struct {
 	DutyIndexKey   string `json:"duty_index_key,omitempty" dynamodbav:"duty_index_key,omitempty"`
 	CurrentStoreID string `json:"current_store_id,omitempty" dynamodbav:"current_store_id,omitempty"`
 	CurrentOrderID string `json:"current_order_id,omitempty" dynamodbav:"current_order_id,omitempty"`
+	ReferralCode   string `json:"referral_code,omitempty" dynamodbav:"referral_code,omitempty"`
 	CreatedAt      string `json:"created_at" dynamodbav:"created_at"`
 	UpdatedAt      string `json:"updated_at" dynamodbav:"updated_at"`
 }

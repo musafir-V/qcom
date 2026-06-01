@@ -12,38 +12,59 @@ import (
 )
 
 type DEService struct {
-	deRepo    *repository.DERepository
-	qrService *QRService
-	logger    *logrus.Logger
+	deRepo          *repository.DERepository
+	qrService       *QRService
+	referralService *ReferralService
+	logger          *logrus.Logger
 }
 
-func NewDEService(deRepo *repository.DERepository, qrService *QRService, logger *logrus.Logger) *DEService {
-	return &DEService{deRepo: deRepo, qrService: qrService, logger: logger}
+func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, logger *logrus.Logger) *DEService {
+	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, logger: logger}
 }
 
 type RegisterDERequest struct {
-	PhoneNumber string
-	Name        string
-	ProfileURL  string
-	NRCURL      string
+	PhoneNumber  string
+	Name         string
+	ProfileURL   string
+	NRCURL       string
+	ReferralCode string // optional — code of the DE that referred this one
 }
 
 func (s *DEService) Register(ctx context.Context, req RegisterDERequest) (*models.DeliveryExecutive, error) {
 	op := logging.Start(ctx, s.logger, "Register", logrus.Fields{"phone": req.PhoneNumber})
 	defer op.End()
 
+	// Generate a unique referral code for this new DE
+	referralCode, err := s.referralService.GenerateUniqueCode(ctx)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to generate referral code: %w", err))
+	}
+
 	de := &models.DeliveryExecutive{
-		DEID:        uuid.New().String(),
-		PhoneNumber: req.PhoneNumber,
-		Name:        req.Name,
-		ProfileURL:  req.ProfileURL,
-		NRCURL:      req.NRCURL,
-		Status:      models.DEStatusOffline,
+		DEID:         uuid.New().String(),
+		PhoneNumber:  req.PhoneNumber,
+		Name:         req.Name,
+		ProfileURL:   req.ProfileURL,
+		NRCURL:       req.NRCURL,
+		Status:       models.DEStatusOffline,
+		ReferralCode: referralCode,
 	}
 
 	if err := s.deRepo.Create(ctx, de); err != nil {
 		return nil, op.Fail(err)
 	}
+
+	// Link referral if a code was provided — non-fatal if invalid
+	if req.ReferralCode != "" {
+		windowDays := 30 // safe default if config unavailable
+		if cfg, cfgErr := s.referralService.payoutConfigRepo.Get(ctx); cfgErr == nil {
+			windowDays = cfg.ReferralWindowDays
+		}
+		if linkErr := s.referralService.LinkReferral(ctx, de.DEID, req.ReferralCode, windowDays); linkErr != nil {
+			s.logger.WithError(linkErr).Warn("referral linking failed during registration — continuing")
+		}
+	}
+
 	return de, nil
 }
 

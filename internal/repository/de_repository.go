@@ -168,6 +168,38 @@ func (r *DERepository) UpdateStatus(ctx context.Context, phone string, status mo
 	return nil
 }
 
+// GetByReferralCode looks up a DE using the ReferralCodeIndex GSI.
+// The GSI must be configured in DynamoDB: index name "ReferralCodeIndex",
+// partition key "referral_code", projecting all attributes.
+func (r *DERepository) GetByReferralCode(ctx context.Context, code string) (*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, r.logger, "GetByReferralCode", logrus.Fields{"code": code})
+	defer op.End()
+
+	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		IndexName:              aws.String("ReferralCodeIndex"),
+		KeyConditionExpression: aws.String("referral_code = :code"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":code": &types.AttributeValueMemberS{Value: code},
+		},
+		Limit: aws.Int32(1),
+	})
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to query by referral code: %w", err))
+	}
+	if len(result.Items) == 0 {
+		op.With("found", false)
+		return nil, nil
+	}
+
+	var de models.DeliveryExecutive
+	if err := attributevalue.UnmarshalMap(result.Items[0], &de); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal DE: %w", err))
+	}
+	op.With("found", true)
+	return &de, nil
+}
+
 // FindEligibleByStore returns all DEs with status=eligible at the given store.
 // Uses a table scan with filter — add DEDutyIndex GSI for production scale.
 func (r *DERepository) FindEligibleByStore(ctx context.Context, storeID string) ([]*models.DeliveryExecutive, error) {
