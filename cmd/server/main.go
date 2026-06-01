@@ -52,8 +52,6 @@ func main() {
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
-	_ = tripRepo     // wired for Phase 2/3
-	_ = cronLockRepo // wired for Phase 2/3
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -74,6 +72,11 @@ func main() {
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
 	deService := service.NewDEService(deRepo, qrService, referralService, logger)
+
+	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, logger)
+	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, javaOrderClient, distanceService, logger)
 
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
@@ -97,9 +100,10 @@ func main() {
 	deHandlers := handlers.NewDEHandlers(deService, qrService, logger)
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
+	tripHandlers := handlers.NewTripHandlers(tripService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -115,6 +119,8 @@ func main() {
 		}
 	}()
 
+	assignmentCron.Start()
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -122,6 +128,9 @@ func main() {
 	logger.Info("Shutting down server...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	logger.Info("Stopping assignment cron...")
+	assignmentCron.Stop()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.WithError(err).Fatal("Server forced to shutdown")
@@ -196,6 +205,7 @@ func setupRouter(
 	deHandlers *handlers.DEHandlers,
 	referralHandlers *handlers.ReferralHandlers,
 	configHandlers *handlers.ConfigHandlers,
+	tripHandlers *handlers.TripHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -256,7 +266,15 @@ func setupRouter(
 	deProtected.Use(authMiddleware.RequireDEAuth)
 	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST", "OPTIONS")
+	deProtected.HandleFunc("/duty/end", deHandlers.EndDuty).Methods("POST", "OPTIONS")
+	deProtected.HandleFunc("/trip", tripHandlers.GetCurrentTrip).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET", "OPTIONS")
+
+	// Trip progression endpoints (require DE auth)
+	tripRoutes := api.PathPrefix("/trip").Subrouter()
+	tripRoutes.Use(authMiddleware.RequireDEAuth)
+	tripRoutes.HandleFunc("/{tripId}/task/{taskId}/status/update",
+		tripHandlers.UpdateTaskStatus).Methods("POST", "OPTIONS")
 
 	return router
 }

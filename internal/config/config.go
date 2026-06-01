@@ -14,6 +14,7 @@ type Config struct {
 	OTP      OTPConfig
 	S3       S3Config
 	Google   GoogleConfig
+	Java     JavaConfig
 	IsTest   bool
 }
 
@@ -53,6 +54,10 @@ type GoogleConfig struct {
 	MapsAPIKey string
 }
 
+type JavaConfig struct {
+	OrderServiceURL string
+}
+
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -84,6 +89,9 @@ func Load() (*Config, error) {
 		},
 		Google: GoogleConfig{
 			MapsAPIKey: getEnv("GOOGLE_MAPS_API_KEY", ""),
+		},
+		Java: JavaConfig{
+			OrderServiceURL: getEnv("JAVA_ORDER_SERVICE_URL", "http://localhost:8081"),
 		},
 		// IS_TEST (or IS_TRUE): skip polygon check; use first active darkstore from DDB.
 		IsTest: envBool("IS_TEST") || envBool("IS_TRUE"),

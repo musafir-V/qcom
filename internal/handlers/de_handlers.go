@@ -158,6 +158,29 @@ func (h *DEHandlers) GetStoreQR(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// POST /api/v1/de/duty/end
+func (h *DEHandlers) EndDuty(w http.ResponseWriter, r *http.Request) {
+	phone, _ := r.Context().Value("phone").(string)
+
+	if err := h.deService.EndDuty(r.Context(), phone); err != nil {
+		errStr := err.Error()
+		code := "DUTY_END_FAILED"
+		status := http.StatusBadRequest
+		if strings.Contains(errStr, "active delivery") {
+			code = "ACTIVE_DELIVERY"
+		} else if strings.Contains(errStr, "already offline") {
+			code = "ALREADY_OFFLINE"
+		}
+		h.respondWithError(w, status, code, errStr)
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]string{
+		"status":  "offline",
+		"message": "Duty ended.",
+	})
+}
+
 func (h *DEHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
