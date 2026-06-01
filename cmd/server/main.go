@@ -51,6 +51,7 @@ func main() {
 	referralRepo := repository.NewReferralRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
@@ -74,7 +75,8 @@ func main() {
 	deService := service.NewDEService(deRepo, qrService, referralService, logger)
 
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
-	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, logger)
+	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, javaOrderClient, distanceService, logger)
 
