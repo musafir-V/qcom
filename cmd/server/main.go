@@ -50,6 +50,10 @@ func main() {
 	deRepo := repository.NewDERepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	referralRepo := repository.NewReferralRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	_ = tripRepo     // wired for Phase 2/3
+	_ = cronLockRepo // wired for Phase 2/3
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
