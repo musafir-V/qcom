@@ -119,3 +119,29 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string) (stri
 	op.With("store_id", storeID)
 	return storeID, nil
 }
+
+// EndDuty transitions the DE from eligible or free to offline.
+// Rejected if DE is busy (active trip in progress).
+func (s *DEService) EndDuty(ctx context.Context, dePhone string) error {
+	op := logging.Start(ctx, s.logger, "EndDuty", logrus.Fields{"phone": dePhone})
+	defer op.End()
+
+	de, err := s.deRepo.GetByPhone(ctx, dePhone)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to fetch DE: %w", err))
+	}
+	if de == nil {
+		return op.Outcome("not_found", fmt.Errorf("delivery executive not found"))
+	}
+	if de.Status == models.DEStatusBusy {
+		return op.Outcome("busy", fmt.Errorf("cannot end duty while on an active delivery"))
+	}
+	if de.Status == models.DEStatusOffline {
+		return op.Outcome("already_offline", fmt.Errorf("already offline"))
+	}
+
+	if err := s.deRepo.UpdateStatus(ctx, dePhone, models.DEStatusOffline, "", ""); err != nil {
+		return op.Fail(fmt.Errorf("failed to update DE status: %w", err))
+	}
+	return nil
+}
