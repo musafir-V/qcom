@@ -313,6 +313,8 @@ func setupServer() (*httptest.Server, error) {
 	deRepo := repository.NewDERepository(dynamo, cfg.DynamoDB.TableName, logger)
 	referralRepo := repository.NewReferralRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	disbursementRepo := repository.NewDisbursementRepository(dynamo, cfg.DynamoDB.TableName, logger)
 
 	// Services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -337,12 +339,14 @@ func setupServer() (*httptest.Server, error) {
 	deHandlers := handlers.NewDEHandlers(deService, qrService, logger)
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
+	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
+	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
 
 	// Middleware
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
 
 	// Router
-	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, authMiddleware, logger)
+	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, earningsHandlers, disbursementHandlers, authMiddleware, logger)
 	server := httptest.NewServer(router)
 
 	fmt.Printf("Test server started at %s\n", server.URL)
@@ -358,6 +362,8 @@ func buildRouter(
 	deHandlers *handlers.DEHandlers,
 	referralHandlers *handlers.ReferralHandlers,
 	configHandlers *handlers.ConfigHandlers,
+	earningsHandlers *handlers.EarningsHandlers,
+	disbursementHandlers *handlers.DisbursementHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -384,6 +390,9 @@ func buildRouter(
 
 	// Payout config update (no auth)
 	api.HandleFunc("/config/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH")
+
+	// Ops disbursement recording (no auth)
+	api.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST")
 
 	protected := api.PathPrefix("/").Subrouter()
 	protected.Use(authMiddleware.RequireAuth)
@@ -412,6 +421,8 @@ func buildRouter(
 	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET")
 	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST")
 	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET")
+	deProtected.HandleFunc("/earnings/summary", earningsHandlers.GetEarningsSummary).Methods("GET")
+	deProtected.HandleFunc("/earnings/disbursements", earningsHandlers.GetDisbursements).Methods("GET")
 
 	return router
 }
