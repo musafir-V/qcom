@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -68,28 +69,39 @@ func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) 
 	newStatus := models.TaskStatus(req.Status)
 	err := h.tripService.UpdateTaskStatus(r.Context(), tripID, taskID, phone, newStatus, req.OTP)
 	if err != nil {
-		errStr := err.Error()
-		switch {
-		case strings.Contains(errStr, "not found"):
-			h.respondWithError(w, http.StatusNotFound, "NOT_FOUND", errStr)
-		case strings.Contains(errStr, "forbidden"):
-			h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Trip is not assigned to you")
-		case strings.Contains(errStr, "trip_closed"):
-			h.respondWithError(w, http.StatusBadRequest, "TRIP_ALREADY_CLOSED", errStr)
-		case strings.Contains(errStr, "prerequisite_incomplete"):
-			h.respondWithError(w, http.StatusBadRequest, "PREREQUISITE_TASK_INCOMPLETE", errStr)
-		case strings.Contains(errStr, "invalid_transition"):
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_TASK_TRANSITION", errStr)
-		case strings.Contains(errStr, "invalid OTP"):
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_OTP", "Incorrect OTP")
-		default:
+		status, code := classifyTaskUpdateError(err)
+		if status == http.StatusInternalServerError {
 			h.logger.WithError(err).Error("failed to update task status")
-			h.respondWithError(w, http.StatusInternalServerError, "UPDATE_FAILED", "Failed to update task status")
+			h.respondWithError(w, status, code, "Failed to update task status")
+			return
 		}
+		h.respondWithError(w, status, code, err.Error())
 		return
 	}
 
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// classifyTaskUpdateError maps a TripService.UpdateTaskStatus error to an HTTP
+// status code and a machine-readable error code using errors.Is against the
+// service package's sentinel errors. Unrecognized errors map to 500.
+func classifyTaskUpdateError(err error) (status int, code string) {
+	switch {
+	case errors.Is(err, service.ErrTripNotFound), errors.Is(err, service.ErrTaskNotFound):
+		return http.StatusNotFound, "NOT_FOUND"
+	case errors.Is(err, service.ErrTripForbidden):
+		return http.StatusForbidden, "FORBIDDEN"
+	case errors.Is(err, service.ErrTripClosed):
+		return http.StatusBadRequest, "TRIP_ALREADY_CLOSED"
+	case errors.Is(err, service.ErrPrerequisiteIncomplete):
+		return http.StatusBadRequest, "PREREQUISITE_TASK_INCOMPLETE"
+	case errors.Is(err, service.ErrInvalidOTP):
+		return http.StatusBadRequest, "INVALID_OTP"
+	case errors.Is(err, service.ErrInvalidTransition):
+		return http.StatusBadRequest, "INVALID_TASK_TRANSITION"
+	default:
+		return http.StatusInternalServerError, "UPDATE_FAILED"
+	}
 }
 
 func (h *TripHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {

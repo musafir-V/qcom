@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,20 @@ import (
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
+)
+
+// Sentinel errors returned by UpdateTaskStatus and the task transition
+// validators. Callers should classify these with errors.Is rather than
+// matching on error text. Wrapping with %w preserves the sentinel identity
+// while allowing a human-readable detail to be appended.
+var (
+	ErrTripNotFound           = errors.New("trip not found")
+	ErrTaskNotFound           = errors.New("task not found")
+	ErrTripForbidden          = errors.New("trip not assigned to this DE")
+	ErrTripClosed             = errors.New("trip already closed")
+	ErrPrerequisiteIncomplete = errors.New("prerequisite task incomplete")
+	ErrInvalidTransition      = errors.New("invalid task transition")
+	ErrInvalidOTP             = errors.New("invalid OTP")
 )
 
 type TripService struct {
@@ -39,8 +54,11 @@ func (s *TripService) GetCurrentTrip(ctx context.Context, dePhone string) (*mode
 	defer op.End()
 
 	de, err := s.deRepo.GetByPhone(ctx, dePhone)
-	if err != nil || de == nil {
-		return nil, op.Fail(fmt.Errorf("DE not found"))
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+	if de == nil {
+		return nil, op.Outcome("not_found", fmt.Errorf("DE not found"))
 	}
 	if de.CurrentOrderID == "" {
 		return nil, nil
@@ -67,33 +85,36 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 		return op.Fail(err)
 	}
 	if trip == nil {
-		return op.Outcome("not_found", fmt.Errorf("trip %s not found", tripID))
+		return op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTripNotFound, tripID))
 	}
 
 	// 2. Verify caller owns this trip
 	de, err := s.deRepo.GetByPhone(ctx, callerDEPhone)
-	if err != nil || de == nil {
-		return op.Fail(fmt.Errorf("DE not found"))
+	if err != nil {
+		return op.Fail(err)
+	}
+	if de == nil {
+		return op.Outcome("forbidden", ErrTripForbidden)
 	}
 	if trip.DEID != de.DEID {
-		return op.Outcome("forbidden", fmt.Errorf("trip is not assigned to this DE"))
+		return op.Outcome("forbidden", ErrTripForbidden)
 	}
 
 	// 3. Trip-level guard: reject if already closed
 	if trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled {
-		return op.Outcome("trip_closed", fmt.Errorf("trip is already %s", trip.Status))
+		return op.Outcome("trip_closed", fmt.Errorf("%w: %s", ErrTripClosed, trip.Status))
 	}
 
 	// 4. Find task
 	task := trip.TaskByID(taskID)
 	if task == nil {
-		return op.Outcome("not_found", fmt.Errorf("task %s not found on trip", taskID))
+		return op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTaskNotFound, taskID))
 	}
 
 	// 5. Cross-task ordering: drop cannot advance until pickup is completed
 	if task.Type == models.TaskTypeDrop {
 		if err := validateCrossTaskOrdering(trip, task); err != nil {
-			return op.Outcome("prerequisite_incomplete", err)
+			return op.Outcome("prerequisite_incomplete", fmt.Errorf("%w: %w", ErrPrerequisiteIncomplete, err))
 		}
 	}
 
@@ -118,15 +139,21 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, task *models.Task, de *models.DeliveryExecutive) {
 	switch {
 	case task.Type == models.TaskTypePickup && task.Status == models.TaskStatusCompleted:
-		_ = s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusInTransit)
+		if err := s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusInTransit); err != nil {
+			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
+		}
 		// Async: notify Java OUT_FOR_DELIVERY
 		go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", de.DEID)
 
 	case task.Type == models.TaskTypeDrop && task.Status == models.TaskStatusReached:
-		_ = s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusReached)
+		if err := s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusReached); err != nil {
+			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
+		}
 
 	case task.Type == models.TaskTypeDrop && task.Status == models.TaskStatusCompleted:
-		_ = s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusCompleted)
+		if err := s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusCompleted); err != nil {
+			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
+		}
 		// Async: notify Java DELIVERED
 		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
 		// Increment daily count and free the DE
@@ -175,7 +202,7 @@ func (s *TripService) completeDelivery(trip *models.Trip, de *models.DeliveryExe
 // for the given task type and current status.
 func validateTaskTransition(task models.Task, newStatus models.TaskStatus, otp string) error {
 	if task.Status == newStatus {
-		return fmt.Errorf("task is already in state %q", newStatus)
+		return fmt.Errorf("%w: task is already in state %q", ErrInvalidTransition, newStatus)
 	}
 
 	switch task.Type {
@@ -184,24 +211,24 @@ func validateTaskTransition(task models.Task, newStatus models.TaskStatus, otp s
 		if task.Status == models.TaskStatusArrived && newStatus == models.TaskStatusCompleted {
 			return nil
 		}
-		return fmt.Errorf("invalid pickup transition: %s → %s (only arrived→completed is allowed via API)", task.Status, newStatus)
+		return fmt.Errorf("%w: invalid pickup transition: %s → %s (only arrived→completed is allowed via API)", ErrInvalidTransition, task.Status, newStatus)
 
 	case models.TaskTypeDrop:
 		switch {
 		case task.Status == models.TaskStatusCreated && newStatus == models.TaskStatusReached:
 			// Requires correct OTP
 			if task.OTP != otp {
-				return fmt.Errorf("invalid OTP")
+				return fmt.Errorf("%w", ErrInvalidOTP)
 			}
 			return nil
 		case task.Status == models.TaskStatusReached && newStatus == models.TaskStatusCompleted:
 			return nil
 		default:
-			return fmt.Errorf("invalid drop transition: %s → %s", task.Status, newStatus)
+			return fmt.Errorf("%w: invalid drop transition: %s → %s", ErrInvalidTransition, task.Status, newStatus)
 		}
 	}
 
-	return fmt.Errorf("unknown task type: %s", task.Type)
+	return fmt.Errorf("%w: unknown task type: %s", ErrInvalidTransition, task.Type)
 }
 
 // validateCrossTaskOrdering enforces that the drop task cannot advance
