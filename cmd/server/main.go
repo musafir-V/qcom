@@ -101,9 +101,10 @@ func main() {
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 	tripHandlers := handlers.NewTripHandlers(tripService, logger)
+	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, trackHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -206,6 +207,7 @@ func setupRouter(
 	referralHandlers *handlers.ReferralHandlers,
 	configHandlers *handlers.ConfigHandlers,
 	tripHandlers *handlers.TripHandlers,
+	trackHandlers *handlers.TrackHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -260,6 +262,9 @@ func setupRouter(
 	protected.HandleFunc("/addresses/{id}", addressHandlers.GetAddressByID).Methods("GET")
 	protected.HandleFunc("/addresses/{id}", addressHandlers.UpdateReceiverDetails).Methods("PATCH")
 	protected.HandleFunc("/addresses/{id}", addressHandlers.RemoveAddress).Methods("DELETE")
+
+	// Customer order tracking
+	protected.HandleFunc("/orders/{orderId}/track", trackHandlers.Track).Methods("GET", "OPTIONS")
 
 	// DE duty endpoints (require DE auth)
 	deProtected := api.PathPrefix("/de").Subrouter()
