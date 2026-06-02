@@ -268,6 +268,47 @@ func (r *DERepository) FindEligibleByStoreFIFO(ctx context.Context, storeID stri
 	return des, nil
 }
 
+// ScanAll returns every DE metadata item in the table.
+// Uses a paginated table scan filtered to DE metadata items (PK begins with "DE!", SK = "METADATA").
+func (r *DERepository) ScanAll(ctx context.Context) ([]*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, r.logger, "ScanAll", nil)
+	defer op.End()
+
+	var des []*models.DeliveryExecutive
+	var lastKey map[string]types.AttributeValue
+	for {
+		result, err := r.client.Scan(ctx, &dynamodb.ScanInput{
+			TableName:        aws.String(r.tableName),
+			FilterExpression: aws.String("begins_with(PK, :prefix) AND SK = :meta"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":prefix": &types.AttributeValueMemberS{Value: "DE!"},
+				":meta":   &types.AttributeValueMemberS{Value: "METADATA"},
+			},
+			ExclusiveStartKey: lastKey,
+		})
+		if err != nil {
+			return nil, op.Fail(fmt.Errorf("failed to scan DEs: %w", err))
+		}
+
+		for _, item := range result.Items {
+			var de models.DeliveryExecutive
+			if err := attributevalue.UnmarshalMap(item, &de); err != nil {
+				op.Logger().WithError(err).Warn("failed to unmarshal a DE; skipping")
+				continue
+			}
+			des = append(des, &de)
+		}
+
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
+	}
+
+	op.With("count", len(des))
+	return des, nil
+}
+
 // IncrementDailyCount atomically increments the DE's daily trip count,
 // resetting it to 1 if the stored date differs from today (Zambia timezone).
 // Also increments TotalTripsCompleted unconditionally.
