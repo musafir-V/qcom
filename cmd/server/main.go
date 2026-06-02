@@ -53,6 +53,7 @@ func main() {
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	weeklySummaryRepo := repository.NewWeeklySummaryRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	disbursementRepo := repository.NewDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
@@ -105,9 +106,11 @@ func main() {
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 	tripHandlers := handlers.NewTripHandlers(tripService, logger)
+	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
+	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, earningsHandlers, disbursementHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -214,6 +217,8 @@ func setupRouter(
 	referralHandlers *handlers.ReferralHandlers,
 	configHandlers *handlers.ConfigHandlers,
 	tripHandlers *handlers.TripHandlers,
+	earningsHandlers *handlers.EarningsHandlers,
+	disbursementHandlers *handlers.DisbursementHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -246,6 +251,9 @@ func setupRouter(
 	// Payout config update endpoint (no auth — ops/runtime tuning)
 	api.HandleFunc("/config/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH", "OPTIONS")
 
+	// Ops disbursement recording endpoint (no auth — internal)
+	api.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST", "OPTIONS")
+
 	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()
 	protected.Use(authMiddleware.RequireAuth)
@@ -277,6 +285,8 @@ func setupRouter(
 	deProtected.HandleFunc("/duty/end", deHandlers.EndDuty).Methods("POST", "OPTIONS")
 	deProtected.HandleFunc("/trip", tripHandlers.GetCurrentTrip).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET", "OPTIONS")
+	deProtected.HandleFunc("/earnings/summary", earningsHandlers.GetEarningsSummary).Methods("GET", "OPTIONS")
+	deProtected.HandleFunc("/earnings/disbursements", earningsHandlers.GetDisbursements).Methods("GET", "OPTIONS")
 
 	// Trip progression endpoints (require DE auth)
 	tripRoutes := api.PathPrefix("/trip").Subrouter()

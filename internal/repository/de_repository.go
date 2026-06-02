@@ -362,3 +362,29 @@ func (r *DERepository) IncrementDailyCount(ctx context.Context, phone, todayZamb
 
 	return newCount, nil
 }
+
+// UpdateLastDisbursedAt stamps the last_disbursed_at field on the DE record.
+// Called when ops records a disbursement so future earnings summaries reset
+// their outstanding-balance window.
+func (r *DERepository) UpdateLastDisbursedAt(ctx context.Context, phone, disbursedAt string) error {
+	op := logging.Start(ctx, r.logger, "UpdateLastDisbursedAt", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String("SET last_disbursed_at = :dat, updated_at = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":dat": &types.AttributeValueMemberS{Value: disbursedAt},
+			":now": &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to update last_disbursed_at: %w", err))
+	}
+	return nil
+}
