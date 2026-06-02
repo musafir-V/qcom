@@ -9,7 +9,6 @@ import (
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
-	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
@@ -28,23 +27,26 @@ var (
 )
 
 type TripService struct {
-	tripRepo   *repository.TripRepository
-	deRepo     *repository.DERepository
-	javaClient *JavaOrderClient
-	logger     *logrus.Logger
+	tripRepo      *repository.TripRepository
+	deRepo        *repository.DERepository
+	javaClient    *JavaOrderClient
+	payoutService *PayoutService
+	logger        *logrus.Logger
 }
 
 func NewTripService(
 	tripRepo *repository.TripRepository,
 	deRepo *repository.DERepository,
 	javaClient *JavaOrderClient,
+	payoutService *PayoutService,
 	logger *logrus.Logger,
 ) *TripService {
 	return &TripService{
-		tripRepo:   tripRepo,
-		deRepo:     deRepo,
-		javaClient: javaClient,
-		logger:     logger,
+		tripRepo:      tripRepo,
+		deRepo:        deRepo,
+		javaClient:    javaClient,
+		payoutService: payoutService,
+		logger:        logger,
 	}
 }
 
@@ -185,11 +187,10 @@ func (s *TripService) syncJavaWithRetry(orderID, status, deID string) {
 // and transitions DE status to free. Runs in a goroutine.
 func (s *TripService) completeDelivery(trip *models.Trip, de *models.DeliveryExecutive) {
 	ctx := context.Background()
-	today := timezone.DateString()
 
-	if _, err := s.deRepo.IncrementDailyCount(ctx, de.PhoneNumber, today); err != nil {
-		s.logger.WithError(err).WithField("de_phone", de.PhoneNumber).
-			Error("failed to increment daily count on trip completion")
+	// Payout computation + ledger write (increments the DE daily count internally).
+	if s.payoutService != nil {
+		s.payoutService.OnTripCompleted(ctx, trip, de.PhoneNumber)
 	}
 
 	if err := s.deRepo.UpdateStatus(ctx, de.PhoneNumber, models.DEStatusFree, "", ""); err != nil {

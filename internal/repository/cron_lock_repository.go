@@ -61,6 +61,59 @@ func (r *CronLockRepository) Acquire(ctx context.Context, ttlSeconds int) (bool,
 	return true, nil
 }
 
+// AcquireWithSK attempts to acquire a distributed cron lock under a specific sort key.
+// Returns true if acquired, false if another instance holds it.
+// The lock expires after ttlSeconds if ReleaseWithSK is never called (e.g. instance crash).
+func (r *CronLockRepository) AcquireWithSK(ctx context.Context, sk string, ttlSeconds int) (bool, error) {
+	op := logging.Start(ctx, r.logger, "CronLock.AcquireWithSK", logrus.Fields{"sk": sk})
+	defer op.End()
+
+	expiresAt := time.Now().UTC().Add(time.Duration(ttlSeconds) * time.Second).Format(time.RFC3339)
+
+	_, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(r.tableName),
+		Item: map[string]types.AttributeValue{
+			"PK":         &types.AttributeValueMemberS{Value: cronLockPK},
+			"SK":         &types.AttributeValueMemberS{Value: sk},
+			"expires_at": &types.AttributeValueMemberS{Value: expiresAt},
+		},
+		// Acquire if: lock doesn't exist OR it has expired
+		ConditionExpression: aws.String("attribute_not_exists(PK) OR expires_at < :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":now": &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			op.With("acquired", false)
+			return false, nil // another instance holds the lock
+		}
+		return false, op.Fail(fmt.Errorf("failed to acquire cron lock: %w", err))
+	}
+
+	op.With("acquired", true)
+	return true, nil
+}
+
+// ReleaseWithSK deletes the lock under a specific sort key so the next tick can acquire it immediately.
+func (r *CronLockRepository) ReleaseWithSK(ctx context.Context, sk string) error {
+	op := logging.Start(ctx, r.logger, "CronLock.ReleaseWithSK", logrus.Fields{"sk": sk})
+	defer op.End()
+
+	_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: cronLockPK},
+			"SK": &types.AttributeValueMemberS{Value: sk},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to release cron lock: %w", err))
+	}
+	return nil
+}
+
 // Release deletes the lock so the next tick can acquire it immediately.
 // Always call this after a successful tick completes (even on partial failure).
 func (r *CronLockRepository) Release(ctx context.Context) error {

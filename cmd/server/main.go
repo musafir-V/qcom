@@ -51,6 +51,9 @@ func main() {
 	referralRepo := repository.NewReferralRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	weeklySummaryRepo := repository.NewWeeklySummaryRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	disbursementRepo := repository.NewDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
@@ -74,9 +77,11 @@ func main() {
 	deService := service.NewDEService(deRepo, qrService, referralService, logger)
 
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
-	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, logger)
+	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, javaOrderClient, distanceService, logger)
+	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
@@ -102,9 +107,11 @@ func main() {
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 	tripHandlers := handlers.NewTripHandlers(tripService, logger)
 	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
+	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
+	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, trackHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, trackHandlers, earningsHandlers, disbursementHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -121,6 +128,7 @@ func main() {
 	}()
 
 	assignmentCron.Start()
+	weeklyBonusCron.Start()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -132,6 +140,9 @@ func main() {
 
 	logger.Info("Stopping assignment cron...")
 	assignmentCron.Stop()
+
+	logger.Info("Stopping weekly bonus cron...")
+	weeklyBonusCron.Stop()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.WithError(err).Fatal("Server forced to shutdown")
@@ -208,6 +219,8 @@ func setupRouter(
 	configHandlers *handlers.ConfigHandlers,
 	tripHandlers *handlers.TripHandlers,
 	trackHandlers *handlers.TrackHandlers,
+	earningsHandlers *handlers.EarningsHandlers,
+	disbursementHandlers *handlers.DisbursementHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -239,6 +252,9 @@ func setupRouter(
 
 	// Payout config update endpoint (no auth — ops/runtime tuning)
 	api.HandleFunc("/config/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH", "OPTIONS")
+
+	// Ops disbursement recording endpoint (no auth — internal)
+	api.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST", "OPTIONS")
 
 	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()
@@ -274,6 +290,8 @@ func setupRouter(
 	deProtected.HandleFunc("/duty/end", deHandlers.EndDuty).Methods("POST", "OPTIONS")
 	deProtected.HandleFunc("/trip", tripHandlers.GetCurrentTrip).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET", "OPTIONS")
+	deProtected.HandleFunc("/earnings/summary", earningsHandlers.GetEarningsSummary).Methods("GET", "OPTIONS")
+	deProtected.HandleFunc("/earnings/disbursements", earningsHandlers.GetDisbursements).Methods("GET", "OPTIONS")
 
 	// Trip progression endpoints (require DE auth)
 	tripRoutes := api.PathPrefix("/trip").Subrouter()
