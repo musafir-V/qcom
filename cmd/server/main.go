@@ -52,6 +52,7 @@ func main() {
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	weeklySummaryRepo := repository.NewWeeklySummaryRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
@@ -79,6 +80,7 @@ func main() {
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, javaOrderClient, distanceService, logger)
+	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
@@ -122,6 +124,7 @@ func main() {
 	}()
 
 	assignmentCron.Start()
+	weeklyBonusCron.Start()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -133,6 +136,9 @@ func main() {
 
 	logger.Info("Stopping assignment cron...")
 	assignmentCron.Stop()
+
+	logger.Info("Stopping weekly bonus cron...")
+	weeklyBonusCron.Stop()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.WithError(err).Fatal("Server forced to shutdown")
