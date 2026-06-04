@@ -80,7 +80,7 @@ func main() {
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
-	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, javaOrderClient, distanceService, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, darkstoreRepo, javaOrderClient, distanceService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
 	s3Client, err := initS3(cfg, logger)

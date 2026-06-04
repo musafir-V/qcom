@@ -25,6 +25,7 @@ type AssignmentCron struct {
 	deRepo           *repository.DERepository
 	cronLockRepo     *repository.CronLockRepository
 	payoutConfigRepo *repository.PayoutConfigRepository
+	darkstoreRepo    *repository.DarkstoreRepository
 	javaClient       *JavaOrderClient
 	distanceService  *DistanceService
 	logger           *logrus.Logger
@@ -38,6 +39,7 @@ func NewAssignmentCron(
 	deRepo *repository.DERepository,
 	cronLockRepo *repository.CronLockRepository,
 	payoutConfigRepo *repository.PayoutConfigRepository,
+	darkstoreRepo *repository.DarkstoreRepository,
 	javaClient *JavaOrderClient,
 	distanceService *DistanceService,
 	logger *logrus.Logger,
@@ -47,6 +49,7 @@ func NewAssignmentCron(
 		deRepo:           deRepo,
 		cronLockRepo:     cronLockRepo,
 		payoutConfigRepo: payoutConfigRepo,
+		darkstoreRepo:    darkstoreRepo,
 		javaClient:       javaClient,
 		distanceService:  distanceService,
 		logger:           logger,
@@ -238,23 +241,28 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 }
 
 func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *models.PayoutConfig) (*models.Trip, error) {
-	// Get darkstore coordinates from DarkstoreRepository would go here.
-	// For now, use placeholder darkstore coordinates for store 221.
-	// Phase 3 wires in real darkstore lat/lng via DarkstoreRepository.
-	storeLat := -15.4167 // Lusaka approximate
-	storeLng := 28.2833
+	storeID := order.StoreID
+	if storeID == "" {
+		storeID = defaultStoreID
+	}
 
-	distKM, err := c.distanceService.DistanceKM(ctx, storeLat, storeLng, order.Delivery.Lat, order.Delivery.Lng)
+	ds, err := c.darkstoreRepo.GetByID(ctx, storeID)
+	if err != nil {
+		return nil, fmt.Errorf("darkstore lookup failed for store %s: %w", storeID, err)
+	}
+	if ds == nil {
+		return nil, fmt.Errorf("darkstore not found for store %s", storeID)
+	}
+	if !ds.IsActive {
+		return nil, fmt.Errorf("darkstore %s is inactive", storeID)
+	}
+
+	distKM, err := c.distanceService.DistanceKM(ctx, ds.Latitude, ds.Longitude, order.Delivery.Lat, order.Delivery.Lng)
 	if err != nil {
 		return nil, fmt.Errorf("distance lookup failed for order %s: %w", order.OrderID, err)
 	}
 
 	basePayZMW := cfg.RatePerKmZMW * distKM
-
-	storeID := order.StoreID
-	if storeID == "" {
-		storeID = defaultStoreID
-	}
 
 	tripID := uuid.New().String()
 	pickupTaskID := uuid.New().String()
@@ -272,10 +280,9 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 				TaskID:  pickupTaskID,
 				Type:    models.TaskTypePickup,
 				Status:  models.TaskStatusArrived, // auto-arrived at creation
-				Phone:   darkstorePhone(storeID),
-				Address: darkstoreAddress(storeID),
-				Lat:     storeLat,
-				Lng:     storeLng,
+				Address: ds.Name,
+				Lat:     ds.Latitude,
+				Lng:     ds.Longitude,
 			},
 			{
 				TaskID:  dropTaskID,
@@ -323,7 +330,3 @@ func randomOTP() string {
 	return fmt.Sprintf("%04d", rand.Intn(9000)+1000)
 }
 
-// darkstorePhone and darkstoreAddress return placeholder values for store 221.
-// Replace with DarkstoreRepository lookup when multi-store support is added.
-func darkstorePhone(storeID string) string   { return "+260977000001" }
-func darkstoreAddress(storeID string) string { return "Bunzo Darkstore, Lusaka" }
