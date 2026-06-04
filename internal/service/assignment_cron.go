@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	defaultStoreID  = "112233"
+	defaultStoreID  = "221"
 	cronInterval    = 10 * time.Second
 	cronLockTTLSecs = 30
 )
@@ -239,7 +239,7 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 
 func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *models.PayoutConfig) (*models.Trip, error) {
 	// Get darkstore coordinates from DarkstoreRepository would go here.
-	// For now, use placeholder darkstore coordinates for store 112233.
+	// For now, use placeholder darkstore coordinates for store 221.
 	// Phase 3 wires in real darkstore lat/lng via DarkstoreRepository.
 	storeLat := -15.4167 // Lusaka approximate
 	storeLng := 28.2833
@@ -323,7 +323,7 @@ func randomOTP() string {
 	return fmt.Sprintf("%04d", rand.Intn(9000)+1000)
 }
 
-// darkstorePhone and darkstoreAddress return placeholder values for store 112233.
+// darkstorePhone and darkstoreAddress return placeholder values for store 221.
 // Replace with DarkstoreRepository lookup when multi-store support is added.
 func darkstorePhone(storeID string) string   { return "+260977000001" }
 func darkstoreAddress(storeID string) string { return "Bunzo Darkstore, Lusaka" }
