@@ -10,8 +10,7 @@ import (
 )
 
 // TestTripProgressionFlow covers the full DE journey:
-// register → start duty → trip assigned by cron → pickup complete →
-// OTP verify → drop complete → DE free.
+// register → start duty → trip assigned by cron → pickup complete → drop complete → DE free.
 //
 // Requires a running server (testServer harness), DynamoDB, and a Java
 // order-service with at least one PACKING order for the test store so the
@@ -50,8 +49,8 @@ func TestTripProgressionFlow(t *testing.T) {
 	tripID, _ := trip["trip_id"].(string)
 	tasks, _ := trip["tasks"].([]interface{})
 
-	// Find pickup and drop task IDs (and the drop OTP).
-	var pickupTaskID, dropTaskID, dropOTP string
+	// Find pickup and drop task IDs.
+	var pickupTaskID, dropTaskID string
 	for _, raw := range tasks {
 		task, ok := raw.(map[string]interface{})
 		if !ok {
@@ -61,7 +60,6 @@ func TestTripProgressionFlow(t *testing.T) {
 			pickupTaskID, _ = task["task_id"].(string)
 		} else {
 			dropTaskID, _ = task["task_id"].(string)
-			dropOTP, _ = task["otp"].(string)
 		}
 	}
 
@@ -73,15 +71,7 @@ func TestTripProgressionFlow(t *testing.T) {
 		t.Fatalf("complete pickup: expected 200, got %d: %v", resp.StatusCode, result)
 	}
 
-	// 5. Submit OTP → reached.
-	resp, result = doRequest(t, "POST",
-		fmt.Sprintf("/api/v1/trip/%s/task/%s/status/update", tripID, dropTaskID),
-		auth, map[string]interface{}{"status": "reached", "otp": dropOTP})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("drop reached (OTP): expected 200, got %d: %v", resp.StatusCode, result)
-	}
-
-	// 6. Complete drop.
+	// 5. Complete drop.
 	resp, result = doRequest(t, "POST",
 		fmt.Sprintf("/api/v1/trip/%s/task/%s/status/update", tripID, dropTaskID),
 		auth, map[string]interface{}{"status": "completed"})
@@ -89,7 +79,7 @@ func TestTripProgressionFlow(t *testing.T) {
 		t.Fatalf("complete drop: expected 200, got %d: %v", resp.StatusCode, result)
 	}
 
-	// 7. DE is freed asynchronously on completion — allow the goroutine to run.
+	// 6. DE is freed asynchronously on completion — allow the goroutine to run.
 	time.Sleep(1 * time.Second)
 	assertDEStatus(t, phone, "free")
 }

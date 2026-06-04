@@ -113,25 +113,18 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 		return op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTaskNotFound, taskID))
 	}
 
-	// 5. Cross-task ordering: drop cannot advance until pickup is completed
-	if task.Type == models.TaskTypeDrop {
-		if err := validateCrossTaskOrdering(trip, task); err != nil {
-			return op.Outcome("prerequisite_incomplete", fmt.Errorf("%w: %w", ErrPrerequisiteIncomplete, err))
-		}
-	}
-
-	// 6. Validate the specific transition
-	if err := validateTaskTransition(*task, newStatus, otp); err != nil {
+	// 5. Validate the specific transition
+	if err := validateTaskTransition(*task, newStatus); err != nil {
 		return op.Outcome("invalid_transition", err)
 	}
 
-	// 7. Apply transition
+	// 6. Apply transition
 	task.Status = newStatus
 	if err := s.tripRepo.UpdateTasks(ctx, tripID, trip.Tasks); err != nil {
 		return op.Fail(err)
 	}
 
-	// 8. Mirror trip status and trigger Java sync
+	// 7. Mirror trip status and trigger Java sync
 	s.onTaskCompleted(ctx, trip, task, de)
 
 	return nil
@@ -146,11 +139,6 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 		}
 		// Async: notify Java OUT_FOR_DELIVERY
 		go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", de.DEID)
-
-	case task.Type == models.TaskTypeDrop && task.Status == models.TaskStatusReached:
-		if err := s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusReached); err != nil {
-			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
-		}
 
 	case task.Type == models.TaskTypeDrop && task.Status == models.TaskStatusCompleted:
 		if err := s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusCompleted); err != nil {
@@ -199,51 +187,13 @@ func (s *TripService) completeDelivery(trip *models.Trip, de *models.DeliveryExe
 	}
 }
 
-// validateTaskTransition checks that the requested status transition is valid
-// for the given task type and current status.
-func validateTaskTransition(task models.Task, newStatus models.TaskStatus, otp string) error {
-	if task.Status == newStatus {
-		return fmt.Errorf("%w: task is already in state %q", ErrInvalidTransition, newStatus)
+// validateTaskTransition allows any non-completed task to move directly to completed.
+func validateTaskTransition(task models.Task, newStatus models.TaskStatus) error {
+	if newStatus != models.TaskStatusCompleted {
+		return fmt.Errorf("%w: only transition to completed is allowed", ErrInvalidTransition)
 	}
-
-	switch task.Type {
-	case models.TaskTypePickup:
-		// Only valid API transition: arrived → completed
-		if task.Status == models.TaskStatusArrived && newStatus == models.TaskStatusCompleted {
-			return nil
-		}
-		return fmt.Errorf("%w: invalid pickup transition: %s → %s (only arrived→completed is allowed via API)", ErrInvalidTransition, task.Status, newStatus)
-
-	case models.TaskTypeDrop:
-		switch {
-		case task.Status == models.TaskStatusCreated && newStatus == models.TaskStatusReached:
-			// Requires correct OTP
-			if task.OTP != otp {
-				return fmt.Errorf("%w", ErrInvalidOTP)
-			}
-			return nil
-		case task.Status == models.TaskStatusReached && newStatus == models.TaskStatusCompleted:
-			return nil
-		default:
-			return fmt.Errorf("%w: invalid drop transition: %s → %s", ErrInvalidTransition, task.Status, newStatus)
-		}
-	}
-
-	return fmt.Errorf("%w: unknown task type: %s", ErrInvalidTransition, task.Type)
-}
-
-// validateCrossTaskOrdering enforces that the drop task cannot advance
-// until the pickup task is completed.
-func validateCrossTaskOrdering(trip *models.Trip, task *models.Task) error {
-	if task.Type != models.TaskTypeDrop {
-		return nil
-	}
-	pickup := trip.PickupTask()
-	if pickup == nil {
-		return fmt.Errorf("trip has no pickup task")
-	}
-	if pickup.Status != models.TaskStatusCompleted {
-		return fmt.Errorf("pickup task must be completed before drop task can advance (pickup status: %s)", pickup.Status)
+	if task.Status == models.TaskStatusCompleted {
+		return fmt.Errorf("%w: task is already completed", ErrInvalidTransition)
 	}
 	return nil
 }

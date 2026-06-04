@@ -279,7 +279,7 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 			{
 				TaskID:  pickupTaskID,
 				Type:    models.TaskTypePickup,
-				Status:  models.TaskStatusArrived, // auto-arrived at creation
+				Status:  models.TaskStatusCreated,
 				Address: ds.Name,
 				Lat:     ds.Latitude,
 				Lng:     ds.Longitude,

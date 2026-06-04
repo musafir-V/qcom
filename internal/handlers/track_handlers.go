@@ -111,8 +111,7 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// OTP — shown only on drop task when status is created (before reached).
-	// Hidden once drop is reached or beyond, and never on completed/cancelled trips.
+	// OTP — shown on drop task until the drop task is completed.
 	dropTask := trip.DropTask()
 	if dropTask != nil &&
 		dropTask.Status == models.TaskStatusCreated &&

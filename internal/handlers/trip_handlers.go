@@ -41,7 +41,7 @@ func (h *TripHandlers) GetCurrentTrip(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/v1/trip/{tripId}/task/{taskId}/status/update
-// Body: { "status": "completed" } or { "status": "reached", "otp": "4821" }
+// Body: { "status": "completed" }
 func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tripID := vars["tripId"]

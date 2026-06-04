@@ -16,8 +16,6 @@ const (
 	TaskTypeDrop   TaskType = "drop"
 
 	TaskStatusCreated   TaskStatus = "created"
-	TaskStatusArrived   TaskStatus = "arrived"
-	TaskStatusReached   TaskStatus = "reached"
 	TaskStatusCompleted TaskStatus = "completed"
 )
 
