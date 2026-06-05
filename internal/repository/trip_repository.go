@@ -327,9 +327,9 @@ func (r *TripRepository) UpdatePayout(ctx context.Context, tripID string, distan
 		UpdateExpression: aws.String("SET distance_km = :dist, base_pay_zmw = :base, bonus_pay_zmw = :bonus, total_pay_zmw = :total, delivery_rank_of_day = :rank, updated_at = :now"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":dist":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.4f", distanceKM)},
-			":base":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", basePayZMW)},
-			":bonus": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", bonusPayZMW)},
-			":total": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.2f", totalPayZMW)},
+			":base":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.0f", basePayZMW)},
+			":bonus": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.0f", bonusPayZMW)},
+			":total": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.0f", totalPayZMW)},
 			":rank":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", rankOfDay)},
 			":now":   &types.AttributeValueMemberS{Value: now},
 		},

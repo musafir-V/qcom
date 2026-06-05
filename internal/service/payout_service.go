@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/logging"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/timezone"
@@ -74,11 +75,12 @@ func (s *PayoutService) OnTripCompleted(ctx context.Context, trip *models.Trip, 
 		return
 	}
 
+	basePayZMW := money.RoundUpZMW(trip.BasePayZMW)
 	bonusPayZMW := computeTierBonus(newDailyCount, cfg)
-	totalPayZMW := trip.BasePayZMW + bonusPayZMW
+	totalPayZMW := basePayZMW + bonusPayZMW
 
 	if err := s.tripRepo.UpdatePayout(ctx, trip.TripID,
-		trip.DistanceKM, trip.BasePayZMW, bonusPayZMW, totalPayZMW, newDailyCount); err != nil {
+		trip.DistanceKM, basePayZMW, bonusPayZMW, totalPayZMW, newDailyCount); err != nil {
 		s.logger.WithError(err).Error("payout: failed to update trip payout fields")
 	}
 
@@ -113,7 +115,7 @@ func (s *PayoutService) WriteWeeklyBonusEntry(ctx context.Context, deID, weekSta
 		DEID:        deID,
 		EarningID:   uuid.New().String(),
 		Type:        models.EarningTypeWeeklyBonus,
-		AmountZMW:   bonusZMW,
+		AmountZMW:   money.RoundUpZMW(bonusZMW),
 		CreatedAt:   timezone.Now().Format(time.RFC3339),
 		ReferenceID: weekStartDate,
 	}
@@ -121,12 +123,13 @@ func (s *PayoutService) WriteWeeklyBonusEntry(ctx context.Context, deID, weekSta
 }
 
 func (s *PayoutService) writeReferralBonusEntries(ctx context.Context, referredDEID, referrerDEID string, bonusZMW float64, now string) {
+	amount := money.RoundUpZMW(bonusZMW)
 	for _, deID := range []string{referredDEID, referrerDEID} {
 		entry := &models.EarningsLedger{
 			DEID:        deID,
 			EarningID:   uuid.New().String(),
 			Type:        models.EarningTypeReferralBonus,
-			AmountZMW:   bonusZMW,
+			AmountZMW:   amount,
 			CreatedAt:   now,
 			ReferenceID: referredDEID,
 		}
@@ -138,16 +141,16 @@ func (s *PayoutService) writeReferralBonusEntries(ctx context.Context, referredD
 }
 
 func computeBasePay(distanceKM float64, cfg *models.PayoutConfig) float64 {
-	return cfg.RatePerKmZMW * distanceKM
+	return money.RoundUpZMW(cfg.RatePerKmZMW * distanceKM)
 }
 
 // computeTierBonus returns per-delivery bonus based on 1-indexed daily delivery rank.
 func computeTierBonus(dailyRank int, cfg *models.PayoutConfig) float64 {
 	switch {
 	case dailyRank > cfg.Tier2Threshold:
-		return cfg.Tier2BonusZMW
+		return money.RoundUpZMW(cfg.Tier2BonusZMW)
 	case dailyRank > cfg.Tier1Threshold:
-		return cfg.Tier1BonusZMW
+		return money.RoundUpZMW(cfg.Tier1BonusZMW)
 	default:
 		return 0
 	}

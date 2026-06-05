@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/qcom/qcom/internal/logging"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
@@ -130,8 +131,9 @@ func (s *ReferralService) CheckAndTriggerBonus(ctx context.Context, referredDEID
 		return 0, "", nil
 	}
 
-	op.With("bonus_zmw", cfg.ReferralBonusZMW).With("referrer_de_id", ref.ReferrerDEID)
-	return cfg.ReferralBonusZMW, ref.ReferrerDEID, nil
+	bonusZMW := money.RoundUpZMW(cfg.ReferralBonusZMW)
+	op.With("bonus_zmw", bonusZMW).With("referrer_de_id", ref.ReferrerDEID)
+	return bonusZMW, ref.ReferrerDEID, nil
 }
 
 // GetReferralScreen returns the DE's referral code and list of referrals they initiated.

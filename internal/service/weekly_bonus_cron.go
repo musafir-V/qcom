@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/timezone"
@@ -206,11 +207,11 @@ func (c *WeeklyBonusCron) countWorkingDays(ctx context.Context, deID, weekStart,
 func computeWeeklyBonus(daysWorked int, cfg *models.PayoutConfig) float64 {
 	switch {
 	case daysWorked >= cfg.WeeklyW3Days:
-		return cfg.WeeklyW3BonusZMW
+		return money.RoundUpZMW(cfg.WeeklyW3BonusZMW)
 	case daysWorked >= cfg.WeeklyW2Days:
-		return cfg.WeeklyW2BonusZMW
+		return money.RoundUpZMW(cfg.WeeklyW2BonusZMW)
 	case daysWorked >= cfg.WeeklyW1Days:
-		return cfg.WeeklyW1BonusZMW
+		return money.RoundUpZMW(cfg.WeeklyW1BonusZMW)
 	default:
 		return 0
 	}

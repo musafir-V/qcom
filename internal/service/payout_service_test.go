@@ -63,8 +63,15 @@ func TestComputeTierBonus_ExactTier2Boundary(t *testing.T) {
 
 func TestComputeBasePay_FractionalDistance(t *testing.T) {
 	cfg := &models.PayoutConfig{RatePerKmZMW: 5.0}
-	if pay := computeBasePay(2.5, cfg); pay != 12.5 {
-		t.Fatalf("expected 12.5 ZMW for 2.5km at 5/km, got %.2f", pay)
+	if pay := computeBasePay(2.5, cfg); pay != 13 {
+		t.Fatalf("expected 13 ZMW (rounded up) for 2.5km at 5/km, got %.2f", pay)
+	}
+}
+
+func TestComputeBasePay_FractionalPayout(t *testing.T) {
+	cfg := &models.PayoutConfig{RatePerKmZMW: 5.0}
+	if pay := computeBasePay(10.915, cfg); pay != 55 {
+		t.Fatalf("expected 55 ZMW (rounded up) for 10.915km at 5/km, got %.2f", pay)
 	}
 }
 

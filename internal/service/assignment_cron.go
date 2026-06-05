@@ -262,7 +262,7 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 		return nil, fmt.Errorf("distance lookup failed for order %s: %w", order.OrderID, err)
 	}
 
-	basePayZMW := cfg.RatePerKmZMW * distKM
+	basePayZMW := computeBasePay(distKM, cfg)
 
 	tripID := uuid.New().String()
 	pickupTaskID := uuid.New().String()
