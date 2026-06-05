@@ -109,9 +109,10 @@ func main() {
 	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
 	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
 	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
+	webhookHandlers := handlers.NewWebhookHandlers(logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, trackHandlers, earningsHandlers, disbursementHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, trackHandlers, earningsHandlers, disbursementHandlers, webhookHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -221,6 +222,7 @@ func setupRouter(
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
+	webhookHandlers *handlers.WebhookHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -229,6 +231,10 @@ func setupRouter(
 	router.Use(middleware.CORSMiddleware)
 	router.Use(middleware.TraceIDMiddleware)
 	router.Use(middleware.LoggingMiddleware(logger))
+
+	webhooks := router.PathPrefix("/webhooks").Subrouter()
+	webhooks.HandleFunc("/outbound-whatsapp-message-status", webhookHandlers.OutboundWhatsAppMessageStatus).Methods("POST", "OPTIONS")
+	webhooks.HandleFunc("/inbound-whatsapp-message", webhookHandlers.InboundWhatsAppMessage).Methods("POST", "OPTIONS")
 
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
