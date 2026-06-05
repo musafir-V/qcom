@@ -79,7 +79,6 @@ func TestTripProgressionFlow(t *testing.T) {
 		t.Fatalf("complete drop: expected 200, got %d: %v", resp.StatusCode, result)
 	}
 
-	// 6. DE is freed asynchronously on completion — allow the goroutine to run.
-	time.Sleep(1 * time.Second)
+	// 6. DE is freed atomically with trip completion.
 	assertDEStatus(t, phone, "free")
 }

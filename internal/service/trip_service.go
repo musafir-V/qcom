@@ -124,11 +124,21 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 
 	// 6. Apply transition
 	task.Status = newStatus
+
+	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
+		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, tripID, de.PhoneNumber, trip.Tasks); err != nil {
+			return op.Fail(err)
+		}
+		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
+		go s.recordTripPayout(trip, de)
+		return nil
+	}
+
 	if err := s.tripRepo.UpdateTasks(ctx, tripID, trip.Tasks); err != nil {
 		return op.Fail(err)
 	}
 
-	// 7. Mirror trip status and trigger Java sync
+	// 7. Mirror trip status and trigger Java sync (pickup completion)
 	s.onTaskCompleted(ctx, trip, task, de)
 
 	return nil
@@ -148,14 +158,6 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 		// Async: notify Java OUT_FOR_DELIVERY
 		go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", de.DEID)
 
-	case task.Type == models.TaskTypeDrop && task.Status == models.TaskStatusCompleted:
-		if err := s.tripRepo.UpdateStatus(bgCtx, trip.TripID, models.TripStatusCompleted); err != nil {
-			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
-		}
-		// Async: notify Java DELIVERED
-		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
-		// Increment daily count and free the DE
-		go s.completeDelivery(trip, de)
 	}
 }
 
@@ -179,20 +181,13 @@ func (s *TripService) syncJavaWithRetry(orderID, status, deID string) {
 	}).Error("java sync failed after 3 attempts — cron compensation will retry")
 }
 
-// completeDelivery increments the DE's daily count, updates TotalTripsCompleted,
-// and transitions DE status to free. Runs in a goroutine.
-func (s *TripService) completeDelivery(trip *models.Trip, de *models.DeliveryExecutive) {
-	ctx := context.Background()
-
-	// Payout computation + ledger write (increments the DE daily count internally).
-	if s.payoutService != nil {
-		s.payoutService.OnTripCompleted(ctx, trip, de.PhoneNumber)
+// recordTripPayout writes payout ledger entries after trip completion.
+// DE status is already set to free atomically with the trip completion transaction.
+func (s *TripService) recordTripPayout(trip *models.Trip, de *models.DeliveryExecutive) {
+	if s.payoutService == nil {
+		return
 	}
-
-	if err := s.deRepo.UpdateStatus(ctx, de.PhoneNumber, models.DEStatusFree, "", ""); err != nil {
-		s.logger.WithError(err).WithField("de_phone", de.PhoneNumber).
-			Error("failed to set DE free after trip completion")
-	}
+	s.payoutService.OnTripCompleted(context.Background(), trip, de.PhoneNumber)
 }
 
 // validateTaskTransition allows any non-completed task to move directly to completed.

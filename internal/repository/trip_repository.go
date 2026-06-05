@@ -212,6 +212,76 @@ func (r *TripRepository) UpdateStatus(ctx context.Context, tripID string, status
 	return nil
 }
 
+// CompleteTripAndFreeDE atomically marks the trip completed (with final tasks)
+// and frees the assigned DE. The DE must be busy on this trip.
+func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone string, tasks []models.Task) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.CompleteTripAndFreeDE", logrus.Fields{
+		"trip_id": tripID, "de_phone": dePhone,
+	})
+	defer op.End()
+
+	tasksAttr, err := attributevalue.Marshal(tasks)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to marshal tasks: %w", err))
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression: aws.String("SET tasks = :tasks, #status = :completed, completed_at = :now, updated_at = :now"),
+					ConditionExpression: aws.String(
+						"#status <> :completed AND #status <> :cancelled",
+					),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":tasks":     tasksAttr,
+						":completed": &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
+						":cancelled": &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
+						":now":       &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "DE!" + dePhone},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression: aws.String(
+						"SET #status = :free, updated_at = :now " +
+							"REMOVE current_order_id, current_trip_id, current_store_id, duty_index_key",
+					),
+					ConditionExpression: aws.String("#status = :busy AND current_trip_id = :tid"),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":free": &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
+						":busy": &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+						":tid":  &types.AttributeValueMemberS{Value: tripID},
+						":now":  &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		var txErr *types.TransactionCanceledException
+		if errors.As(err, &txErr) {
+			return op.Outcome("conflict", fmt.Errorf("trip completion conflict: trip closed or DE not busy on this trip"))
+		}
+		return op.Fail(fmt.Errorf("failed to complete trip and free DE: %w", err))
+	}
+	return nil
+}
+
 // UpdateTasks replaces the entire tasks list on the trip item.
 func (r *TripRepository) UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.UpdateTasks", logrus.Fields{"trip_id": tripID})
