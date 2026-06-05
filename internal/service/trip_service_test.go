@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/qcom/qcom/internal/models"
@@ -36,5 +37,34 @@ func TestValidateTaskTransition_AlreadyCompleted_Rejected(t *testing.T) {
 	task := models.Task{Type: models.TaskTypePickup, Status: models.TaskStatusCompleted}
 	if err := validateTaskTransition(task, models.TaskStatusCompleted); err == nil {
 		t.Fatal("expected error: re-entering completed state")
+	}
+}
+
+func TestValidateDropOTP_Correct(t *testing.T) {
+	task := models.Task{Type: models.TaskTypeDrop, OTP: "1234"}
+	if err := validateDropOTP(task, "1234"); err != nil {
+		t.Fatalf("expected valid OTP, got: %v", err)
+	}
+}
+
+func TestValidateDropOTP_Wrong(t *testing.T) {
+	task := models.Task{Type: models.TaskTypeDrop, OTP: "1234"}
+	err := validateDropOTP(task, "0000")
+	if err == nil {
+		t.Fatal("expected error for wrong OTP")
+	}
+	if !errors.Is(err, ErrInvalidOTP) {
+		t.Fatalf("expected ErrInvalidOTP, got: %v", err)
+	}
+}
+
+func TestValidateDropOTP_Missing(t *testing.T) {
+	task := models.Task{Type: models.TaskTypeDrop, OTP: "1234"}
+	err := validateDropOTP(task, "")
+	if err == nil {
+		t.Fatal("expected error for missing OTP")
+	}
+	if !errors.Is(err, ErrInvalidOTP) {
+		t.Fatalf("expected ErrInvalidOTP, got: %v", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/qcom/qcom/internal/logging"
@@ -122,6 +123,13 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 		return op.Outcome("invalid_transition", err)
 	}
 
+	// Drop completion requires the customer OTP.
+	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
+		if err := validateDropOTP(*task, otp); err != nil {
+			return op.Outcome("invalid_otp", err)
+		}
+	}
+
 	// 6. Apply transition
 	task.Status = newStatus
 
@@ -197,6 +205,17 @@ func validateTaskTransition(task models.Task, newStatus models.TaskStatus) error
 	}
 	if task.Status == models.TaskStatusCompleted {
 		return fmt.Errorf("%w: task is already completed", ErrInvalidTransition)
+	}
+	return nil
+}
+
+// validateDropOTP checks the OTP provided by the DE against the drop task OTP.
+func validateDropOTP(task models.Task, otp string) error {
+	if strings.TrimSpace(otp) == "" {
+		return fmt.Errorf("%w: OTP is required", ErrInvalidOTP)
+	}
+	if task.OTP != otp {
+		return fmt.Errorf("%w", ErrInvalidOTP)
 	}
 	return nil
 }
