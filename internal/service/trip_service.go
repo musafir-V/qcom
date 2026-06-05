@@ -70,6 +70,10 @@ func (s *TripService) GetCurrentTrip(ctx context.Context, dePhone string) (*mode
 	if err != nil {
 		return nil, op.Fail(err)
 	}
+	// Guard against stale current_order_id pointing at a closed trip.
+	if trip != nil && (trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled) {
+		return nil, nil
+	}
 	return trip, nil
 }
 
@@ -132,16 +136,20 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 
 // onTaskCompleted updates trip status and asynchronously syncs Java when needed.
 func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, task *models.Task, de *models.DeliveryExecutive) {
+	// Use a detached context for all writes — the request context may be cancelled
+	// if the client disconnects before these writes complete.
+	bgCtx := context.Background()
+
 	switch {
 	case task.Type == models.TaskTypePickup && task.Status == models.TaskStatusCompleted:
-		if err := s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusInTransit); err != nil {
+		if err := s.tripRepo.UpdateStatus(bgCtx, trip.TripID, models.TripStatusInTransit); err != nil {
 			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
 		}
 		// Async: notify Java OUT_FOR_DELIVERY
 		go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", de.DEID)
 
 	case task.Type == models.TaskTypeDrop && task.Status == models.TaskStatusCompleted:
-		if err := s.tripRepo.UpdateStatus(ctx, trip.TripID, models.TripStatusCompleted); err != nil {
+		if err := s.tripRepo.UpdateStatus(bgCtx, trip.TripID, models.TripStatusCompleted); err != nil {
 			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
 		}
 		// Async: notify Java DELIVERED

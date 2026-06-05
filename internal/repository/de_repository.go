@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -123,33 +124,40 @@ func (r *DERepository) UpdateStatus(ctx context.Context, phone string, status mo
 		dutyIndexKey = "DE_ELIGIBLE#" + storeID
 	}
 
-	expr := "SET #status = :status, updated_at = :updated_at"
 	names := map[string]string{"#status": "status"}
 	values := map[string]types.AttributeValue{
 		":status":     &types.AttributeValueMemberS{Value: string(status)},
 		":updated_at": &types.AttributeValueMemberS{Value: now},
 	}
 
+	// Build SET and REMOVE lists separately to avoid mixing their syntax.
+	setItems := []string{"#status = :status", "updated_at = :updated_at"}
+	var removeItems []string
+
 	if storeID != "" {
-		expr += ", current_store_id = :store_id"
+		setItems = append(setItems, "current_store_id = :store_id")
 		values[":store_id"] = &types.AttributeValueMemberS{Value: storeID}
 	} else {
-		expr += " REMOVE current_store_id"
+		removeItems = append(removeItems, "current_store_id")
 	}
 
 	if orderID != "" {
-		expr += ", current_order_id = :order_id"
+		setItems = append(setItems, "current_order_id = :order_id")
 		values[":order_id"] = &types.AttributeValueMemberS{Value: orderID}
 	} else {
-		expr += ", current_order_id = :empty_order"
-		values[":empty_order"] = &types.AttributeValueMemberS{Value: ""}
+		removeItems = append(removeItems, "current_order_id")
 	}
 
 	if dutyIndexKey != "" {
-		expr += ", duty_index_key = :duty_key"
+		setItems = append(setItems, "duty_index_key = :duty_key")
 		values[":duty_key"] = &types.AttributeValueMemberS{Value: dutyIndexKey}
 	} else {
-		expr += " REMOVE duty_index_key"
+		removeItems = append(removeItems, "duty_index_key")
+	}
+
+	expr := "SET " + strings.Join(setItems, ", ")
+	if len(removeItems) > 0 {
+		expr += " REMOVE " + strings.Join(removeItems, ", ")
 	}
 
 	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
