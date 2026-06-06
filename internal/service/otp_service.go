@@ -15,9 +15,19 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+type whatsAppOTPSender interface {
+	SendWhatsAppOTP(ctx context.Context, phoneNumber, otp string) error
+}
+
+type otpStore interface {
+	Store(ctx context.Context, phoneNumber string, otpData models.OTPData) error
+	Get(ctx context.Context, phoneNumber string) (*models.OTPData, error)
+	Delete(ctx context.Context, phoneNumber string) error
+}
+
 type OTPService struct {
-	otpRepo       *repository.OTPRepository
-	vonageService *VonageService
+	otpRepo       otpStore
+	vonageService whatsAppOTPSender
 	cfg           *config.OTPConfig
 	logger        *logrus.Logger
 }
@@ -35,6 +45,15 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	op := logging.Start(ctx, s.logger, "GenerateOTP", logrus.Fields{"phone": phoneNumber})
 	defer op.End()
 
+	if existing, err := s.otpRepo.Get(ctx, phoneNumber); err == nil && isOTPReusable(existing, time.Now(), s.cfg.MaxAttempts) {
+		if err := s.vonageService.SendWhatsAppOTP(ctx, phoneNumber, existing.OTP); err != nil {
+			op.Logger().WithError(err).Error("Failed to resend existing OTP via Vonage WhatsApp")
+			return "", op.Fail(fmt.Errorf("failed to send OTP: %w", err))
+		}
+		op.With("outcome", "resent")
+		return existing.OTP, nil
+	}
+
 	otp, err := generateRandomOTP(s.cfg.Length)
 	if err != nil {
 		return "", op.Fail(fmt.Errorf("failed to generate OTP: %w", err))
@@ -51,6 +70,7 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	}
 
 	otpData := models.OTPData{
+		OTP:       otp,
 		OTPHash:   string(hashedOTP),
 		Phone:     phoneNumber,
 		Attempts:  0,
@@ -64,6 +84,13 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 
 	op.With("outcome", "sent")
 	return otp, nil
+}
+
+func isOTPReusable(data *models.OTPData, now time.Time, maxAttempts int) bool {
+	return data != nil &&
+		data.OTP != "" &&
+		now.Before(data.ExpiresAt) &&
+		data.Attempts < maxAttempts
 }
 
 func (s *OTPService) VerifyOTP(ctx context.Context, phoneNumber, otp string) (bool, error) {

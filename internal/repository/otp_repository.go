@@ -39,6 +39,7 @@ func (r *OTPRepository) Store(ctx context.Context, phoneNumber string, otpData m
 	item := map[string]types.AttributeValue{
 		"PK":        &types.AttributeValueMemberS{Value: fmt.Sprintf("OTP#%s", phoneNumber)},
 		"SK":        &types.AttributeValueMemberS{Value: "METADATA"},
+		"OTP":       &types.AttributeValueMemberS{Value: otpData.OTP},
 		"OTPHash":   &types.AttributeValueMemberS{Value: otpData.OTPHash},
 		"Phone":     &types.AttributeValueMemberS{Value: otpData.Phone},
 		"Attempts":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", otpData.Attempts)},

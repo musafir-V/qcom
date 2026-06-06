@@ -21,8 +21,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const vonageMessagesURL = "https://api.nexmo.com/v1/messages"
-const vonageTemplateName = "bunzo_login_otp"
+const (
+	vonageMessagesURL  = "https://api.nexmo.com/v1/messages"
+	vonageTemplateName = "bunzo_login_otp"
+	vonageHTTPTimeout  = 500 * time.Millisecond
+	vonageMaxRetries   = 3
+)
 
 type vonageJWTCache interface {
 	Get(ctx context.Context) (string, error)
@@ -46,7 +50,7 @@ func NewVonageService(cfg *config.VonageConfig, jwtRepo *repository.VonageJWTRep
 		privateKeyB64: cfg.PrivateKeyB64,
 		whatsAppFrom:  cfg.WhatsAppFrom,
 		jwtRepo:       jwtRepo,
-		httpClient:    &http.Client{Timeout: 10 * time.Second},
+		httpClient:    &http.Client{Timeout: vonageHTTPTimeout},
 		logger:        logger,
 		messagesURL:   vonageMessagesURL,
 	}
@@ -154,7 +158,7 @@ func (s *VonageService) SendWhatsAppOTP(ctx context.Context, phoneNumber, otp st
 		return op.Fail(err)
 	}
 
-	statusCode, errBody, err := s.postMessage(ctx, jwtToken, bodyBytes)
+	statusCode, errBody, err := s.postMessageWithRetries(ctx, jwtToken, bodyBytes)
 	if err != nil {
 		return op.Fail(err)
 	}
@@ -169,7 +173,7 @@ func (s *VonageService) SendWhatsAppOTP(ctx context.Context, phoneNumber, otp st
 			return op.Fail(fmt.Errorf("failed to refresh Vonage JWT after 401: %w", err))
 		}
 
-		statusCode, errBody, err = s.postMessage(ctx, jwtToken, bodyBytes)
+		statusCode, errBody, err = s.postMessageWithRetries(ctx, jwtToken, bodyBytes)
 		if err != nil {
 			return op.Fail(err)
 		}
@@ -224,6 +228,42 @@ func (s *VonageService) buildWhatsAppOTPBody(phoneNumber, otp string) ([]byte, e
 		return nil, fmt.Errorf("failed to marshal Vonage request: %w", err)
 	}
 	return bodyBytes, nil
+}
+
+func (s *VonageService) postMessageWithRetries(ctx context.Context, jwtToken string, bodyBytes []byte) (int, map[string]interface{}, error) {
+	var lastStatus int
+	var lastBody map[string]interface{}
+	var lastErr error
+
+	for attempt := 0; attempt <= vonageMaxRetries; attempt++ {
+		statusCode, errBody, err := s.postMessage(ctx, jwtToken, bodyBytes)
+		if err == nil && !isVonageRetryableStatus(statusCode) {
+			return statusCode, errBody, nil
+		}
+
+		lastStatus = statusCode
+		lastBody = errBody
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("Vonage API returned retryable status %d", statusCode)
+		}
+
+		if attempt == vonageMaxRetries {
+			break
+		}
+	}
+
+	if lastErr != nil {
+		return lastStatus, lastBody, lastErr
+	}
+	return lastStatus, lastBody, lastErr
+}
+
+func isVonageRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusBadGateway ||
+		statusCode == http.StatusServiceUnavailable ||
+		statusCode == http.StatusGatewayTimeout
 }
 
 func (s *VonageService) postMessage(ctx context.Context, jwtToken string, bodyBytes []byte) (int, map[string]interface{}, error) {

@@ -3,6 +3,7 @@ package models
 import "time"
 
 type OTPData struct {
+	OTP       string    `json:"otp,omitempty"`
 	OTPHash   string    `json:"otp_hash"`
 	Phone     string    `json:"phone"`
 	Attempts  int       `json:"attempts"`

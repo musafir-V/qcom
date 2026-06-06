@@ -32,6 +32,20 @@ const (
 	testVonageWhatsAppFrom = "15559615672"
 )
 
+var vonageOTPSends = make(map[string][]string)
+
+func recordVonageOTPSend(phone, otp string) {
+	vonageOTPSends[phone] = append(vonageOTPSends[phone], otp)
+}
+
+func getVonageOTPSends(phone string) []string {
+	return append([]string(nil), vonageOTPSends[phone]...)
+}
+
+func resetVonageOTPSends(phone string) {
+	delete(vonageOTPSends, phone)
+}
+
 func testVonagePrivateKeyB64() string {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -183,7 +197,9 @@ func newSuccessVonageMockServer() *httptest.Server {
 		to, _ := body["to"].(string)
 		otp, err := extractOTPFromVonageBody(body)
 		if err == nil && to != "" {
-			_ = storeOTPTest("+"+to, otp)
+			phone := "+" + to
+			_ = storeOTPTest(phone, otp)
+			recordVonageOTPSend(phone, otp)
 		}
 
 		w.WriteHeader(http.StatusAccepted)

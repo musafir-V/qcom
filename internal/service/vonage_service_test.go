@@ -171,6 +171,79 @@ func TestSendWhatsAppOTP_RetriesAfter401(t *testing.T) {
 	}
 }
 
+func TestPostMessageWithRetries_RetriesOnTimeout(t *testing.T) {
+	b64Key, _ := generateTestPrivateKey(t)
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= vonageMaxRetries {
+			time.Sleep(vonageHTTPTimeout + 100*time.Millisecond)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	svc := &VonageService{
+		appID:         "test-app-id",
+		privateKeyB64: b64Key,
+		whatsAppFrom:  "15559615672",
+		jwtRepo:       &stubVonageJWTCache{cached: "valid-jwt"},
+		httpClient:    &http.Client{Timeout: vonageHTTPTimeout},
+		logger:        logrus.New(),
+		messagesURL:   server.URL,
+	}
+
+	body := []byte(`{"to":"919515365236"}`)
+	statusCode, _, err := svc.postMessageWithRetries(context.Background(), "valid-jwt", body)
+	if err != nil {
+		t.Fatalf("postMessageWithRetries returned error: %v", err)
+	}
+	if statusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", statusCode, http.StatusAccepted)
+	}
+	if attempts != vonageMaxRetries+1 {
+		t.Fatalf("attempts = %d, want %d", attempts, vonageMaxRetries+1)
+	}
+}
+
+func TestPostMessageWithRetries_RetriesOn5xx(t *testing.T) {
+	b64Key, _ := generateTestPrivateKey(t)
+	attempts := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	svc := &VonageService{
+		appID:         "test-app-id",
+		privateKeyB64: b64Key,
+		jwtRepo:       &stubVonageJWTCache{cached: "valid-jwt"},
+		httpClient:    server.Client(),
+		logger:        logrus.New(),
+		messagesURL:   server.URL,
+	}
+
+	body := []byte(`{"to":"919515365236"}`)
+	statusCode, _, err := svc.postMessageWithRetries(context.Background(), "valid-jwt", body)
+	if err != nil {
+		t.Fatalf("postMessageWithRetries returned error: %v", err)
+	}
+	if statusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", statusCode, http.StatusAccepted)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
 func TestGenerateVonageJWT_PartsCount(t *testing.T) {
 	b64Key, _ := generateTestPrivateKey(t)
 	svc := &VonageService{appID: "x", privateKeyB64: b64Key}
