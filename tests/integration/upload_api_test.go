@@ -321,7 +321,18 @@ func setupServer() (*httptest.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	otpService := service.NewOTPService(otpRepo, &cfg.OTP, logger)
+
+	vonageJWTRepo := repository.NewVonageJWTRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	vonageMockServer := newSuccessVonageMockServer()
+	vonageService := service.NewVonageService(&config.VonageConfig{
+		AppID:         testVonageAppID,
+		PrivateKeyB64: testVonagePrivateKeyB64(),
+		WhatsAppFrom:  testVonageWhatsAppFrom,
+	}, vonageJWTRepo, logger)
+	vonageService.SetMessagesURL(vonageMockServer.URL)
+	vonageService.SetHTTPClient(vonageMockServer.Client())
+
+	otpService := service.NewOTPService(otpRepo, vonageService, &cfg.OTP, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	uploadService := service.NewUploadService(s3c, &cfg.S3, logger)
 	addressService := service.NewAddressService(addressRepo, logger)

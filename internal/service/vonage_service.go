@@ -24,13 +24,20 @@ import (
 const vonageMessagesURL = "https://api.nexmo.com/v1/messages"
 const vonageTemplateName = "bunzo_login_otp"
 
+type vonageJWTCache interface {
+	Get(ctx context.Context) (string, error)
+	Store(ctx context.Context, jwt string) error
+	Delete(ctx context.Context) error
+}
+
 type VonageService struct {
 	appID         string
 	privateKeyB64 string
 	whatsAppFrom  string
-	jwtRepo       *repository.VonageJWTRepository
+	jwtRepo       vonageJWTCache
 	httpClient    *http.Client
 	logger        *logrus.Logger
+	messagesURL   string
 }
 
 func NewVonageService(cfg *config.VonageConfig, jwtRepo *repository.VonageJWTRepository, logger *logrus.Logger) *VonageService {
@@ -41,7 +48,18 @@ func NewVonageService(cfg *config.VonageConfig, jwtRepo *repository.VonageJWTRep
 		jwtRepo:       jwtRepo,
 		httpClient:    &http.Client{Timeout: 10 * time.Second},
 		logger:        logger,
+		messagesURL:   vonageMessagesURL,
 	}
+}
+
+// SetMessagesURL overrides the Vonage Messages API endpoint (integration tests only).
+func (s *VonageService) SetMessagesURL(url string) {
+	s.messagesURL = url
+}
+
+// SetHTTPClient overrides the HTTP client (integration tests only).
+func (s *VonageService) SetHTTPClient(client *http.Client) {
+	s.httpClient = client
 }
 
 // getOrRefreshJWT returns a valid JWT from DynamoDB cache, generating a new one if needed.
@@ -53,7 +71,15 @@ func (s *VonageService) getOrRefreshJWT(ctx context.Context) (string, error) {
 	if cached != "" {
 		return cached, nil
 	}
+	return s.generateAndCacheJWT(ctx)
+}
 
+// refreshJWT bypasses the cache and always signs a new JWT.
+func (s *VonageService) refreshJWT(ctx context.Context) (string, error) {
+	return s.generateAndCacheJWT(ctx)
+}
+
+func (s *VonageService) generateAndCacheJWT(ctx context.Context) (string, error) {
 	token, err := s.generateJWT()
 	if err != nil {
 		return "", fmt.Errorf("failed to generate Vonage JWT: %w", err)
@@ -123,7 +149,41 @@ func (s *VonageService) SendWhatsAppOTP(ctx context.Context, phoneNumber, otp st
 		return op.Fail(fmt.Errorf("failed to get Vonage JWT: %w", err))
 	}
 
-	// Vonage expects the phone number without leading '+'.
+	bodyBytes, err := s.buildWhatsAppOTPBody(phoneNumber, otp)
+	if err != nil {
+		return op.Fail(err)
+	}
+
+	statusCode, errBody, err := s.postMessage(ctx, jwtToken, bodyBytes)
+	if err != nil {
+		return op.Fail(err)
+	}
+
+	if statusCode == http.StatusUnauthorized {
+		if delErr := s.jwtRepo.Delete(ctx); delErr != nil {
+			s.logger.WithError(delErr).Warn("Failed to delete stale Vonage JWT cache after 401")
+		}
+
+		jwtToken, err = s.refreshJWT(ctx)
+		if err != nil {
+			return op.Fail(fmt.Errorf("failed to refresh Vonage JWT after 401: %w", err))
+		}
+
+		statusCode, errBody, err = s.postMessage(ctx, jwtToken, bodyBytes)
+		if err != nil {
+			return op.Fail(err)
+		}
+	}
+
+	if statusCode < 200 || statusCode >= 300 {
+		return op.Fail(fmt.Errorf("Vonage API returned status %d: %v", statusCode, errBody))
+	}
+
+	op.With("outcome", "sent")
+	return nil
+}
+
+func (s *VonageService) buildWhatsAppOTPBody(phoneNumber, otp string) ([]byte, error) {
 	to := strings.TrimPrefix(phoneNumber, "+")
 
 	body := map[string]interface{}{
@@ -161,12 +221,15 @@ func (s *VonageService) SendWhatsAppOTP(ctx context.Context, phoneNumber, otp st
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return op.Fail(fmt.Errorf("failed to marshal Vonage request: %w", err))
+		return nil, fmt.Errorf("failed to marshal Vonage request: %w", err)
 	}
+	return bodyBytes, nil
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vonageMessagesURL, bytes.NewReader(bodyBytes))
+func (s *VonageService) postMessage(ctx context.Context, jwtToken string, bodyBytes []byte) (int, map[string]interface{}, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.messagesURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return op.Fail(fmt.Errorf("failed to build Vonage request: %w", err))
+		return 0, nil, fmt.Errorf("failed to build Vonage request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwtToken)
 	req.Header.Set("Content-Type", "application/json")
@@ -174,16 +237,11 @@ func (s *VonageService) SendWhatsAppOTP(ctx context.Context, phoneNumber, otp st
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return op.Fail(fmt.Errorf("Vonage API request failed: %w", err))
+		return 0, nil, fmt.Errorf("Vonage API request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		var errBody map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&errBody)
-		return op.Fail(fmt.Errorf("Vonage API returned status %d: %v", resp.StatusCode, errBody))
-	}
-
-	op.With("outcome", "sent")
-	return nil
+	var errBody map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&errBody)
+	return resp.StatusCode, errBody, nil
 }
