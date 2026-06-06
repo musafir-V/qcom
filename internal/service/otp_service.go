@@ -16,16 +16,18 @@ import (
 )
 
 type OTPService struct {
-	otpRepo *repository.OTPRepository
-	cfg     *config.OTPConfig
-	logger  *logrus.Logger
+	otpRepo       *repository.OTPRepository
+	vonageService *VonageService
+	cfg           *config.OTPConfig
+	logger        *logrus.Logger
 }
 
-func NewOTPService(otpRepo *repository.OTPRepository, cfg *config.OTPConfig, logger *logrus.Logger) *OTPService {
+func NewOTPService(otpRepo *repository.OTPRepository, vonageService *VonageService, cfg *config.OTPConfig, logger *logrus.Logger) *OTPService {
 	return &OTPService{
-		otpRepo: otpRepo,
-		cfg:     cfg,
-		logger:  logger,
+		otpRepo:       otpRepo,
+		vonageService: vonageService,
+		cfg:           cfg,
+		logger:        logger,
 	}
 }
 
@@ -33,12 +35,15 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	op := logging.Start(ctx, s.logger, "GenerateOTP", logrus.Fields{"phone": phoneNumber})
 	defer op.End()
 
-	// TODO: uncomment random OTP generation before production
-	// otp, err := s.generateRandomOTP(s.cfg.Length)
-	// if err != nil {
-	// 	return "", fmt.Errorf("failed to generate OTP: %w", err)
-	// }
-	otp := "112233"
+	otp, err := generateRandomOTP(s.cfg.Length)
+	if err != nil {
+		return "", op.Fail(fmt.Errorf("failed to generate OTP: %w", err))
+	}
+
+	if err := s.vonageService.SendWhatsAppOTP(ctx, phoneNumber, otp); err != nil {
+		op.Logger().WithError(err).Error("Failed to send OTP via Vonage WhatsApp")
+		return "", op.Fail(fmt.Errorf("failed to send OTP: %w", err))
+	}
 
 	hashedOTP, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
 	if err != nil {
@@ -57,14 +62,7 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 		return "", op.Fail(err)
 	}
 
-	if err := s.otpRepo.StoreTestOTP(ctx, phoneNumber, otp, otpData.ExpiresAt); err != nil {
-		op.Logger().WithError(err).Warn("Failed to store test OTP")
-	}
-
-	op.Logger().WithFields(logrus.Fields{
-		"phone": phoneNumber,
-		"otp":   otp,
-	}).Info("OTP generated (logged for development)")
+	op.With("outcome", "sent")
 	return otp, nil
 }
 
@@ -99,14 +97,15 @@ func (s *OTPService) VerifyOTP(ctx context.Context, phoneNumber, otp string) (bo
 	return true, nil
 }
 
-func (s *OTPService) generateRandomOTP(length int) (string, error) {
-	otp := ""
-	for i := 0; i < length; i++ {
-		num, err := rand.Int(rand.Reader, big.NewInt(10))
+func generateRandomOTP(length int) (string, error) {
+	const digits = "0123456789"
+	otp := make([]byte, length)
+	for i := range otp {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(digits))))
 		if err != nil {
 			return "", err
 		}
-		otp += num.String()
+		otp[i] = digits[n.Int64()]
 	}
-	return otp, nil
+	return string(otp), nil
 }
