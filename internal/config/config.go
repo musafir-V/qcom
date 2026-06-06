@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -15,6 +16,7 @@ type Config struct {
 	S3       S3Config
 	Google   GoogleConfig
 	Java     JavaConfig
+	Vonage   VonageConfig
 	IsTest   bool
 }
 
@@ -58,6 +60,12 @@ type JavaConfig struct {
 	OrderServiceURL string
 }
 
+type VonageConfig struct {
+	AppID         string
+	PrivateKeyB64 string
+	WhatsAppFrom  string
+}
+
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -93,6 +101,11 @@ func Load() (*Config, error) {
 		Java: JavaConfig{
 			OrderServiceURL: getEnv("JAVA_ORDER_SERVICE_URL", "http://localhost:8081"),
 		},
+		Vonage: VonageConfig{
+			AppID:         getEnv("VONAGE_APP_ID", ""),
+			PrivateKeyB64: getEnv("VONAGE_PRIVATE_KEY", ""),
+			WhatsAppFrom:  getEnv("VONAGE_WHATSAPP_FROM", ""),
+		},
 		// IS_TEST (or IS_TRUE): skip polygon check; use first active darkstore from DDB.
 		IsTest: envBool("IS_TEST") || envBool("IS_TRUE"),
 	}
@@ -103,6 +116,19 @@ func Load() (*Config, error) {
 
 	if len(cfg.JWT.SecretKey) < 32 {
 		return nil, fmt.Errorf("JWT_SECRET_KEY must be at least 32 bytes (256 bits)")
+	}
+
+	if cfg.Vonage.AppID == "" {
+		return nil, fmt.Errorf("VONAGE_APP_ID environment variable is required")
+	}
+	if cfg.Vonage.PrivateKeyB64 == "" {
+		return nil, fmt.Errorf("VONAGE_PRIVATE_KEY environment variable is required")
+	}
+	if _, err := base64.StdEncoding.DecodeString(cfg.Vonage.PrivateKeyB64); err != nil {
+		return nil, fmt.Errorf("VONAGE_PRIVATE_KEY must be valid base64: %w", err)
+	}
+	if cfg.Vonage.WhatsAppFrom == "" {
+		return nil, fmt.Errorf("VONAGE_WHATSAPP_FROM environment variable is required")
 	}
 
 	return cfg, nil
