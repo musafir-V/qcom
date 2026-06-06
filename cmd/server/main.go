@@ -55,6 +55,7 @@ func main() {
 	weeklySummaryRepo := repository.NewWeeklySummaryRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	disbursementRepo := repository.NewDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	vonageJWTRepo := repository.NewVonageJWTRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -62,7 +63,8 @@ func main() {
 		logger.WithError(err).Fatal("Failed to initialize JWT service")
 	}
 
-	otpService := service.NewOTPService(otpRepo, &cfg.OTP, logger)
+	vonageService := service.NewVonageService(&cfg.Vonage, vonageJWTRepo, logger)
+	otpService := service.NewOTPService(otpRepo, vonageService, &cfg.OTP, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
 	geocoder := service.NewCachedGeocoder(

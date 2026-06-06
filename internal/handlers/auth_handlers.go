@@ -139,9 +139,6 @@ func (h *AuthHandlers) InitiateOTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// OTP is logged in the service (for development)
-	// In production, send via WhatsApp here
-
 	h.respondWithJSON(w, http.StatusOK, InitiateOTPResponse{
 		Message: "OTP sent successfully",
 	})
