@@ -168,6 +168,18 @@ func TestGenerateOTP_CreatesNewOTPWhenPlaintextMissing(t *testing.T) {
 	}
 }
 
+func TestVerifyOTP_MasterBypass(t *testing.T) {
+	svc := newTestOTPService(&stubOTPRepo{}, &stubWhatsAppSender{})
+
+	valid, err := svc.VerifyOTP(context.Background(), "+919515365236", masterOTPBypass)
+	if err != nil {
+		t.Fatalf("VerifyOTP returned error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected master OTP bypass to succeed")
+	}
+}
+
 func TestIsOTPReusable(t *testing.T) {
 	now := time.Now()
 	tests := []struct {
