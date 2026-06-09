@@ -1,7 +1,7 @@
 package service
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/qcom/qcom/internal/models"
@@ -23,8 +23,11 @@ type DailyMilestone struct {
 func ComputeDailyMilestone(deliveriesToday int, cfg *models.PayoutConfig) DailyMilestone {
 	m := DailyMilestone{
 		DeliveriesToday: deliveriesToday,
-		BarMax:          cfg.Tier2Threshold + 1,
-		Thresholds:      []int{cfg.Tier1Threshold, cfg.Tier2Threshold},
+		// BarMax = Tier2Threshold + 1 so the bar fills to the last tick (not 100%)
+		// at exactly the top threshold. deliveries_today can exceed bar_max; clients
+		// must clamp the fill fraction to bar_max.
+		BarMax:     cfg.Tier2Threshold + 1,
+		Thresholds: []int{cfg.Tier1Threshold, cfg.Tier2Threshold},
 	}
 
 	if deliveriesToday >= cfg.Tier2Threshold {
@@ -43,7 +46,7 @@ func ComputeDailyMilestone(deliveriesToday int, cfg *models.PayoutConfig) DailyM
 
 	if cfg.MilestoneMessageTemplate != "" {
 		remaining := next - deliveriesToday
-		m.Message = strings.ReplaceAll(cfg.MilestoneMessageTemplate, "{remaining}", fmt.Sprintf("%d", remaining))
+		m.Message = strings.ReplaceAll(cfg.MilestoneMessageTemplate, "{remaining}", strconv.Itoa(remaining))
 	}
 
 	return m

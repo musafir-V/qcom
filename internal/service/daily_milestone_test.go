@@ -129,10 +129,30 @@ func TestComputeDailyMilestone(t *testing.T) {
 			wantMessage:     "Deliver 3 more to level up",
 			wantTopTier:     false,
 		},
+		// Misconfig edge cases — function must not panic; values document current behavior.
+		{
+			name:            "misconfig — thresholds reversed (tier1>tier2)",
+			deliveriesToday: 8,
+			cfg:             cfg(15, 10, defaultTmpl),
+			wantDeliveries:  8,
+			wantBarMax:      11,
+			wantThresholds:  []int{15, 10},
+			wantMessage:     "Complete 7 more deliveries to unlock your next milestone",
+			wantTopTier:     false,
+		},
+		{
+			name:            "misconfig — zero thresholds",
+			deliveriesToday: 3,
+			cfg:             cfg(0, 0, defaultTmpl),
+			wantDeliveries:  3,
+			wantBarMax:      1,
+			wantThresholds:  []int{0, 0},
+			wantMessage:     "",
+			wantTopTier:     true,
+		},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := ComputeDailyMilestone(tt.deliveriesToday, tt.cfg)

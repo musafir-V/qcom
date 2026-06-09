@@ -101,6 +101,7 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 		todayEarnings = 0
 	}
 
+	tripsToday := de.TripsToday(timezone.DateString())
 	resp := map[string]interface{}{
 		"de_id":              de.DEID,
 		"phone_number":       de.PhoneNumber,
@@ -110,7 +111,7 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 		"current_store_id":   de.CurrentStoreID,
 		"current_order_id":   de.CurrentOrderID,
 		"created_at":         de.CreatedAt,
-		"trips_today":        de.TripsToday(timezone.DateString()),
+		"trips_today":        tripsToday,
 		"today_earnings_zmw": todayEarnings,
 	}
 
@@ -118,7 +119,7 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.WithError(err).Warn("failed to fetch payout config for daily_milestone; omitting from response")
 	} else {
-		resp["daily_milestone"] = service.ComputeDailyMilestone(de.TripsToday(timezone.DateString()), payoutCfg)
+		resp["daily_milestone"] = service.ComputeDailyMilestone(tripsToday, payoutCfg)
 	}
 
 	h.respondWithJSON(w, http.StatusOK, resp)
