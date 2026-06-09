@@ -6,19 +6,21 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
 type DEHandlers struct {
-	deService *service.DEService
-	qrService *service.QRService
-	logger    *logrus.Logger
+	deService        *service.DEService
+	qrService        *service.QRService
+	payoutConfigRepo *repository.PayoutConfigRepository
+	logger           *logrus.Logger
 }
 
-func NewDEHandlers(deService *service.DEService, qrService *service.QRService, logger *logrus.Logger) *DEHandlers {
-	return &DEHandlers{deService: deService, qrService: qrService, logger: logger}
+func NewDEHandlers(deService *service.DEService, qrService *service.QRService, payoutConfigRepo *repository.PayoutConfigRepository, logger *logrus.Logger) *DEHandlers {
+	return &DEHandlers{deService: deService, qrService: qrService, payoutConfigRepo: payoutConfigRepo, logger: logger}
 }
 
 // POST /api/v1/de/register
@@ -99,7 +101,7 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 		todayEarnings = 0
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"de_id":              de.DEID,
 		"phone_number":       de.PhoneNumber,
 		"name":               de.Name,
@@ -110,7 +112,16 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 		"created_at":         de.CreatedAt,
 		"trips_today":        de.TripsToday(timezone.DateString()),
 		"today_earnings_zmw": todayEarnings,
-	})
+	}
+
+	payoutCfg, err := h.payoutConfigRepo.Get(r.Context())
+	if err != nil {
+		h.logger.WithError(err).Warn("failed to fetch payout config for daily_milestone; omitting from response")
+	} else {
+		resp["daily_milestone"] = service.ComputeDailyMilestone(de.TripsToday(timezone.DateString()), payoutCfg)
+	}
+
+	h.respondWithJSON(w, http.StatusOK, resp)
 }
 
 // POST /api/v1/de/duty/start

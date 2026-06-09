@@ -7,11 +7,12 @@ type PayoutConfig struct {
 	ReferralBonusZMW       float64 `json:"referral_bonus_zmw" dynamodbav:"referral_bonus_zmw"`
 
 	// Distance-based pay (populated by Plan B)
-	RatePerKmZMW   float64 `json:"rate_per_km_zmw" dynamodbav:"rate_per_km_zmw"`
-	Tier1Threshold int     `json:"tier1_threshold" dynamodbav:"tier1_threshold"`
-	Tier1BonusZMW  float64 `json:"tier1_bonus_zmw" dynamodbav:"tier1_bonus_zmw"`
-	Tier2Threshold int     `json:"tier2_threshold" dynamodbav:"tier2_threshold"`
-	Tier2BonusZMW  float64 `json:"tier2_bonus_zmw" dynamodbav:"tier2_bonus_zmw"`
+	RatePerKmZMW             float64 `json:"rate_per_km_zmw" dynamodbav:"rate_per_km_zmw"`
+	Tier1Threshold           int     `json:"tier1_threshold" dynamodbav:"tier1_threshold"`
+	Tier1BonusZMW            float64 `json:"tier1_bonus_zmw" dynamodbav:"tier1_bonus_zmw"`
+	Tier2Threshold           int     `json:"tier2_threshold" dynamodbav:"tier2_threshold"`
+	Tier2BonusZMW            float64 `json:"tier2_bonus_zmw" dynamodbav:"tier2_bonus_zmw"`
+	MilestoneMessageTemplate string  `json:"milestone_message_template" dynamodbav:"milestone_message_template"`
 
 	// Weekly bonus (populated by Plan B)
 	MinDeliveriesPerDay int     `json:"min_deliveries_per_day" dynamodbav:"min_deliveries_per_day"`

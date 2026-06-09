@@ -104,7 +104,7 @@ func main() {
 	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
 	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
 	serviceabilityHandlers := handlers.NewServiceabilityHandlers(serviceabilityService, logger)
-	deHandlers := handlers.NewDEHandlers(deService, qrService, logger)
+	deHandlers := handlers.NewDEHandlers(deService, qrService, payoutConfigRepo, logger)
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 	tripHandlers := handlers.NewTripHandlers(tripService, logger)
