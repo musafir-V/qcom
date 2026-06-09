@@ -62,3 +62,20 @@ func TestWeekStart_WithinCurrentWeek(t *testing.T) {
 		t.Errorf("WeekStart() = %q is more than 6 days before today %q", ws, today.Format("2006-01-02"))
 	}
 }
+
+func TestStartOfDayString(t *testing.T) {
+	got := StartOfDayString()
+
+	parsed, err := time.Parse(time.RFC3339, got)
+	if err != nil {
+		t.Fatalf("StartOfDayString not RFC3339: %q (%v)", got, err)
+	}
+
+	z := parsed.In(ZambiaLocation())
+	if z.Hour() != 0 || z.Minute() != 0 || z.Second() != 0 {
+		t.Fatalf("expected midnight, got %s", got)
+	}
+	if z.Format("2006-01-02") != DateString() {
+		t.Fatalf("expected today's Zambia date %s, got %s", DateString(), z.Format("2006-01-02"))
+	}
+}
