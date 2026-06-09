@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/qcom/qcom/internal/service"
+	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
@@ -92,15 +93,23 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	todayEarnings, err := h.deService.GetTodayEarnings(r.Context(), de.DEID)
+	if err != nil {
+		h.logger.WithError(err).Warn("failed to compute today's earnings; defaulting to 0")
+		todayEarnings = 0
+	}
+
 	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
-		"de_id":            de.DEID,
-		"phone_number":     de.PhoneNumber,
-		"name":             de.Name,
-		"profile_url":      de.ProfileURL,
-		"status":           de.Status,
-		"current_store_id": de.CurrentStoreID,
-		"current_order_id": de.CurrentOrderID,
-		"created_at":       de.CreatedAt,
+		"de_id":              de.DEID,
+		"phone_number":       de.PhoneNumber,
+		"name":               de.Name,
+		"profile_url":        de.ProfileURL,
+		"status":             de.Status,
+		"current_store_id":   de.CurrentStoreID,
+		"current_order_id":   de.CurrentOrderID,
+		"created_at":         de.CreatedAt,
+		"trips_today":        de.TripsToday(timezone.DateString()),
+		"today_earnings_zmw": todayEarnings,
 	})
 }
 

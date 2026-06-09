@@ -43,9 +43,9 @@ const (
 )
 
 var (
-	testServer  *httptest.Server
+	testServer   *httptest.Server
 	dynamoClient *dynamodb.Client
-	s3Client    *s3.Client
+	s3Client     *s3.Client
 )
 
 func TestMain(m *testing.M) {
@@ -339,7 +339,7 @@ func setupServer() (*httptest.Server, error) {
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, testGeocoder, testETAService, logger, false)
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
-	deService := service.NewDEService(deRepo, qrService, referralService, logger)
+	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, logger)
 
 	// Handlers
 	authHandlers := handlers.NewAuthHandlers(otpService, jwtService, refreshTokenService, userRepo, deRepo, logger)

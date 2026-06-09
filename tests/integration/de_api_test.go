@@ -689,3 +689,32 @@ func TestRefresh_CustomerTokenPreservesEntityType(t *testing.T) {
 		t.Fatalf("refreshed customer token should be blocked by /de/me, got %d", deResp.StatusCode)
 	}
 }
+
+func TestGetMe_HomeStatsFields(t *testing.T) {
+	phone := uniquePhone("90")
+	registerDE(t, phone)
+	tokens := authenticateDE(t, phone)
+
+	resp, result := doRequest(t, "GET", "/api/v1/de/me",
+		bearerHeaders(tokens.AccessToken), nil)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %v", resp.StatusCode, result)
+	}
+
+	tt, ok := result["trips_today"].(float64)
+	if !ok {
+		t.Fatalf("missing/!number trips_today: %v", result["trips_today"])
+	}
+	if tt != 0 {
+		t.Fatalf("fresh DE: expected trips_today=0, got %v", tt)
+	}
+
+	te, ok := result["today_earnings_zmw"].(float64)
+	if !ok {
+		t.Fatalf("missing/!number today_earnings_zmw: %v", result["today_earnings_zmw"])
+	}
+	if te != 0 {
+		t.Fatalf("fresh DE: expected today_earnings_zmw=0, got %v", te)
+	}
+}
