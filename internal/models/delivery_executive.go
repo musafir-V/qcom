@@ -38,3 +38,13 @@ func (de *DeliveryExecutive) GetPK() string {
 func (de *DeliveryExecutive) GetSK() string {
 	return "METADATA"
 }
+
+// TripsToday returns the DE's completed trip count for `today` (Zambia date,
+// "2006-01-02"). DailyTripCount only resets when a trip completes on a new day,
+// so a stale DailyCountDate means zero trips have happened today.
+func (de *DeliveryExecutive) TripsToday(today string) int {
+	if de.DailyCountDate != today {
+		return 0
+	}
+	return de.DailyTripCount
+}
