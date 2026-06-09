@@ -56,8 +56,9 @@ func (s *ReferralService) GenerateUniqueCode(ctx context.Context) (string, error
 
 // LinkReferral creates the referral relationship when a new DE registers with a referral code.
 // referredDEID is the UUID of the newly registered DE.
+// referredName is the display name of the newly registered DE (stored for display purposes).
 // referralCode is the code the new DE provided during registration.
-func (s *ReferralService) LinkReferral(ctx context.Context, referredDEID, referralCode string, windowDays int) error {
+func (s *ReferralService) LinkReferral(ctx context.Context, referredDEID, referredName, referralCode string, windowDays int) error {
 	op := logging.Start(ctx, s.logger, "ReferralService.LinkReferral", logrus.Fields{
 		"referred_de_id": referredDEID,
 		"referral_code":  referralCode,
@@ -78,6 +79,7 @@ func (s *ReferralService) LinkReferral(ctx context.Context, referredDEID, referr
 	ref := &models.Referral{
 		ReferrerDEID:    referrer.DEID,
 		ReferredDEID:    referredDEID,
+		ReferredName:    referredName,
 		Status:          models.ReferralStatusActive,
 		WindowExpiresAt: windowExpires,
 	}
@@ -136,22 +138,32 @@ func (s *ReferralService) CheckAndTriggerBonus(ctx context.Context, referredDEID
 	return bonusZMW, ref.ReferrerDEID, nil
 }
 
-// GetReferralScreen returns the DE's referral code and list of referrals they initiated.
-func (s *ReferralService) GetReferralScreen(ctx context.Context, deID, dePhone string) (string, []*models.Referral, error) {
+// GetReferralScreen returns the DE's referral code, list of referrals they initiated,
+// and the current referral bonus amount in ZMW. On config fetch error the bonus is
+// returned as 0.0 — the screen still functions without it.
+func (s *ReferralService) GetReferralScreen(ctx context.Context, deID, dePhone string) (string, []*models.Referral, float64, error) {
 	op := logging.Start(ctx, s.logger, "ReferralService.GetReferralScreen", logrus.Fields{"de_id": deID})
 	defer op.End()
 
 	de, err := s.deRepo.GetByPhone(ctx, dePhone)
 	if err != nil || de == nil {
-		return "", nil, op.Fail(fmt.Errorf("failed to fetch DE: %w", err))
+		return "", nil, 0, op.Fail(fmt.Errorf("failed to fetch DE: %w", err))
 	}
 
 	refs, err := s.referralRepo.ListByReferrerDEID(ctx, deID)
 	if err != nil {
-		return "", nil, op.Fail(err)
+		return "", nil, 0, op.Fail(err)
 	}
 
-	return de.ReferralCode, refs, nil
+	var rewardZMW float64
+	cfg, cfgErr := s.payoutConfigRepo.Get(ctx)
+	if cfgErr != nil {
+		s.logger.WithError(cfgErr).Warn("failed to fetch payout config for referral screen — reward_zmw will be 0")
+	} else {
+		rewardZMW = cfg.ReferralBonusZMW
+	}
+
+	return de.ReferralCode, refs, rewardZMW, nil
 }
 
 // generateReferralCode returns a random 6-digit numeric string (000000–999999).

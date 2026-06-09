@@ -23,7 +23,7 @@ func (h *ReferralHandlers) GetReferralScreen(w http.ResponseWriter, r *http.Requ
 	deID, _ := r.Context().Value("entity_id").(string)
 	phone, _ := r.Context().Value("phone").(string)
 
-	code, refs, err := h.referralService.GetReferralScreen(r.Context(), deID, phone)
+	code, refs, rewardZMW, err := h.referralService.GetReferralScreen(r.Context(), deID, phone)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to get referral screen")
 		h.respondWithError(w, http.StatusInternalServerError, "REFERRAL_FETCH_FAILED", "Failed to fetch referral details")
@@ -32,6 +32,7 @@ func (h *ReferralHandlers) GetReferralScreen(w http.ResponseWriter, r *http.Requ
 
 	type referralItem struct {
 		ReferredDEID      string `json:"referred_de_id"`
+		ReferredName      string `json:"referred_name,omitempty"`
 		Status            string `json:"status"`
 		CreatedAt         string `json:"created_at"`
 		WindowExpiresAt   string `json:"window_expires_at"`
@@ -42,6 +43,7 @@ func (h *ReferralHandlers) GetReferralScreen(w http.ResponseWriter, r *http.Requ
 	for _, ref := range refs {
 		items = append(items, referralItem{
 			ReferredDEID:      ref.ReferredDEID,
+			ReferredName:      ref.ReferredName,
 			Status:            string(ref.Status),
 			CreatedAt:         ref.CreatedAt,
 			WindowExpiresAt:   ref.WindowExpiresAt,
@@ -51,6 +53,7 @@ func (h *ReferralHandlers) GetReferralScreen(w http.ResponseWriter, r *http.Requ
 
 	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"referral_code": code,
+		"reward_zmw":    rewardZMW,
 		"referrals":     items,
 	})
 }
