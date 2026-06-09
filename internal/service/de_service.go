@@ -8,18 +8,20 @@ import (
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
+	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
 type DEService struct {
-	deRepo          *repository.DERepository
-	qrService       *QRService
-	referralService *ReferralService
-	logger          *logrus.Logger
+	deRepo             *repository.DERepository
+	qrService          *QRService
+	referralService    *ReferralService
+	earningsLedgerRepo *repository.EarningsLedgerRepository
+	logger             *logrus.Logger
 }
 
-func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, logger *logrus.Logger) *DEService {
-	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, logger: logger}
+func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo *repository.EarningsLedgerRepository, logger *logrus.Logger) *DEService {
+	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, earningsLedgerRepo: earningsLedgerRepo, logger: logger}
 }
 
 type RegisterDERequest struct {
@@ -80,6 +82,12 @@ func (s *DEService) GetDE(ctx context.Context, phone string) (*models.DeliveryEx
 		return nil, op.Outcome("not_found", fmt.Errorf("delivery executive not found"))
 	}
 	return de, nil
+}
+
+// GetTodayEarnings returns the sum of the DE's earnings ledger entries since
+// midnight Zambia time.
+func (s *DEService) GetTodayEarnings(ctx context.Context, deID string) (float64, error) {
+	return s.earningsLedgerRepo.SumByDEAfter(ctx, deID, timezone.StartOfDayString())
 }
 
 // StartDuty validates the QR code and transitions the DE to eligible status.

@@ -76,7 +76,7 @@ func main() {
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest)
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
-	deService := service.NewDEService(deRepo, qrService, referralService, logger)
+	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, logger)
 
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
