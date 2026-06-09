@@ -58,12 +58,18 @@ func (s *ReferralService) GenerateUniqueCode(ctx context.Context) (string, error
 // referredDEID is the UUID of the newly registered DE.
 // referredName is the display name of the newly registered DE (stored for display purposes).
 // referralCode is the code the new DE provided during registration.
-func (s *ReferralService) LinkReferral(ctx context.Context, referredDEID, referredName, referralCode string, windowDays int) error {
+func (s *ReferralService) LinkReferral(ctx context.Context, referredDEID, referredName, referralCode string) error {
 	op := logging.Start(ctx, s.logger, "ReferralService.LinkReferral", logrus.Fields{
 		"referred_de_id": referredDEID,
 		"referral_code":  referralCode,
 	})
 	defer op.End()
+
+	cfg, err := s.payoutConfigRepo.Get(ctx)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to get payout config: %w", err))
+	}
+	windowDays := cfg.ReferralWindowDays
 
 	referrer, err := s.deRepo.GetByReferralCode(ctx, referralCode)
 	if err != nil {
@@ -146,8 +152,11 @@ func (s *ReferralService) GetReferralScreen(ctx context.Context, deID, dePhone s
 	defer op.End()
 
 	de, err := s.deRepo.GetByPhone(ctx, dePhone)
-	if err != nil || de == nil {
+	if err != nil {
 		return "", nil, 0, op.Fail(fmt.Errorf("failed to fetch DE: %w", err))
+	}
+	if de == nil {
+		return "", nil, 0, op.Outcome("not_found", fmt.Errorf("delivery executive not found"))
 	}
 
 	refs, err := s.referralRepo.ListByReferrerDEID(ctx, deID)

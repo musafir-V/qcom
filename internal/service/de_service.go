@@ -58,11 +58,7 @@ func (s *DEService) Register(ctx context.Context, req RegisterDERequest) (*model
 
 	// Link referral if a code was provided — non-fatal if invalid
 	if req.ReferralCode != "" {
-		windowDays := 30 // safe default if config unavailable
-		if cfg, cfgErr := s.referralService.payoutConfigRepo.Get(ctx); cfgErr == nil {
-			windowDays = cfg.ReferralWindowDays
-		}
-		if linkErr := s.referralService.LinkReferral(ctx, de.DEID, de.Name, req.ReferralCode, windowDays); linkErr != nil {
+		if linkErr := s.referralService.LinkReferral(ctx, de.DEID, de.Name, req.ReferralCode); linkErr != nil {
 			s.logger.WithError(linkErr).Warn("referral linking failed during registration — continuing")
 		}
 	}
