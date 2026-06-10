@@ -50,6 +50,7 @@ func main() {
 	deRepo := repository.NewDERepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	referralRepo := repository.NewReferralRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	assignmentConfigRepo := repository.NewAssignmentConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	weeklySummaryRepo := repository.NewWeeklySummaryRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -82,7 +83,7 @@ func main() {
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
-	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, darkstoreRepo, javaOrderClient, distanceService, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, darkstoreRepo, javaOrderClient, distanceService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
 	s3Client, err := initS3(cfg, logger)

@@ -24,8 +24,9 @@ type AssignmentCron struct {
 	tripRepo         *repository.TripRepository
 	deRepo           *repository.DERepository
 	cronLockRepo     *repository.CronLockRepository
-	payoutConfigRepo *repository.PayoutConfigRepository
-	darkstoreRepo    *repository.DarkstoreRepository
+	payoutConfigRepo     *repository.PayoutConfigRepository
+	assignmentConfigRepo *repository.AssignmentConfigRepository
+	darkstoreRepo        *repository.DarkstoreRepository
 	javaClient       *JavaOrderClient
 	distanceService  *DistanceService
 	logger           *logrus.Logger
@@ -39,6 +40,7 @@ func NewAssignmentCron(
 	deRepo *repository.DERepository,
 	cronLockRepo *repository.CronLockRepository,
 	payoutConfigRepo *repository.PayoutConfigRepository,
+	assignmentConfigRepo *repository.AssignmentConfigRepository,
 	darkstoreRepo *repository.DarkstoreRepository,
 	javaClient *JavaOrderClient,
 	distanceService *DistanceService,
@@ -48,8 +50,9 @@ func NewAssignmentCron(
 		tripRepo:         tripRepo,
 		deRepo:           deRepo,
 		cronLockRepo:     cronLockRepo,
-		payoutConfigRepo: payoutConfigRepo,
-		darkstoreRepo:    darkstoreRepo,
+		payoutConfigRepo:     payoutConfigRepo,
+		assignmentConfigRepo: assignmentConfigRepo,
+		darkstoreRepo:        darkstoreRepo,
 		javaClient:       javaClient,
 		distanceService:  distanceService,
 		logger:           logger,
@@ -134,6 +137,13 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 		return
 	}
 
+	acfg, err := c.assignmentConfigRepo.Get(ctx)
+	if err != nil {
+		c.logger.WithError(err).Warn("assignment cron: failed to fetch assignment config — using default accept window")
+		acfg = &models.AssignmentConfig{}
+	}
+	autoRejectSecs := acfg.EffectiveAutoRejectSeconds()
+
 	// 2. Fetch PACKING orders from Java
 	orders, err := c.javaClient.GetPackingOrders(ctx, defaultStoreID)
 	if err != nil {
@@ -173,6 +183,31 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 
 	// 5. Detect cancellations: check active trips whose order is no longer PACKING
 	c.detectCancellations(ctx, orders)
+
+	// 5b. Auto-reject trips whose accept window expired — revert to pool so the
+	// assign step below re-offers them (to a different DE, since the rejecter is
+	// now in rejected_de_ids).
+	now := timezone.Now()
+	for i := range results {
+		t := results[i].trip
+		if t == nil || !isAcceptExpired(t, now) {
+			continue
+		}
+		if err := c.tripRepo.RejectToPool(ctx, t.TripID, t.DEPhone, t.StoreID, t.DEID); err != nil {
+			c.logger.WithError(err).WithField("trip_id", t.TripID).
+				Warn("assignment cron: auto-reject failed — will retry next tick")
+			continue
+		}
+		c.logger.WithFields(logrus.Fields{"trip_id": t.TripID, "de_id": t.DEID}).
+			Info("assignment cron: auto-rejected expired trip")
+		// Reflect the new pool state locally so the assign loop picks it up this
+		// tick and skips the DE that just lost it.
+		t.RejectedDEIDs = append(t.RejectedDEIDs, t.DEID)
+		t.Status = models.TripStatusCreated
+		t.DEID = ""
+		t.DEPhone = ""
+		t.AcceptDeadline = ""
+	}
 
 	// 6. Create missing trips (parallel Maps calls)
 	var newTrips []*models.Trip
@@ -218,24 +253,26 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 	// FIFO: sort unassigned by created_at ascending (oldest first)
 	sortTripsByCreatedAt(unassigned)
 
-	// Assign one DE per unassigned trip
-	deIdx := 0
+	// Assign each unassigned trip to the first eligible DE that has not already
+	// rejected it and is not already taken this tick.
+	usedDE := make(map[string]bool)
 	for _, trip := range unassigned {
-		if deIdx >= len(eligibleDEs) {
-			break // no more DEs available
-		}
-		de := eligibleDEs[deIdx]
-		deIdx++
-
-		if err := c.tripRepo.Assign(ctx, trip.TripID, trip.OrderID, de.DEID, de.PhoneNumber, timezone.Now().Format(time.RFC3339)); err != nil {
-			c.logger.WithError(err).WithFields(logrus.Fields{
-				"trip_id": trip.TripID, "de_id": de.DEID,
-			}).Warn("assignment cron: assign conflict — DE or trip taken, skipping")
-			deIdx-- // DE may still be available; retry with next trip
-		} else {
+		for _, de := range eligibleDEs {
+			if usedDE[de.DEID] || trip.HasRejected(de.DEID) {
+				continue
+			}
+			deadline := now.Add(time.Duration(autoRejectSecs) * time.Second).Format(time.RFC3339)
+			if err := c.tripRepo.Assign(ctx, trip.TripID, trip.OrderID, de.DEID, de.PhoneNumber, now.Format(time.RFC3339), deadline); err != nil {
+				c.logger.WithError(err).WithFields(logrus.Fields{
+					"trip_id": trip.TripID, "de_id": de.DEID,
+				}).Warn("assignment cron: assign conflict — trip or DE taken, trying next DE")
+				continue
+			}
+			usedDE[de.DEID] = true
 			c.logger.WithFields(logrus.Fields{
 				"trip_id": trip.TripID, "de_id": de.DEID,
 			}).Info("assignment cron: trip assigned")
+			break
 		}
 	}
 }
@@ -328,5 +365,18 @@ func sortTripsByCreatedAt(trips []*models.Trip) {
 // randomOTP returns a random 4-digit OTP string in the range "1000".."9999".
 func randomOTP() string {
 	return fmt.Sprintf("%04d", rand.Intn(9000)+1000)
+}
+
+// isAcceptExpired reports whether an assigned trip's accept window has elapsed
+// and it should be auto-rejected back into the pool.
+func isAcceptExpired(trip *models.Trip, now time.Time) bool {
+	if trip.Status != models.TripStatusAssigned || trip.AcceptDeadline == "" {
+		return false
+	}
+	deadline, err := time.Parse(time.RFC3339, trip.AcceptDeadline)
+	if err != nil {
+		return false
+	}
+	return now.After(deadline)
 }
 
