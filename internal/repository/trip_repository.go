@@ -117,7 +117,7 @@ func (r *TripRepository) GetByOrderID(ctx context.Context, orderID string) (*mod
 // Assign atomically sets de_id and status=assigned on the trip, and sets
 // status=busy + current_order_id on the DE — in a single DynamoDB transaction.
 // Conditions: trip must have no de_id yet; DE must have status=eligible.
-func (r *TripRepository) Assign(ctx context.Context, tripID, orderID, deID, dePhone, assignedAt string) error {
+func (r *TripRepository) Assign(ctx context.Context, tripID, orderID, deID, dePhone, assignedAt, acceptDeadline string) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.Assign", logrus.Fields{
 		"trip_id": tripID, "de_id": deID,
 	})
@@ -134,13 +134,15 @@ func (r *TripRepository) Assign(ctx context.Context, tripID, orderID, deID, dePh
 						"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 					},
-					UpdateExpression:         aws.String("SET #status = :assigned, de_id = :de_id, assigned_at = :at, updated_at = :now"),
+					UpdateExpression:         aws.String("SET #status = :assigned, de_id = :de_id, de_phone = :de_phone, assigned_at = :at, accept_deadline = :deadline, updated_at = :now"),
 					ConditionExpression:      aws.String("attribute_not_exists(de_id)"),
 					ExpressionAttributeNames: map[string]string{"#status": "status"},
 					ExpressionAttributeValues: map[string]types.AttributeValue{
 						":assigned": &types.AttributeValueMemberS{Value: string(models.TripStatusAssigned)},
 						":de_id":    &types.AttributeValueMemberS{Value: deID},
+						":de_phone": &types.AttributeValueMemberS{Value: dePhone},
 						":at":       &types.AttributeValueMemberS{Value: assignedAt},
+						":deadline": &types.AttributeValueMemberS{Value: acceptDeadline},
 						":now":      &types.AttributeValueMemberS{Value: now},
 					},
 				},
@@ -436,6 +438,176 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone st
 	})
 	if err != nil {
 		return op.Fail(fmt.Errorf("failed to cancel trip: %w", err))
+	}
+	return nil
+}
+
+// Accept transitions a trip from assigned to accepted for the owning DE.
+// Conditional on the trip still being assigned to this DE — if the cron
+// auto-rejected first, the condition fails and the caller gets a conflict.
+func (r *TripRepository) Accept(ctx context.Context, tripID, deID string) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.Accept", logrus.Fields{"trip_id": tripID, "de_id": deID})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:         aws.String("SET #status = :accepted, updated_at = :now REMOVE accept_deadline"),
+		ConditionExpression:      aws.String("#status = :assigned AND de_id = :de_id"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":accepted": &types.AttributeValueMemberS{Value: string(models.TripStatusAccepted)},
+			":assigned": &types.AttributeValueMemberS{Value: string(models.TripStatusAssigned)},
+			":de_id":    &types.AttributeValueMemberS{Value: deID},
+			":now":      &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return op.Outcome("conflict", fmt.Errorf("trip no longer assigned to this DE"))
+		}
+		return op.Fail(fmt.Errorf("failed to accept trip: %w", err))
+	}
+	return nil
+}
+
+// RejectToPool reverts an assigned trip back to the pool and returns the DE to
+// eligible (NOT free) so they keep their shift and can take the next order.
+// The DE is appended to the trip's rejected_de_ids so the cron won't re-offer
+// the same trip to them. Conditional on the trip still being assigned.
+func (r *TripRepository) RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.RejectToPool", logrus.Fields{
+		"trip_id": tripID, "de_id": deID,
+	})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	dutyKey := "DE_ELIGIBLE#" + storeID
+
+	_, err := r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression: aws.String(
+						"SET #status = :created, rejected_de_ids = list_append(if_not_exists(rejected_de_ids, :empty), :newde), updated_at = :now " +
+							"REMOVE de_id, de_phone, assigned_at, accept_deadline",
+					),
+					ConditionExpression:      aws.String("#status = :assigned"),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":created":  &types.AttributeValueMemberS{Value: string(models.TripStatusCreated)},
+						":assigned": &types.AttributeValueMemberS{Value: string(models.TripStatusAssigned)},
+						":empty":    &types.AttributeValueMemberL{Value: []types.AttributeValue{}},
+						":newde":    &types.AttributeValueMemberL{Value: []types.AttributeValue{&types.AttributeValueMemberS{Value: deID}}},
+						":now":      &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "DE!" + dePhone},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression: aws.String(
+						"SET #status = :eligible, current_store_id = :store, duty_index_key = :duty, updated_at = :now " +
+							"REMOVE current_order_id, current_trip_id",
+					),
+					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":eligible": &types.AttributeValueMemberS{Value: string(models.DEStatusEligible)},
+						":busy":     &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+						":store":    &types.AttributeValueMemberS{Value: storeID},
+						":duty":     &types.AttributeValueMemberS{Value: dutyKey},
+						":tid":      &types.AttributeValueMemberS{Value: tripID},
+						":now":      &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		var txErr *types.TransactionCanceledException
+		if errors.As(err, &txErr) {
+			return op.Outcome("conflict", fmt.Errorf("reject conflict: trip no longer assigned or DE not busy on this trip"))
+		}
+		return op.Fail(fmt.Errorf("failed to reject trip to pool: %w", err))
+	}
+	return nil
+}
+
+// AdminAssign force-assigns a created (pooled) trip directly to accepted for a
+// given eligible DE, bypassing rejected_de_ids and the accept window. Used by
+// the admin escape hatch. Conditional: trip must be created with no DE; DE must
+// be eligible.
+func (r *TripRepository) AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.AdminAssign", logrus.Fields{
+		"trip_id": tripID, "de_id": deID,
+	})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression:         aws.String("SET #status = :accepted, de_id = :de_id, de_phone = :de_phone, assigned_at = :now, updated_at = :now"),
+					ConditionExpression:      aws.String("#status = :created AND attribute_not_exists(de_id)"),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":accepted": &types.AttributeValueMemberS{Value: string(models.TripStatusAccepted)},
+						":created":  &types.AttributeValueMemberS{Value: string(models.TripStatusCreated)},
+						":de_id":    &types.AttributeValueMemberS{Value: deID},
+						":de_phone": &types.AttributeValueMemberS{Value: dePhone},
+						":now":      &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "DE!" + dePhone},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression:         aws.String("SET #status = :busy, current_order_id = :oid, current_trip_id = :tid, current_store_id = :store, updated_at = :now REMOVE duty_index_key"),
+					ConditionExpression:      aws.String("#status = :eligible"),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":busy":     &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+						":eligible": &types.AttributeValueMemberS{Value: string(models.DEStatusEligible)},
+						":oid":      &types.AttributeValueMemberS{Value: orderID},
+						":tid":      &types.AttributeValueMemberS{Value: tripID},
+						":store":    &types.AttributeValueMemberS{Value: storeID},
+						":now":      &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		var txErr *types.TransactionCanceledException
+		if errors.As(err, &txErr) {
+			return op.Outcome("conflict", fmt.Errorf("admin assign conflict: trip not created or DE not eligible"))
+		}
+		return op.Fail(fmt.Errorf("failed to admin-assign trip: %w", err))
 	}
 	return nil
 }
