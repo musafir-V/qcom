@@ -82,6 +82,7 @@ func main() {
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
+	adminService := service.NewAdminService(tripRepo, deRepo, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, darkstoreRepo, javaOrderClient, distanceService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
@@ -109,13 +110,14 @@ func main() {
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 	tripHandlers := handlers.NewTripHandlers(tripService, logger)
+	adminHandlers := handlers.NewAdminHandlers(adminService, logger)
 	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
 	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
 	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, trackHandlers, earningsHandlers, disbursementHandlers, webhookHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, webhookHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -222,6 +224,7 @@ func setupRouter(
 	referralHandlers *handlers.ReferralHandlers,
 	configHandlers *handlers.ConfigHandlers,
 	tripHandlers *handlers.TripHandlers,
+	adminHandlers *handlers.AdminHandlers,
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
@@ -261,6 +264,9 @@ func setupRouter(
 
 	// Payout config update endpoint (no auth — ops/runtime tuning)
 	api.HandleFunc("/config/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH", "OPTIONS")
+
+	admin := api.PathPrefix("/admin").Subrouter()
+	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
 
 	// Ops disbursement recording endpoint (no auth — internal)
 	api.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST", "OPTIONS")
