@@ -26,11 +26,12 @@ func NewDEHandlers(deService *service.DEService, qrService *service.QRService, p
 // POST /api/v1/de/register
 func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		PhoneNumber  string `json:"phone_number"`
-		Name         string `json:"name"`
-		ProfileURL   string `json:"profile_url"`
-		NRCURL       string `json:"nrc_url"`
-		ReferralCode string `json:"referral_code"` // optional
+		PhoneNumber      string `json:"phone_number"`
+		Name             string `json:"name"`
+		ProfileURL       string `json:"profile_url"`
+		NRCURL           string `json:"nrc_url"`
+		DriverLicenseURL string `json:"driver_license_url"` // optional
+		ReferralCode     string `json:"referral_code"`      // optional
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
@@ -59,11 +60,12 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	de, err := h.deService.Register(r.Context(), service.RegisterDERequest{
-		PhoneNumber:  req.PhoneNumber,
-		Name:         req.Name,
-		ProfileURL:   req.ProfileURL,
-		NRCURL:       req.NRCURL,
-		ReferralCode: req.ReferralCode,
+		PhoneNumber:      req.PhoneNumber,
+		Name:             req.Name,
+		ProfileURL:       req.ProfileURL,
+		NRCURL:           req.NRCURL,
+		DriverLicenseURL: req.DriverLicenseURL,
+		ReferralCode:     req.ReferralCode,
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already registered") {

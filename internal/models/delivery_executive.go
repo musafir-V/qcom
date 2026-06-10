@@ -14,7 +14,8 @@ type DeliveryExecutive struct {
 	PhoneNumber string   `json:"phone_number" dynamodbav:"phone_number"`
 	Name        string   `json:"name" dynamodbav:"name"`
 	ProfileURL  string   `json:"profile_url" dynamodbav:"profile_url"`
-	NRCURL      string   `json:"nrc_url" dynamodbav:"nrc_url"`
+	NRCURL           string `json:"nrc_url" dynamodbav:"nrc_url"`
+	DriverLicenseURL string `json:"driver_license_url,omitempty" dynamodbav:"driver_license_url,omitempty"`
 	Status      DEStatus `json:"status" dynamodbav:"status"`
 	// Set to "DE_ELIGIBLE#{storeId}" when eligible, cleared otherwise.
 	// Used by DEDutyIndex GSI to let the assignment cron query eligible DEs by store.

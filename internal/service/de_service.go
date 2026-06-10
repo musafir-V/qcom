@@ -25,11 +25,12 @@ func NewDEService(deRepo *repository.DERepository, qrService *QRService, referra
 }
 
 type RegisterDERequest struct {
-	PhoneNumber  string
-	Name         string
-	ProfileURL   string
-	NRCURL       string
-	ReferralCode string // optional — code of the DE that referred this one
+	PhoneNumber      string
+	Name             string
+	ProfileURL       string
+	NRCURL           string
+	DriverLicenseURL string // optional
+	ReferralCode     string // optional — code of the DE that referred this one
 }
 
 func (s *DEService) Register(ctx context.Context, req RegisterDERequest) (*models.DeliveryExecutive, error) {
@@ -43,13 +44,14 @@ func (s *DEService) Register(ctx context.Context, req RegisterDERequest) (*model
 	}
 
 	de := &models.DeliveryExecutive{
-		DEID:         uuid.New().String(),
-		PhoneNumber:  req.PhoneNumber,
-		Name:         req.Name,
-		ProfileURL:   req.ProfileURL,
-		NRCURL:       req.NRCURL,
-		Status:       models.DEStatusOffline,
-		ReferralCode: referralCode,
+		DEID:             uuid.New().String(),
+		PhoneNumber:      req.PhoneNumber,
+		Name:             req.Name,
+		ProfileURL:       req.ProfileURL,
+		NRCURL:           req.NRCURL,
+		DriverLicenseURL: req.DriverLicenseURL,
+		Status:           models.DEStatusOffline,
+		ReferralCode:     referralCode,
 	}
 
 	if err := s.deRepo.Create(ctx, de); err != nil {
