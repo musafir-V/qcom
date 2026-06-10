@@ -104,6 +104,64 @@ func classifyTaskUpdateError(err error) (status int, code string) {
 	}
 }
 
+// POST /api/v1/trip/{tripId}/accept
+func (h *TripHandlers) AcceptTrip(w http.ResponseWriter, r *http.Request) {
+	h.acceptOrReject(w, r, true)
+}
+
+// POST /api/v1/trip/{tripId}/reject
+func (h *TripHandlers) RejectTrip(w http.ResponseWriter, r *http.Request) {
+	h.acceptOrReject(w, r, false)
+}
+
+func (h *TripHandlers) acceptOrReject(w http.ResponseWriter, r *http.Request, accept bool) {
+	tripID := mux.Vars(r)["tripId"]
+	phone, _ := r.Context().Value("phone").(string)
+
+	if strings.TrimSpace(tripID) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "tripId is required")
+		return
+	}
+
+	var err error
+	if accept {
+		err = h.tripService.AcceptTrip(r.Context(), tripID, phone)
+	} else {
+		err = h.tripService.RejectTrip(r.Context(), tripID, phone)
+	}
+	if err != nil {
+		status, code := classifyAcceptRejectError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("failed to accept/reject trip")
+			h.respondWithError(w, status, code, "Failed to update trip")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+
+	result := "accepted"
+	if !accept {
+		result = "rejected"
+	}
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": result})
+}
+
+// classifyAcceptRejectError maps TripService.AcceptTrip/RejectTrip errors to
+// HTTP status codes using errors.Is against the service sentinels.
+func classifyAcceptRejectError(err error) (status int, code string) {
+	switch {
+	case errors.Is(err, service.ErrTripNotFound):
+		return http.StatusNotFound, "NOT_FOUND"
+	case errors.Is(err, service.ErrTripForbidden):
+		return http.StatusForbidden, "FORBIDDEN"
+	case errors.Is(err, service.ErrInvalidTripTransition):
+		return http.StatusConflict, "INVALID_TRIP_STATE"
+	default:
+		return http.StatusInternalServerError, "ACTION_FAILED"
+	}
+}
+
 func (h *TripHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

@@ -307,6 +307,8 @@ func setupRouter(
 	tripRoutes.Use(authMiddleware.RequireDEAuth)
 	tripRoutes.HandleFunc("/{tripId}/task/{taskId}/status/update",
 		tripHandlers.UpdateTaskStatus).Methods("POST", "OPTIONS")
+	tripRoutes.HandleFunc("/{tripId}/accept", tripHandlers.AcceptTrip).Methods("POST", "OPTIONS")
+	tripRoutes.HandleFunc("/{tripId}/reject", tripHandlers.RejectTrip).Methods("POST", "OPTIONS")
 
 	return router
 }
