@@ -68,3 +68,32 @@ func TestValidateDropOTP_Missing(t *testing.T) {
 		t.Fatalf("expected ErrInvalidOTP, got: %v", err)
 	}
 }
+
+func TestValidateTaskAgainstTripStatus(t *testing.T) {
+	cases := []struct {
+		name     string
+		taskType models.TaskType
+		status   models.TripStatus
+		wantErr  bool
+	}{
+		{"pickup allowed when accepted", models.TaskTypePickup, models.TripStatusAccepted, false},
+		{"pickup blocked when assigned", models.TaskTypePickup, models.TripStatusAssigned, true},
+		{"pickup blocked when created", models.TaskTypePickup, models.TripStatusCreated, true},
+		{"drop allowed when out_for_delivery", models.TaskTypeDrop, models.TripStatusOutForDelivery, false},
+		{"drop blocked when accepted (pickup not done)", models.TaskTypeDrop, models.TripStatusAccepted, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := validateTaskAgainstTripStatus(c.taskType, c.status)
+			if c.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !c.wantErr && err != nil {
+				t.Fatalf("expected nil, got %v", err)
+			}
+			if c.wantErr && err != nil && !errors.Is(err, ErrPrerequisiteIncomplete) {
+				t.Fatalf("expected ErrPrerequisiteIncomplete, got %v", err)
+			}
+		})
+	}
+}

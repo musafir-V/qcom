@@ -25,6 +25,7 @@ var (
 	ErrPrerequisiteIncomplete = errors.New("prerequisite task incomplete")
 	ErrInvalidTransition      = errors.New("invalid task transition")
 	ErrInvalidOTP             = errors.New("invalid OTP")
+	ErrInvalidTripTransition  = errors.New("invalid trip transition")
 )
 
 type TripService struct {
@@ -123,6 +124,11 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 		return op.Outcome("invalid_transition", err)
 	}
 
+	// Trip-status gate: pickup requires accepted, drop requires out_for_delivery.
+	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
+		return op.Outcome("prerequisite_incomplete", err)
+	}
+
 	// Drop completion requires the customer OTP.
 	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
 		if err := validateDropOTP(*task, otp); err != nil {
@@ -218,4 +224,77 @@ func validateDropOTP(task models.Task, otp string) error {
 		return fmt.Errorf("%w", ErrInvalidOTP)
 	}
 	return nil
+}
+
+// validateTaskAgainstTripStatus enforces that a task may only be completed when
+// the trip is in the correct status: pickup requires the trip to be accepted;
+// drop requires the trip to be out_for_delivery (i.e. pickup already done).
+func validateTaskAgainstTripStatus(taskType models.TaskType, status models.TripStatus) error {
+	switch taskType {
+	case models.TaskTypePickup:
+		if status != models.TripStatusAccepted {
+			return fmt.Errorf("%w: accept the trip before starting pickup (status=%s)", ErrPrerequisiteIncomplete, status)
+		}
+	case models.TaskTypeDrop:
+		if status != models.TripStatusOutForDelivery {
+			return fmt.Errorf("%w: complete pickup before drop (status=%s)", ErrPrerequisiteIncomplete, status)
+		}
+	}
+	return nil
+}
+
+// AcceptTrip moves an assigned trip to accepted for the calling DE.
+func (s *TripService) AcceptTrip(ctx context.Context, tripID, callerDEPhone string) error {
+	op := logging.Start(ctx, s.logger, "TripService.AcceptTrip", logrus.Fields{"trip_id": tripID})
+	defer op.End()
+
+	trip, de, err := s.ownedTrip(ctx, op, tripID, callerDEPhone)
+	if err != nil {
+		return err
+	}
+	if trip.Status != models.TripStatusAssigned {
+		return op.Outcome("invalid_state", fmt.Errorf("%w: cannot accept from %s", ErrInvalidTripTransition, trip.Status))
+	}
+	if err := s.tripRepo.Accept(ctx, tripID, de.DEID); err != nil {
+		return op.Fail(err)
+	}
+	return nil
+}
+
+// RejectTrip returns an assigned trip to the pool and the DE to eligible.
+// Only legal while the trip is still assigned — once accepted it cannot be rejected.
+func (s *TripService) RejectTrip(ctx context.Context, tripID, callerDEPhone string) error {
+	op := logging.Start(ctx, s.logger, "TripService.RejectTrip", logrus.Fields{"trip_id": tripID})
+	defer op.End()
+
+	trip, de, err := s.ownedTrip(ctx, op, tripID, callerDEPhone)
+	if err != nil {
+		return err
+	}
+	if trip.Status != models.TripStatusAssigned {
+		return op.Outcome("invalid_state", fmt.Errorf("%w: cannot reject from %s", ErrInvalidTripTransition, trip.Status))
+	}
+	if err := s.tripRepo.RejectToPool(ctx, tripID, de.PhoneNumber, trip.StoreID, de.DEID); err != nil {
+		return op.Fail(err)
+	}
+	return nil
+}
+
+// ownedTrip fetches a trip and verifies the caller (by phone) owns it.
+func (s *TripService) ownedTrip(ctx context.Context, op *logging.Op, tripID, callerDEPhone string) (*models.Trip, *models.DeliveryExecutive, error) {
+	trip, err := s.tripRepo.GetByID(ctx, tripID)
+	if err != nil {
+		return nil, nil, op.Fail(err)
+	}
+	if trip == nil {
+		return nil, nil, op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTripNotFound, tripID))
+	}
+	de, err := s.deRepo.GetByPhone(ctx, callerDEPhone)
+	if err != nil {
+		return nil, nil, op.Fail(err)
+	}
+	if de == nil || trip.DEID != de.DEID {
+		return nil, nil, op.Outcome("forbidden", ErrTripForbidden)
+	}
+	return trip, de, nil
 }
