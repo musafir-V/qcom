@@ -58,6 +58,10 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_url is required")
 		return
 	}
+	if strings.TrimSpace(req.DriverLicenseURL) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "driver_license_url is required")
+		return
+	}
 
 	de, err := h.deService.Register(r.Context(), service.RegisterDERequest{
 		PhoneNumber:      req.PhoneNumber,

@@ -29,7 +29,7 @@ type RegisterDERequest struct {
 	Name             string
 	ProfileURL       string
 	NRCURL           string
-	DriverLicenseURL string // optional
+	DriverLicenseURL string
 	ReferralCode     string // optional — code of the DE that referred this one
 }
 
