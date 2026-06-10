@@ -5,12 +5,12 @@ type TaskType string
 type TaskStatus string
 
 const (
-	TripStatusCreated   TripStatus = "created"
-	TripStatusAssigned  TripStatus = "assigned"
-	TripStatusInTransit TripStatus = "in_transit"
-	TripStatusReached   TripStatus = "reached"
-	TripStatusCompleted TripStatus = "completed"
-	TripStatusCancelled TripStatus = "cancelled"
+	TripStatusCreated        TripStatus = "created"
+	TripStatusAssigned       TripStatus = "assigned"
+	TripStatusAccepted       TripStatus = "accepted"
+	TripStatusOutForDelivery TripStatus = "out_for_delivery"
+	TripStatusCompleted      TripStatus = "completed"
+	TripStatusCancelled      TripStatus = "cancelled"
 
 	TaskTypePickup TaskType = "pickup"
 	TaskTypeDrop   TaskType = "drop"
@@ -35,6 +35,7 @@ type Trip struct {
 	OrderID string     `json:"order_id" dynamodbav:"order_id"`
 	StoreID string     `json:"store_id" dynamodbav:"store_id"`
 	DEID    string     `json:"de_id,omitempty" dynamodbav:"de_id,omitempty"`
+	DEPhone string     `json:"de_phone,omitempty" dynamodbav:"de_phone,omitempty"`
 	Status  TripStatus `json:"status" dynamodbav:"status"`
 	Tasks   []Task     `json:"tasks" dynamodbav:"tasks"`
 
@@ -47,9 +48,11 @@ type Trip struct {
 
 	CreatedAt   string `json:"created_at" dynamodbav:"created_at"`
 	UpdatedAt   string `json:"updated_at" dynamodbav:"updated_at"`
-	AssignedAt  string `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
-	CompletedAt string `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
-	CancelledAt string `json:"cancelled_at,omitempty" dynamodbav:"cancelled_at,omitempty"`
+	AssignedAt     string   `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
+	AcceptDeadline string   `json:"accept_deadline,omitempty" dynamodbav:"accept_deadline,omitempty"`
+	RejectedDEIDs  []string `json:"rejected_de_ids,omitempty" dynamodbav:"rejected_de_ids,omitempty"`
+	CompletedAt    string   `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
+	CancelledAt    string   `json:"cancelled_at,omitempty" dynamodbav:"cancelled_at,omitempty"`
 }
 
 func (t *Trip) GetPK() string { return "TRIP!" + t.TripID }
@@ -83,4 +86,32 @@ func (t *Trip) TaskByID(taskID string) *Task {
 		}
 	}
 	return nil
+}
+
+// IsValidTripTransition reports whether a trip may move from `from` to `to`.
+// This is the single source of truth for the trip state machine; any
+// transition not listed here is illegal.
+func IsValidTripTransition(from, to TripStatus) bool {
+	switch from {
+	case TripStatusCreated:
+		return to == TripStatusAssigned || to == TripStatusAccepted || to == TripStatusCancelled
+	case TripStatusAssigned:
+		return to == TripStatusAccepted || to == TripStatusCreated || to == TripStatusCancelled
+	case TripStatusAccepted:
+		return to == TripStatusOutForDelivery || to == TripStatusCancelled
+	case TripStatusOutForDelivery:
+		return to == TripStatusCompleted || to == TripStatusCancelled
+	default:
+		return false
+	}
+}
+
+// HasRejected reports whether the given DE has already rejected this trip.
+func (t *Trip) HasRejected(deID string) bool {
+	for _, id := range t.RejectedDEIDs {
+		if id == deID {
+			return true
+		}
+	}
+	return false
 }

@@ -91,3 +91,47 @@ func TestTrip_TaskByID_ReturnsPointerIntoSlice(t *testing.T) {
 		t.Errorf("expected embedded drop task status to be updated, got %q", trip.Tasks[1].Status)
 	}
 }
+
+func TestIsValidTripTransition(t *testing.T) {
+	valid := []struct{ from, to TripStatus }{
+		{TripStatusCreated, TripStatusAssigned},
+		{TripStatusCreated, TripStatusAccepted},        // admin hard-assign
+		{TripStatusAssigned, TripStatusAccepted},       // driver accept
+		{TripStatusAssigned, TripStatusCreated},        // reject / auto-reject
+		{TripStatusAccepted, TripStatusOutForDelivery}, // pickup done
+		{TripStatusOutForDelivery, TripStatusCompleted},// drop done
+		{TripStatusCreated, TripStatusCancelled},
+		{TripStatusAssigned, TripStatusCancelled},
+		{TripStatusAccepted, TripStatusCancelled},
+		{TripStatusOutForDelivery, TripStatusCancelled},
+	}
+	for _, c := range valid {
+		if !IsValidTripTransition(c.from, c.to) {
+			t.Errorf("expected %s -> %s to be valid", c.from, c.to)
+		}
+	}
+
+	invalid := []struct{ from, to TripStatus }{
+		{TripStatusAccepted, TripStatusCreated},          // no reject after accept
+		{TripStatusAssigned, TripStatusOutForDelivery},   // must accept first
+		{TripStatusCreated, TripStatusOutForDelivery},
+		{TripStatusCompleted, TripStatusCreated},
+		{TripStatusCancelled, TripStatusAssigned},
+		{TripStatusOutForDelivery, TripStatusAccepted},
+	}
+	for _, c := range invalid {
+		if IsValidTripTransition(c.from, c.to) {
+			t.Errorf("expected %s -> %s to be INVALID", c.from, c.to)
+		}
+	}
+}
+
+func TestHasRejected(t *testing.T) {
+	trip := &Trip{RejectedDEIDs: []string{"de-1", "de-2"}}
+	if !trip.HasRejected("de-1") {
+		t.Error("expected de-1 to be rejected")
+	}
+	if trip.HasRejected("de-3") {
+		t.Error("expected de-3 to NOT be rejected")
+	}
+}

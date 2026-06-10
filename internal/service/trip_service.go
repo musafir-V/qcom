@@ -160,7 +160,7 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 
 	switch {
 	case task.Type == models.TaskTypePickup && task.Status == models.TaskStatusCompleted:
-		if err := s.tripRepo.UpdateStatus(bgCtx, trip.TripID, models.TripStatusInTransit); err != nil {
+		if err := s.tripRepo.UpdateStatus(bgCtx, trip.TripID, models.TripStatusOutForDelivery); err != nil {
 			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
 		}
 		// Async: notify Java OUT_FOR_DELIVERY
