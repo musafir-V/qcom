@@ -100,23 +100,19 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 		TripStatus: string(trip.Status),
 	}
 
-	// DE name — only once assigned.
-	// TODO: trip stores DEID (uuid), not phone; DE name lookup needs DE phone on the
-	// trip or a DEID GSI — left as a known limitation for a follow-up. The call below
-	// is defensive: any error or miss simply leaves DEName nil (name omitted).
-	if trip.DEID != "" {
-		de, err := h.deRepo.GetByPhone(r.Context(), trip.DEID)
+	// Driver is revealed to the customer only once they have accepted — never
+	// during the assigned (pending-accept) window, which may end in a reject.
+	committed := trip.Status == models.TripStatusAccepted || trip.Status == models.TripStatusOutForDelivery
+	if committed && trip.DEPhone != "" {
+		de, err := h.deRepo.GetByPhone(r.Context(), trip.DEPhone)
 		if err == nil && de != nil {
 			response.DEName = &de.Name
 		}
 	}
 
-	// OTP — shown on drop task until the drop task is completed.
+	// OTP — shown only once the driver has committed and the drop is still open.
 	dropTask := trip.DropTask()
-	if dropTask != nil &&
-		dropTask.Status == models.TaskStatusCreated &&
-		trip.Status != models.TripStatusCompleted &&
-		trip.Status != models.TripStatusCancelled {
+	if committed && dropTask != nil && dropTask.Status == models.TaskStatusCreated {
 		otp := dropTask.OTP
 		response.OTP = &otp
 	}
@@ -126,8 +122,9 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 		response.ETA = computeETA(trip.CreatedAt)
 	}
 
-	// Unassigned trip with no DE yet = finding_driver
-	if trip.Status == models.TripStatusCreated && trip.DEID == "" {
+	// Customer sees "finding_driver" until a driver accepts — the assigned
+	// (pending-accept) window and any reject churn stay invisible.
+	if trip.Status == models.TripStatusCreated || trip.Status == models.TripStatusAssigned {
 		response.TripStatus = "finding_driver"
 	}
 
