@@ -49,6 +49,10 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name is required")
 		return
 	}
+	if strings.TrimSpace(req.ProfileURL) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "profile_url is required")
+		return
+	}
 	if strings.TrimSpace(req.NRCURL) == "" {
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_url is required")
 		return
