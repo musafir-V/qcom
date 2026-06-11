@@ -122,10 +122,11 @@ func verifyOTP(t *testing.T, phone, otp, appType string) authResult {
 func registerDE(t *testing.T, phone string) {
 	t.Helper()
 	resp, result := do(t, "POST", "/api/v1/de/register", nil, map[string]interface{}{
-		"phone_number": phone,
-		"name":         "Smoke Test DE",
-		"profile_url":  "https://example.com/photo.jpg",
-		"nrc_url":      "https://example.com/nrc.jpg",
+		"phone_number":       phone,
+		"name":               "Smoke Test DE",
+		"profile_url":        "https://example.com/photo.jpg",
+		"nrc_url":            "https://example.com/nrc.jpg",
+		"driver_license_url": "https://example.com/license.jpg",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("de/register: expected 201, got %d: %v", resp.StatusCode, result)

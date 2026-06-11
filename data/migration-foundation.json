@@ -1,0 +1,15 @@
+{
+  "phase": 1,
+  "completed_at": "2026-06-10T19:22:57Z",
+  "account_id": "078455283887",
+  "region": "ap-southeast-2",
+  "vpc_id": "vpc-023f7f8f06f9368a8",
+  "subnet_ids": [
+    "subnet-0ec7a2b184dc2c575",
+    "subnet-0e4030f6eee2bc6c6",
+    "subnet-0af060716fcb6e824"
+  ],
+  "db_subnet_group": "bunzo-db-subnet-group",
+  "s3_bucket": null,
+  "notes": "S3 printdrop-documents skipped — not migrating"
+}

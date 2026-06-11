@@ -22,6 +22,9 @@ TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-m
 # Read the AWS region this instance is running in from the instance metadata.
 # Used later when calling the AWS CLI to read secrets from SSM.
 REGION=$(curl -s -H "X-aws-ec2-metadata-token: ${TOKEN}" http://169.254.169.254/latest/meta-data/placement/region)
+export IMDS_TOKEN="${TOKEN}"
+export AWS_REGION="${REGION}"
+export AWS_DEFAULT_REGION="${REGION}"
 
 # Pin the Go version so all instances always build with the same toolchain.
 GO_VERSION="1.24.3"
@@ -39,7 +42,7 @@ SERVICE_NAME="qcom"
 # From this point on, everything printed to stdout or stderr goes to this file.
 # If bootstrap fails, SSH into the instance and run:
 #   sudo cat /var/log/qcom-bootstrap.log
-exec > /var/log/qcom-bootstrap.log 2>&1
+exec > >(tee /var/log/qcom-bootstrap.log /dev/console) 2>&1
 
 echo "=== qcom bootstrap started at $(date) ==="
 
@@ -119,12 +122,37 @@ cd "${APP_DIR}"
 sudo -u qcom HOME=/app PATH=$PATH:/usr/local/go/bin GOPATH=/app/go make build
 
 # --- Load secrets from SSM ----------------------------------------------------
-# fetch-env.sh reads all parameters under /qcom/prod/ from AWS SSM Parameter
-# Store and writes them as KEY=VALUE lines to /app/.env. The EC2 IAM Instance
-# Profile (qcom-ec2-profile) grants the instance read access to those params —
-# no AWS credentials need to be stored on disk. The resulting /app/.env is
-# chmod 600 and owned by qcom:qcom.
-bash "${APP_DIR}/scripts/fetch-env.sh"
+# Paginated fetch — AWS returns max 10 params per call without NextToken.
+python3 - <<'PY'
+import json, subprocess, os
+
+prefix = "/qcom/prod"
+env_file = "/app/.env"
+region = os.environ.get("AWS_REGION") or subprocess.check_output(
+    ["curl", "-s", "-H", f"X-aws-ec2-metadata-token: {os.environ['IMDS_TOKEN']}",
+     "http://169.254.169.254/latest/meta-data/placement/region"], text=True).strip()
+
+lines = []
+token = None
+while True:
+    cmd = ["aws", "ssm", "get-parameters-by-path", "--path", prefix,
+           "--with-decryption", "--recursive", "--region", region, "--output", "json"]
+    if token:
+        cmd += ["--starting-token", token]
+    page = json.loads(subprocess.check_output(cmd, text=True))
+    for p in page.get("Parameters", []):
+        key = p["Name"].split("/")[-1]
+        lines.append(f"{key}={p['Value']}")
+    token = page.get("NextToken")
+    if not token:
+        break
+
+with open(env_file, "w") as f:
+    f.write("\n".join(lines) + "\n")
+os.chmod(env_file, 0o600)
+subprocess.check_call(["chown", "qcom:qcom", env_file])
+print(f"Written {env_file} ({len(lines)} vars)")
+PY
 
 # --- Log directory ------------------------------------------------------------
 # The systemd unit writes stdout/stderr to /var/log/qcom/app.log (see
@@ -185,38 +213,28 @@ EOF
 # journald will just enforce the limits going forward and on next vacuum cycle.
 systemctl restart systemd-journald
 
-# --- CloudWatch agent ---------------------------------------------------------
-# The CloudWatch agent ships journald logs for the qcom.service unit to the
-# /qcom/production log group in CloudWatch. This means logs survive instance
-# termination and are searchable without needing to SSH in.
-#
-# Download the official Debian package from Amazon's S3 distribution bucket.
+# --- CloudWatch agent (ships /var/log/qcom/app.log → /qcom/production) -------
+# Non-fatal: bootstrap must still complete if the agent install fails.
+set +e
+# The CloudWatch agent ships app logs to /qcom/production in CloudWatch.
 curl -fsSL \
   "https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb" \
   -o /tmp/amazon-cloudwatch-agent.deb
-
-# Install the package — puts the agent binary at
-# /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent.
 dpkg -i /tmp/amazon-cloudwatch-agent.deb
 rm -f /tmp/amazon-cloudwatch-agent.deb
-
-# Copy the agent config from the repo into the location the agent expects.
-# The config (deploy/amazon-cloudwatch-agent.json) tells the agent:
-#   - which log group to write to (/qcom/production)
-#   - how to name each stream ({instance_id}/qcom-server)
-#   - which journald unit to filter on (qcom.service only)
 cp "${APP_DIR}/deploy/amazon-cloudwatch-agent.json" \
   /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
-
-# Start the agent and tell it to load the config file we just copied.
-#   -a fetch-config  — load (or reload) config from the given source
-#   -m ec2           — running on EC2, so use instance metadata for region/ID
-#   -s               — start the agent after loading config
-#   -c file:...      — config source is a local file
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
   -a fetch-config \
   -m ec2 \
   -s \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+CW_EXIT=$?
+set -e
+if [[ "${CW_EXIT}" -ne 0 ]]; then
+  echo "WARNING: CloudWatch agent setup failed (exit ${CW_EXIT}); continuing bootstrap"
+else
+  echo "CloudWatch agent started — log group /qcom/production"
+fi
 
 echo "=== qcom bootstrap complete at $(date) ==="

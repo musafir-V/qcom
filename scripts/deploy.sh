@@ -1,30 +1,112 @@
 #!/usr/bin/env bash
-# Usage: ./scripts/deploy.sh [ec2-host] [ssh-key-path]
-# Or:    QCOM_EC2_HOST=<ip> QCOM_EC2_KEY=<path> ./scripts/deploy.sh
-# Deploys the latest master to the running EC2 instance.
+# Deploy qcom to production by rolling-replacing each InService instance in the
+# ASG. New instances bootstrap from GitHub (main) via ec2-bootstrap.sh.
+#
+# Prerequisites: .deploy.local.env at repo root (see .deploy.local.env.example).
+# Usage: ./scripts/deploy.sh   or   make deploy
 
 set -euo pipefail
 
-EC2_HOST="${1:-${QCOM_EC2_HOST:?Set QCOM_EC2_HOST or pass host as first arg}}"
-EC2_KEY="${2:-${QCOM_EC2_KEY:?Set QCOM_EC2_KEY or pass key path as second arg}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ENV_FILE="${REPO_ROOT}/.deploy.local.env"
 
-SSH="ssh -i ${EC2_KEY} -o StrictHostKeyChecking=no ubuntu@${EC2_HOST}"
+if [[ -f "${ENV_FILE}" ]]; then
+	set -a
+	# shellcheck source=/dev/null
+	source "${ENV_FILE}"
+	set +a
+else
+	echo "Missing ${ENV_FILE}. Copy from .deploy.local.env.example and add AWS keys." >&2
+	exit 1
+fi
 
-echo "=== Deploying qcom to ${EC2_HOST} ==="
+REGION="${AWS_REGION:-ap-southeast-2}"
+ASG="${QCOM_ASG_NAME:-qcom-asg}"
+HEALTH_URL="${QCOM_HEALTH_URL:-https://api.bunzodelivery.com/health}"
+WAIT_ATTEMPTS="${DEPLOY_WAIT_ATTEMPTS:-60}"
+WAIT_INTERVAL="${DEPLOY_WAIT_INTERVAL:-15}"
 
-echo "--- Pulling latest master ---"
-$SSH "cd /app/qcom && git pull origin master"
+if [[ -z "${AWS_ACCESS_KEY_ID:-}" || -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+	echo "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set in .deploy.local.env" >&2
+	exit 1
+fi
 
-echo "--- Rebuilding binary ---"
-$SSH "cd /app/qcom && PATH=\$PATH:/usr/local/go/bin make build"
+wait_healthy() {
+	local tg_arn="$1"
+	local desired="$2"
+	echo "Waiting for ${desired} healthy target(s) in ALB..."
+	for ((i = 1; i <= WAIT_ATTEMPTS; i++)); do
+		local healthy in_service
+		healthy=$(aws elbv2 describe-target-health \
+			--target-group-arn "${tg_arn}" \
+			--region "${REGION}" \
+			--query 'length(TargetHealthDescriptions[?TargetHealth.State==`healthy`])' \
+			--output text)
+		in_service=$(aws autoscaling describe-auto-scaling-groups \
+			--auto-scaling-group-names "${ASG}" \
+			--region "${REGION}" \
+			--query 'length(AutoScalingGroups[0].Instances[?LifecycleState==`InService`])' \
+			--output text)
+		echo "  attempt ${i}/${WAIT_ATTEMPTS}: healthy=${healthy} in_service=${in_service}"
+		if [[ "${healthy}" -ge "${desired}" && "${in_service}" -ge "${desired}" ]]; then
+			echo "All targets healthy."
+			return 0
+		fi
+		sleep "${WAIT_INTERVAL}"
+	done
+	echo "ERROR: timed out waiting for healthy targets" >&2
+	return 1
+}
 
-echo "--- Refreshing env from SSM ---"
-$SSH "sudo bash /app/qcom/scripts/fetch-env.sh"
+echo "=== Deploying qcom via ASG rolling replace ==="
+echo "Region: ${REGION}  ASG: ${ASG}"
 
-echo "--- Restarting service ---"
-$SSH "sudo systemctl restart qcom"
+TG_ARN=$(aws autoscaling describe-auto-scaling-groups \
+	--auto-scaling-group-names "${ASG}" \
+	--region "${REGION}" \
+	--query 'AutoScalingGroups[0].TargetGroupARNs[0]' \
+	--output text)
 
-echo "--- Checking service status ---"
-$SSH "sudo systemctl status qcom --no-pager"
+DESIRED=$(aws autoscaling describe-auto-scaling-groups \
+	--auto-scaling-group-names "${ASG}" \
+	--region "${REGION}" \
+	--query 'AutoScalingGroups[0].DesiredCapacity' \
+	--output text)
 
+if [[ -z "${TG_ARN}" || "${TG_ARN}" == "None" ]]; then
+	echo "ERROR: no target group found for ASG ${ASG}" >&2
+	exit 1
+fi
+
+INSTANCE_IDS=$(aws autoscaling describe-auto-scaling-groups \
+	--auto-scaling-group-names "${ASG}" \
+	--region "${REGION}" \
+	--query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].InstanceId' \
+	--output text)
+
+if [[ -z "${INSTANCE_IDS}" ]]; then
+	echo "ERROR: no InService instances found in ${ASG}" >&2
+	exit 1
+fi
+
+echo "Replacing instance(s): ${INSTANCE_IDS}"
+
+for id in ${INSTANCE_IDS}; do
+	echo "=== Terminating ${id} ==="
+	aws autoscaling terminate-instance-in-auto-scaling-group \
+		--instance-id "${id}" \
+		--no-should-decrement-desired-capacity \
+		--region "${REGION}"
+	wait_healthy "${TG_ARN}" "${DESIRED}"
+done
+
+echo "=== Verifying ${HEALTH_URL} ==="
+health=$(curl -sf "${HEALTH_URL}" || true)
+if [[ "${health}" != "OK" ]]; then
+	echo "ERROR: health check failed (got: ${health:-<empty>})" >&2
+	exit 1
+fi
+
+echo "Health check OK"
 echo "=== Deploy complete ==="

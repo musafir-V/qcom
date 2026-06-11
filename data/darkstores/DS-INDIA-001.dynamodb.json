@@ -1,0 +1,80 @@
+{
+    "Items": [
+        {
+            "updated_at": {
+                "S": "2026-05-27T00:00:00Z"
+            },
+            "created_at": {
+                "S": "2026-05-27T00:00:00Z"
+            },
+            "polygon": {
+                "L": [
+                    {
+                        "M": {
+                            "lat": {
+                                "N": "5"
+                            },
+                            "lng": {
+                                "N": "67"
+                            }
+                        }
+                    },
+                    {
+                        "M": {
+                            "lat": {
+                                "N": "5"
+                            },
+                            "lng": {
+                                "N": "99"
+                            }
+                        }
+                    },
+                    {
+                        "M": {
+                            "lng": {
+                                "N": "99"
+                            },
+                            "lat": {
+                                "N": "37.5"
+                            }
+                        }
+                    },
+                    {
+                        "M": {
+                            "lat": {
+                                "N": "37.5"
+                            },
+                            "lng": {
+                                "N": "67"
+                            }
+                        }
+                    }
+                ]
+            },
+            "darkstore_id": {
+                "S": "DS-INDIA-001"
+            },
+            "longitude": {
+                "N": "78"
+            },
+            "SK": {
+                "S": "METADATA"
+            },
+            "is_active": {
+                "BOOL": true
+            },
+            "PK": {
+                "S": "DARKSTORE!DS-INDIA-001"
+            },
+            "latitude": {
+                "N": "22"
+            },
+            "name": {
+                "S": "India Test Darkstore"
+            }
+        }
+    ],
+    "Count": 1,
+    "ScannedCount": 442,
+    "ConsumedCapacity": null
+}

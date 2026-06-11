@@ -11,15 +11,19 @@ REGION=$(curl -s -H "X-aws-ec2-metadata-token: ${TOKEN}" http://169.254.169.254/
 
 echo "Fetching config from SSM prefix ${SSM_PREFIX} in region ${REGION}..."
 
-aws ssm get-parameters-by-path \
-  --path "${SSM_PREFIX}" \
-  --with-decryption \
-  --region "${REGION}" \
-  --query "Parameters[*].[Name,Value]" \
-  --output text | while IFS=$'\t' read -r name value; do
+: > "${ENV_FILE}"
+NEXT=""
+while true; do
+  ARGS=(--path "${SSM_PREFIX}" --with-decryption --recursive --region "${REGION}")
+  [[ -n "${NEXT}" ]] && ARGS+=(--starting-token "${NEXT}")
+  PAGE=$(aws ssm get-parameters-by-path "${ARGS[@]}" --output json)
+  echo "${PAGE}" | jq -r '.Parameters[] | "\(.Name)\t\(.Value)"' | while IFS=$'\t' read -r name value; do
     key="${name##*/}"
     echo "${key}=${value}"
-  done > "${ENV_FILE}"
+  done >> "${ENV_FILE}"
+  NEXT=$(echo "${PAGE}" | jq -r '.NextToken // empty')
+  [[ -z "${NEXT}" ]] && break
+done
 
 chmod 600 "${ENV_FILE}"
 chown qcom:qcom "${ENV_FILE}"

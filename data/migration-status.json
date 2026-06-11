@@ -1,0 +1,41 @@
+{
+  "updated_at": "2026-06-10T21:15:00Z",
+  "old_account": "119312949433",
+  "new_account": "078455283887",
+  "phase_2": {
+    "dynamodb_items": 955,
+    "ssm_params": 16,
+    "rds": "quickcommerce.c9se0yaqs4di.ap-southeast-2.rds.amazonaws.com"
+  },
+  "phase_3": {
+    "qcom_alb": "qcom-alb-1260677250.ap-southeast-2.elb.amazonaws.com",
+    "qcom_health": "http://qcom-alb-1260677250.ap-southeast-2.elb.amazonaws.com/health",
+    "qcom_instance": "i-0cfb8e08ac9f45413",
+    "payment_alb": "payment-alb-1973051114.ap-southeast-2.elb.amazonaws.com",
+    "payment_instance": "i-0129ae085e7a35be2",
+    "api_acm_status": "PENDING_VALIDATION",
+    "payment_acm_status": "PENDING_VALIDATION"
+  },
+  "phase_5_pending": {
+    "squarespace_cnames": [
+      {
+        "record": "api",
+        "target": "qcom-alb-1260677250.ap-southeast-2.elb.amazonaws.com"
+      },
+      {
+        "record": "payment",
+        "target": "payment-alb-1973051114.ap-southeast-2.elb.amazonaws.com"
+      },
+      {
+        "record": "_216ed7ae37fa518ca1f437839329dfb4.api",
+        "type": "CNAME",
+        "target": "_104e00023dfbc7853cff0d81e4a87f25.jkddzztszm.acm-validations.aws"
+      },
+      {
+        "record": "_bd1d0f1d733d1145aa6988903c83ddd1.payment",
+        "type": "CNAME",
+        "target": "_497494834f3ae9eb36af5f106cffff6b.jkddzztszm.acm-validations.aws"
+      }
+    ]
+  }
+}

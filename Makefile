@@ -1,4 +1,4 @@
-.PHONY: help build run test-integration clean deps docker-up docker-down docker-restart setup dev-test
+.PHONY: help build run test-integration clean deps docker-up docker-down docker-restart setup dev-test deploy
 
 # Variables
 BINARY_NAME=qcom-server
@@ -66,12 +66,9 @@ test-integration: build docker-up ## Build, start dependencies, and run integrat
 	@chmod +x $(TEST_SCRIPT)
 	@$(TEST_SCRIPT)
 
-deploy: ## Deploy latest master to EC2 (usage: make deploy HOST=<ip> KEY=<path>)
-	@if [ -z "$(HOST)" ] || [ -z "$(KEY)" ]; then \
-		echo "Usage: make deploy HOST=<ec2-ip> KEY=<path-to-pem>"; \
-		exit 1; \
-	fi
-	@QCOM_EC2_HOST=$(HOST) QCOM_EC2_KEY=$(KEY) ./scripts/deploy.sh
+deploy: ## Deploy latest main to production via ASG rolling replace (.deploy.local.env)
+	@chmod +x ./scripts/deploy.sh
+	@./scripts/deploy.sh
 
 clean: ## Clean build artifacts
 	@echo "Cleaning build artifacts..."
@@ -151,7 +148,7 @@ test: ## Run unit tests
 
 test-smoke: ## Run smoke tests against the live API (SMOKE_BASE_URL defaults to https://api.bunzodelivery.com)
 	@echo "Running smoke tests against $${SMOKE_BASE_URL:-https://api.bunzodelivery.com}..."
-	@SMOKE_BASE_URL=$${SMOKE_BASE_URL:-https://api.bunzodelivery.com} go test -v -tags=smoke -timeout 60s ./tests/smoke/...
+	@SMOKE_BASE_URL=$${SMOKE_BASE_URL:-https://api.bunzodelivery.com} go test -v -tags=smoke -timeout 180s ./tests/smoke/...
 
 test-upload: ## Run upload API integration tests (requires Docker)
 	@echo "Running upload API integration tests..."
