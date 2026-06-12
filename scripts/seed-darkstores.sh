@@ -62,6 +62,21 @@ aws dynamodb put-item \
   }' \
   || echo "Note: DS-002 may already exist"
 
+# Index item (PK=DARKSTORE, SK=INDEX) — holds the set of all darkstore IDs so the
+# app can fetch darkstores by primary key instead of scanning the whole table.
+# ADD is idempotent on a String Set, so re-running the seed is safe.
+aws dynamodb update-item \
+  --table-name "$TABLE_NAME" \
+  --region "$REGION" \
+  --endpoint-url "$ENDPOINT" \
+  --key '{"PK": {"S": "DARKSTORE"}, "SK": {"S": "INDEX"}}' \
+  --update-expression "ADD darkstore_ids :ids SET updated_at = :now" \
+  --expression-attribute-values '{
+    ":ids": {"SS": ["DS-001", "DS-002"]},
+    ":now": {"S": "'"$NOW"'"}
+  }' \
+  || echo "Note: failed to update darkstore index"
+
 echo ""
 echo "Darkstores seeded successfully!"
 echo ""
