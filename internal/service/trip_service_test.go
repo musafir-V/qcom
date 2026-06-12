@@ -97,3 +97,31 @@ func TestValidateTaskAgainstTripStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestValidatePickupScan_Match(t *testing.T) {
+	trip := &models.Trip{Status: models.TripStatusAccepted, OrderID: "ORD-1"}
+	if err := validatePickupScan(trip, "ORD-1"); err != nil {
+		t.Fatalf("expected valid scan, got: %v", err)
+	}
+}
+
+func TestValidatePickupScan_Mismatch(t *testing.T) {
+	trip := &models.Trip{Status: models.TripStatusAccepted, OrderID: "ORD-1"}
+	if err := validatePickupScan(trip, "ORD-2"); !errors.Is(err, ErrPickupOrderMismatch) {
+		t.Fatalf("expected ErrPickupOrderMismatch, got: %v", err)
+	}
+}
+
+func TestValidatePickupScan_Empty(t *testing.T) {
+	trip := &models.Trip{Status: models.TripStatusAccepted, OrderID: "ORD-1"}
+	if err := validatePickupScan(trip, ""); !errors.Is(err, ErrPickupOrderMismatch) {
+		t.Fatalf("expected ErrPickupOrderMismatch, got: %v", err)
+	}
+}
+
+func TestValidatePickupScan_WrongState(t *testing.T) {
+	trip := &models.Trip{Status: models.TripStatusOutForDelivery, OrderID: "ORD-1"}
+	if err := validatePickupScan(trip, "ORD-1"); !errors.Is(err, ErrInvalidTripTransition) {
+		t.Fatalf("expected ErrInvalidTripTransition, got: %v", err)
+	}
+}

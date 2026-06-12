@@ -26,6 +26,7 @@ var (
 	ErrInvalidTransition      = errors.New("invalid task transition")
 	ErrInvalidOTP             = errors.New("invalid OTP")
 	ErrInvalidTripTransition  = errors.New("invalid trip transition")
+	ErrPickupOrderMismatch    = errors.New("scanned order does not match assigned trip")
 )
 
 type TripService struct {
@@ -276,6 +277,36 @@ func (s *TripService) RejectTrip(ctx context.Context, tripID, callerDEPhone stri
 	}
 	if err := s.tripRepo.RejectToPool(ctx, tripID, de.PhoneNumber, trip.StoreID, de.DEID); err != nil {
 		return op.Fail(err)
+	}
+	return nil
+}
+
+// validatePickupScan checks a scanned bill QR (which encodes the order_id)
+// against the trip. The trip must be accepted (pickup not yet done) and the
+// scanned order_id must match the trip's order.
+func validatePickupScan(trip *models.Trip, scannedOrderID string) error {
+	if trip.Status != models.TripStatusAccepted {
+		return fmt.Errorf("%w: cannot verify pickup from %s", ErrInvalidTripTransition, trip.Status)
+	}
+	if scannedOrderID == "" || scannedOrderID != trip.OrderID {
+		return ErrPickupOrderMismatch
+	}
+	return nil
+}
+
+// VerifyPickup confirms the DE scanned the correct bill QR for their trip.
+// It does not mutate state — the swipe-to-confirm afterward completes the
+// pickup task via UpdateTaskStatus.
+func (s *TripService) VerifyPickup(ctx context.Context, tripID, callerDEPhone, scannedOrderID string) error {
+	op := logging.Start(ctx, s.logger, "TripService.VerifyPickup", logrus.Fields{"trip_id": tripID})
+	defer op.End()
+
+	trip, _, err := s.ownedTrip(ctx, op, tripID, callerDEPhone)
+	if err != nil {
+		return err
+	}
+	if err := validatePickupScan(trip, scannedOrderID); err != nil {
+		return op.Outcome("verify_failed", err)
 	}
 	return nil
 }

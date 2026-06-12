@@ -162,6 +162,55 @@ func classifyAcceptRejectError(err error) (status int, code string) {
 	}
 }
 
+// POST /api/v1/trip/{tripId}/verify-pickup
+// Body: { "order_id": "..." }  — order_id decoded from the scanned bill QR.
+func (h *TripHandlers) VerifyPickup(w http.ResponseWriter, r *http.Request) {
+	tripID := mux.Vars(r)["tripId"]
+	phone, _ := r.Context().Value("phone").(string)
+
+	if strings.TrimSpace(tripID) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "tripId is required")
+		return
+	}
+
+	var req struct {
+		OrderID string `json:"order_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+
+	if err := h.tripService.VerifyPickup(r.Context(), tripID, phone, req.OrderID); err != nil {
+		status, code := classifyVerifyPickupError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("failed to verify pickup")
+			h.respondWithError(w, status, code, "Failed to verify pickup")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "verified"})
+}
+
+// classifyVerifyPickupError maps VerifyPickup errors to HTTP codes.
+func classifyVerifyPickupError(err error) (status int, code string) {
+	switch {
+	case errors.Is(err, service.ErrTripNotFound):
+		return http.StatusNotFound, "NOT_FOUND"
+	case errors.Is(err, service.ErrTripForbidden):
+		return http.StatusForbidden, "FORBIDDEN"
+	case errors.Is(err, service.ErrPickupOrderMismatch):
+		return http.StatusBadRequest, "PICKUP_ORDER_MISMATCH"
+	case errors.Is(err, service.ErrInvalidTripTransition):
+		return http.StatusConflict, "INVALID_TRIP_STATE"
+	default:
+		return http.StatusInternalServerError, "VERIFY_FAILED"
+	}
+}
+
 func (h *TripHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

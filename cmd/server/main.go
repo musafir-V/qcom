@@ -315,6 +315,7 @@ func setupRouter(
 		tripHandlers.UpdateTaskStatus).Methods("POST", "OPTIONS")
 	tripRoutes.HandleFunc("/{tripId}/accept", tripHandlers.AcceptTrip).Methods("POST", "OPTIONS")
 	tripRoutes.HandleFunc("/{tripId}/reject", tripHandlers.RejectTrip).Methods("POST", "OPTIONS")
+	tripRoutes.HandleFunc("/{tripId}/verify-pickup", tripHandlers.VerifyPickup).Methods("POST", "OPTIONS")
 
 	return router
 }
