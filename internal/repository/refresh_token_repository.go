@@ -179,3 +179,31 @@ func (r *RefreshTokenRepository) GetByFamilyID(ctx context.Context, familyID str
 	op.With("count", len(tokens))
 	return tokens, nil
 }
+
+// GetByEntityID retrieves all refresh tokens belonging to an entity (user/DE),
+// across every token family/device. Used to revoke every session on account
+// deletion. Like GetByFamilyID, this is a filtered scan.
+func (r *RefreshTokenRepository) GetByEntityID(ctx context.Context, entityID string) ([]models.RefreshTokenData, error) {
+	op := logging.Start(ctx, r.logger, "GetByEntityID", logrus.Fields{"entity_id": entityID})
+	defer op.End()
+
+	result, err := r.client.Scan(ctx, &dynamodb.ScanInput{
+		TableName:        aws.String(r.tableName),
+		FilterExpression: aws.String("begins_with(PK, :pk_prefix) AND EntityID = :entity_id"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk_prefix": &types.AttributeValueMemberS{Value: "REFRESH_TOKEN#"},
+			":entity_id": &types.AttributeValueMemberS{Value: entityID},
+		},
+	})
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to query tokens by entity ID: %w", err))
+	}
+
+	var tokens []models.RefreshTokenData
+	if err := attributevalue.UnmarshalListOfMaps(result.Items, &tokens); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal tokens: %w", err))
+	}
+
+	op.With("count", len(tokens))
+	return tokens, nil
+}
