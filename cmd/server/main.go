@@ -254,7 +254,11 @@ func setupRouter(
 	auth.HandleFunc("/initiate-otp", authHandlers.InitiateOTP).Methods("POST", "OPTIONS")
 	auth.HandleFunc("/verify-otp", authHandlers.VerifyOTP).Methods("POST", "OPTIONS")
 	auth.HandleFunc("/refresh", authHandlers.RefreshToken).Methods("POST", "OPTIONS")
-	auth.HandleFunc("/logout", authHandlers.Logout).Methods("POST", "OPTIONS")
+	// Logout requires a valid access token to identify the session; the handler
+	// reads JWT claims from context, so it must sit behind RequireAuth.
+	authProtected := auth.PathPrefix("").Subrouter()
+	authProtected.Use(authMiddleware.RequireAuth)
+	authProtected.HandleFunc("/logout", authHandlers.Logout).Methods("POST", "OPTIONS")
 
 	// DE onboarding (no auth required)
 	api.HandleFunc("/de/register", deHandlers.Register).Methods("POST", "OPTIONS")
