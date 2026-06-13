@@ -145,7 +145,11 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 			return op.Fail(err)
 		}
 		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
-		go s.recordTripPayout(trip, de)
+		// Synchronous: the payout ledger entry (this trip's earning) must be
+		// written before we respond, so the driver app can immediately fetch the
+		// trip earning for the success screen. recordTripPayout is best-effort
+		// (errors are logged, never returned), so it can't fail the completion.
+		s.recordTripPayout(trip, de)
 		return nil
 	}
 
