@@ -282,6 +282,8 @@ func setupRouter(
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fmt.Sprintf(`{"entity_id":"%s","entity_type":"%s","phone":"%s"}`, entityID, entityType, phone)))
 	}).Methods("GET")
+	// Account deletion (App Store Guideline 5.1.1(v)) — deletes the caller's own account.
+	protected.HandleFunc("/users/me", authHandlers.DeleteAccount).Methods("DELETE", "OPTIONS")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST", "OPTIONS")
 	protected.HandleFunc("/serviceability", serviceabilityHandlers.CheckServiceability).Methods("POST", "OPTIONS")
 	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST", "OPTIONS")

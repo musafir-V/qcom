@@ -112,6 +112,28 @@ func (s *RefreshTokenService) RevokeFamily(ctx context.Context, familyID string)
 	return nil
 }
 
+// RevokeAllForEntity revokes every refresh token owned by an entity across all
+// devices/families. Used on account deletion so no lingering session can mint
+// new access tokens for the deleted account.
+func (s *RefreshTokenService) RevokeAllForEntity(ctx context.Context, entityID string) error {
+	op := logging.Start(ctx, s.logger, "RevokeAllForEntity", logrus.Fields{"entity_id": entityID})
+	defer op.End()
+
+	tokens, err := s.tokenRepo.GetByEntityID(ctx, entityID)
+	if err != nil {
+		return op.Fail(err)
+	}
+
+	for _, token := range tokens {
+		if err := s.Revoke(ctx, token.JTI); err != nil {
+			op.Logger().WithError(err).WithField("jti", token.JTI).Error("Failed to revoke token for entity")
+		}
+	}
+
+	op.With("count", len(tokens))
+	return nil
+}
+
 func GenerateFamilyID() string {
 	return uuid.New().String()
 }

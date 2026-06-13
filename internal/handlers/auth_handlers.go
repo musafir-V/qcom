@@ -378,6 +378,56 @@ func (h *AuthHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type DeleteAccountRequest struct {
+	UserID string `json:"user_id"`
+}
+
+// DeleteAccount removes the authenticated customer's account so the App Store
+// "Delete Account" requirement (Guideline 5.1.1(v)) is satisfied. It deletes the
+// USER!<phone> row and revokes every refresh token for the account. The next OTP
+// login for the same number mints a brand-new userId via GetOrCreate.
+//
+// The target is always derived from the JWT claims — never from the request body.
+// A body user_id, if present, must match the caller's own entity_id (defends
+// against deleting someone else's account). Per-user data in other partitions
+// (addresses, phone-keyed trips) is intentionally left dangling.
+func (h *AuthHandlers) DeleteAccount(w http.ResponseWriter, r *http.Request) {
+	claims, ok := r.Context().Value("claims").(*service.Claims)
+	if !ok {
+		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token")
+		return
+	}
+
+	// Customers only — DE accounts are operational and must not self-delete here.
+	if claims.EntityType != "customer" {
+		h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Only customer accounts can be deleted")
+		return
+	}
+
+	// The body is optional. If a user_id is supplied it must be the caller's own.
+	var req DeleteAccountRequest
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.UserID != "" && req.UserID != claims.EntityID {
+		h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Cannot delete a different account")
+		return
+	}
+
+	if err := h.userRepo.DeleteByPhone(r.Context(), claims.Phone); err != nil {
+		h.logger.WithError(err).Error("Failed to delete user account")
+		h.respondWithError(w, http.StatusInternalServerError, "DELETE_FAILED", "Failed to delete account")
+		return
+	}
+
+	if err := h.refreshTokenService.RevokeAllForEntity(r.Context(), claims.EntityID); err != nil {
+		// The account row is already gone; log but don't fail the request.
+		h.logger.WithError(err).Error("Failed to revoke refresh tokens on account deletion")
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]string{
+		"message": "Account deleted successfully",
+	})
+}
+
 func (h *AuthHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

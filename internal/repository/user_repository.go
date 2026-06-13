@@ -139,6 +139,29 @@ func (r *UserRepository) Update(ctx context.Context, user *models.User) error {
 	return nil
 }
 
+// DeleteByPhone removes the user account row (USER!<phone> / METADATA).
+// It is idempotent: deleting a non-existent user is not an error. Per-user
+// data living in other partitions (addresses, trips) is intentionally left
+// in place — see DeleteAccount handler.
+func (r *UserRepository) DeleteByPhone(ctx context.Context, phoneNumber string) error {
+	op := logging.Start(ctx, r.logger, "DeleteByPhone", logrus.Fields{"phone": phoneNumber})
+	defer op.End()
+
+	user := &models.User{PhoneNumber: phoneNumber}
+
+	_, err := r.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: user.GetPK()},
+			"SK": &types.AttributeValueMemberS{Value: user.GetSK()},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to delete user: %w", err))
+	}
+	return nil
+}
+
 func (r *UserRepository) GetOrCreate(ctx context.Context, phoneNumber string) (*models.User, error) {
 	op := logging.Start(ctx, r.logger, "GetOrCreate", logrus.Fields{"phone": phoneNumber})
 	defer op.End()
