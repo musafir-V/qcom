@@ -14,10 +14,18 @@ import (
 
 // JavaOrder is the subset of fields the cron needs from the Java order response.
 type JavaOrder struct {
-	OrderID  string       `json:"orderId"`
-	Status   string       `json:"status"`
-	Delivery JavaDelivery `json:"delivery"`
-	StoreID  string       `json:"storeId"` // may be empty; cron defaults to defaultStoreID
+	OrderID  string          `json:"orderId"`
+	Status   string          `json:"status"`
+	Delivery JavaDelivery    `json:"delivery"`
+	StoreID  string          `json:"storeId"` // may be empty; cron defaults to defaultStoreID
+	Items    []JavaOrderItem `json:"items"`
+}
+
+type JavaOrderItem struct {
+	ProductName string `json:"productName"`
+	ImageURL    string `json:"imageUrl"`
+	Quantity    int    `json:"quantity"`
+	Sku         string `json:"sku"`
 }
 
 type JavaDelivery struct {
@@ -25,6 +33,7 @@ type JavaDelivery struct {
 	Lat     float64 `json:"latitude"`
 	Lng     float64 `json:"longitude"`
 	Phone   string  `json:"phone"`
+	Name    string  `json:"name"`
 }
 
 type JavaOrderClient struct {

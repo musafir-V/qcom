@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,10 @@ const (
 	defaultStoreID  = "221"
 	cronInterval    = 10 * time.Second
 	cronLockTTLSecs = 30
+
+	// recipientFallback is used for the drop task when the order has no
+	// delivery name yet (Java may send it absent/empty for now).
+	recipientFallback = "Shivang Awasthi"
 )
 
 type AssignmentCron struct {
@@ -312,6 +317,7 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 		Status:     models.TripStatusCreated,
 		DistanceKM: distKM,
 		BasePayZMW: basePayZMW,
+		Items:      tripItemsFromOrder(order),
 		Tasks: []models.Task{
 			{
 				TaskID:  pickupTaskID,
@@ -322,14 +328,15 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 				Lng:     ds.Longitude,
 			},
 			{
-				TaskID:  dropTaskID,
-				Type:    models.TaskTypeDrop,
-				Status:  models.TaskStatusCreated,
-				Phone:   order.Delivery.Phone,
-				Address: order.Delivery.Address,
-				Lat:     order.Delivery.Lat,
-				Lng:     order.Delivery.Lng,
-				OTP:     randomOTP(),
+				TaskID:        dropTaskID,
+				Type:          models.TaskTypeDrop,
+				Status:        models.TaskStatusCreated,
+				Phone:         order.Delivery.Phone,
+				Address:       order.Delivery.Address,
+				Lat:           order.Delivery.Lat,
+				Lng:           order.Delivery.Lng,
+				OTP:           randomOTP(),
+				RecipientName: firstNonEmpty(order.Delivery.Name, recipientFallback),
 			},
 		},
 	}
@@ -360,6 +367,34 @@ func sortTripsByCreatedAt(trips []*models.Trip) {
 			trips[j], trips[j-1] = trips[j-1], trips[j]
 		}
 	}
+}
+
+// tripItemsFromOrder maps the Java order's items onto trip items. ImageURL is
+// stored as the bare R2 key from Java — callers are responsible for any URL
+// building, so it is passed through untouched.
+func tripItemsFromOrder(order JavaOrder) []models.TripItem {
+	if len(order.Items) == 0 {
+		return nil
+	}
+	items := make([]models.TripItem, 0, len(order.Items))
+	for _, it := range order.Items {
+		items = append(items, models.TripItem{
+			Name:     it.ProductName,
+			ImageURL: it.ImageURL,
+			Quantity: it.Quantity,
+			Sku:      it.Sku,
+		})
+	}
+	return items
+}
+
+// firstNonEmpty returns a if it is non-blank (ignoring surrounding whitespace),
+// otherwise b.
+func firstNonEmpty(a, b string) string {
+	if strings.TrimSpace(a) != "" {
+		return a
+	}
+	return b
 }
 
 // randomOTP returns a random 4-digit OTP string in the range "1000".."9999".

@@ -19,15 +19,23 @@ const (
 	TaskStatusCompleted TaskStatus = "completed"
 )
 
+type TripItem struct {
+	Name     string `json:"name" dynamodbav:"name"`
+	ImageURL string `json:"image_url" dynamodbav:"image_url"`
+	Quantity int    `json:"quantity" dynamodbav:"quantity"`
+	Sku      string `json:"sku,omitempty" dynamodbav:"sku,omitempty"`
+}
+
 type Task struct {
-	TaskID  string     `json:"task_id" dynamodbav:"task_id"`
-	Type    TaskType   `json:"type" dynamodbav:"type"`
-	Status  TaskStatus `json:"status" dynamodbav:"status"`
-	Phone   string     `json:"phone" dynamodbav:"phone"`
-	Address string     `json:"address" dynamodbav:"address"`
-	Lat     float64    `json:"lat" dynamodbav:"lat"`
-	Lng     float64    `json:"lng" dynamodbav:"lng"`
-	OTP     string     `json:"otp,omitempty" dynamodbav:"otp,omitempty"` // drop task only
+	TaskID        string     `json:"task_id" dynamodbav:"task_id"`
+	Type          TaskType   `json:"type" dynamodbav:"type"`
+	Status        TaskStatus `json:"status" dynamodbav:"status"`
+	Phone         string     `json:"phone" dynamodbav:"phone"`
+	Address       string     `json:"address" dynamodbav:"address"`
+	Lat           float64    `json:"lat" dynamodbav:"lat"`
+	Lng           float64    `json:"lng" dynamodbav:"lng"`
+	OTP           string     `json:"otp,omitempty" dynamodbav:"otp,omitempty"`                       // drop task only
+	RecipientName string     `json:"recipient_name,omitempty" dynamodbav:"recipient_name,omitempty"` // drop task only
 }
 
 type Trip struct {
@@ -38,6 +46,7 @@ type Trip struct {
 	DEPhone string     `json:"de_phone,omitempty" dynamodbav:"de_phone,omitempty"`
 	Status  TripStatus `json:"status" dynamodbav:"status"`
 	Tasks   []Task     `json:"tasks" dynamodbav:"tasks"`
+	Items   []TripItem `json:"items,omitempty" dynamodbav:"items,omitempty"`
 
 	// Payout — set at creation (base) and completion (bonus+total)
 	DistanceKM        float64 `json:"distance_km" dynamodbav:"distance_km"`

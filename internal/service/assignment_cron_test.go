@@ -72,6 +72,48 @@ func TestIsAcceptExpired(t *testing.T) {
 	}
 }
 
+func TestTripItemsFromOrder_MapsFields(t *testing.T) {
+	order := JavaOrder{
+		Items: []JavaOrderItem{
+			{ProductName: "Milk", ImageURL: "items/milk.png", Quantity: 2, Sku: "SKU-1"},
+			{ProductName: "Bread", ImageURL: "items/bread.png", Quantity: 1, Sku: "SKU-2"},
+		},
+	}
+
+	items := tripItemsFromOrder(order)
+
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0] != (models.TripItem{Name: "Milk", ImageURL: "items/milk.png", Quantity: 2, Sku: "SKU-1"}) {
+		t.Errorf("item[0] mismatch: got %+v", items[0])
+	}
+	if items[1] != (models.TripItem{Name: "Bread", ImageURL: "items/bread.png", Quantity: 1, Sku: "SKU-2"}) {
+		t.Errorf("item[1] mismatch: got %+v", items[1])
+	}
+}
+
+func TestTripItemsFromOrder_EmptyIsNil(t *testing.T) {
+	if items := tripItemsFromOrder(JavaOrder{}); items != nil {
+		t.Errorf("expected nil items for order with no items, got %+v", items)
+	}
+}
+
+func TestFirstNonEmpty_RecipientName(t *testing.T) {
+	// Name present -> use delivery.name.
+	if got := firstNonEmpty("Jane Doe", recipientFallback); got != "Jane Doe" {
+		t.Errorf("expected delivery name, got %q", got)
+	}
+	// Name empty -> fall back.
+	if got := firstNonEmpty("", recipientFallback); got != recipientFallback {
+		t.Errorf("expected fallback %q, got %q", recipientFallback, got)
+	}
+	// Name is only whitespace -> fall back.
+	if got := firstNonEmpty("   ", recipientFallback); got != recipientFallback {
+		t.Errorf("expected fallback %q for blank name, got %q", recipientFallback, got)
+	}
+}
+
 func TestRandomOTP_FourNumericDigitsInRange(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		otp := randomOTP()
