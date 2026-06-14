@@ -16,7 +16,7 @@ func TestJavaOrder_DecodesItemsAndDeliveryName(t *testing.T) {
 	// phone, notes, name}.
 	payload := `{
 		"orderId": "ORD-1",
-		"status": "PACKING",
+		"status": "READY_FOR_DELIVERY",
 		"storeId": "store-1",
 		"delivery": {
 			"address": "12 Cairo Rd",

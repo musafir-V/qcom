@@ -20,6 +20,10 @@ const (
 	cronInterval    = 10 * time.Second
 	cronLockTTLSecs = 30
 
+	// eligibleOrderStatus is the Java order status that makes an order eligible
+	// for rider assignment. Only fully-packed orders should enter the delivery pipeline.
+	eligibleOrderStatus = "READY_FOR_DELIVERY"
+
 	// recipientFallback is used for the drop task when the order has no
 	// delivery name yet (Java may send it absent/empty for now).
 	recipientFallback = "Shivang Awasthi"
@@ -149,10 +153,10 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 	}
 	autoRejectSecs := acfg.EffectiveAutoRejectSeconds()
 
-	// 2. Fetch PACKING orders from Java
-	orders, err := c.javaClient.GetPackingOrders(ctx, defaultStoreID)
+	// 2. Fetch READY_FOR_DELIVERY orders from Java
+	orders, err := c.javaClient.GetReadyForDeliveryOrders(ctx, defaultStoreID)
 	if err != nil {
-		c.logger.WithError(err).Error("assignment cron: failed to fetch PACKING orders — skipping tick")
+		c.logger.WithError(err).Error("assignment cron: failed to fetch READY_FOR_DELIVERY orders — skipping tick")
 		return
 	}
 
@@ -163,7 +167,7 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 		return
 	}
 
-	// 4. For each PACKING order: check trip existence in parallel
+	// 4. For each READY_FOR_DELIVERY order: check trip existence in parallel
 	type orderResult struct {
 		order       JavaOrder
 		trip        *models.Trip
@@ -186,7 +190,7 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 	}
 	wg.Wait()
 
-	// 5. Detect cancellations: check active trips whose order is no longer PACKING
+	// 5. Detect cancellations: check active trips whose order is no longer READY_FOR_DELIVERY
 	c.detectCancellations(ctx, orders)
 
 	// 5b. Auto-reject trips whose accept window expired — revert to pool so the
@@ -352,11 +356,13 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 //
 // A full cancellation check would query all active trips and verify each
 // against Java. For now we rely on the cron seeing orders disappear from the
-// PACKING list — the DynamoDB transaction protects correctness. This is a
-// best-effort stub completed in a later phase.
-func (c *AssignmentCron) detectCancellations(ctx context.Context, currentPackingOrders []JavaOrder) {
+// READY_FOR_DELIVERY list — an order leaves that list either by cancellation
+// or by progressing to OUT_FOR_DELIVERY on rider pickup. The DynamoDB
+// transaction protects correctness. This is a best-effort stub completed in a
+// later phase.
+func (c *AssignmentCron) detectCancellations(ctx context.Context, currentReadyOrders []JavaOrder) {
 	_ = ctx
-	_ = currentPackingOrders
+	_ = currentReadyOrders
 }
 
 // sortTripsByCreatedAt sorts trips ascending by created_at (oldest first = FIFO).

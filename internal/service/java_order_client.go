@@ -52,10 +52,10 @@ func NewJavaOrderClient(baseURL string, logger *logrus.Logger) *JavaOrderClient 
 	}
 }
 
-// GetPackingOrders fetches all PACKING orders for a store.
+// GetReadyForDeliveryOrders fetches all READY_FOR_DELIVERY orders for a store.
 // Handles pagination — returns all pages combined.
-func (c *JavaOrderClient) GetPackingOrders(ctx context.Context, storeID string) ([]JavaOrder, error) {
-	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetPackingOrders", logrus.Fields{"store_id": storeID})
+func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID string) ([]JavaOrder, error) {
+	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetReadyForDeliveryOrders", logrus.Fields{"store_id": storeID})
 	defer op.End()
 
 	var allOrders []JavaOrder
@@ -63,8 +63,8 @@ func (c *JavaOrderClient) GetPackingOrders(ctx context.Context, storeID string) 
 	pageSize := 50
 
 	for {
-		url := fmt.Sprintf("%s/api/v1/orders/store/%s?status=PACKING&pageNum=%d&pageSize=%d",
-			c.baseURL, storeID, page, pageSize)
+		url := fmt.Sprintf("%s/api/v1/orders/store/%s?status=%s&pageNum=%d&pageSize=%d",
+			c.baseURL, storeID, eligibleOrderStatus, page, pageSize)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {

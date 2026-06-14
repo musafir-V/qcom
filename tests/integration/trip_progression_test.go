@@ -13,7 +13,7 @@ import (
 // register → start duty → trip assigned by cron → pickup complete → drop complete → DE free.
 //
 // Requires a running server (testServer harness), DynamoDB, and a Java
-// order-service with at least one PACKING order for the test store so the
+// order-service with at least one READY_FOR_DELIVERY order for the test store so the
 // assignment cron can create and assign a trip. When no trip materialises
 // within the poll window the test skips, since the cross-service setup is
 // not guaranteed in every environment.
@@ -43,7 +43,7 @@ func TestTripProgressionFlow(t *testing.T) {
 		time.Sleep(5 * time.Second)
 	}
 	if trip == nil {
-		t.Skip("no trip assigned within poll window — ensure Java has a PACKING order for the test store")
+		t.Skip("no trip assigned within poll window — ensure Java has a READY_FOR_DELIVERY order for the test store")
 	}
 
 	tripID, _ := trip["trip_id"].(string)

@@ -120,7 +120,7 @@ created ──(correct OTP)──▶ reached ──(DE taps done)──▶ compl
 ```
 
 **Domain Events (produced):**
-- `TripCreated` — cron created a trip for a PACKING order
+- `TripCreated` — cron created a trip for a READY_FOR_DELIVERY order
 - `TripAssigned` — cron matched a DE to the trip
 - `PickupCompleted` — DE tapped "Pickup Done" → notifies Order Context (OUT_FOR_DELIVERY)
 - `OTPVerified` — DE entered correct OTP at customer door
@@ -142,10 +142,10 @@ created ──(correct OTP)──▶ reached ──(DE taps done)──▶ compl
 | Distributed Lock | DynamoDB item preventing parallel ticks across EC2 instances |
 | FIFO | Assignment order: oldest unassigned trip gets oldest eligible DE |
 | Assignment Conflict | DynamoDB transaction failure when DE or trip already taken |
-| Cancellation Detection | Cron spotting a Java order that is no longer PACKING |
+| Cancellation Detection | Cron spotting a Java order that is no longer READY_FOR_DELIVERY |
 
 **This context reads from:**
-- Order Context (via ACL) — PACKING orders
+- Order Context (via ACL) — READY_FOR_DELIVERY orders
 - DE Identity Context — eligible DEs by store
 
 **This context writes to:**
@@ -276,7 +276,7 @@ referral_bonus_zmw      bonus for both DEs on referral completion
 **Translation table:**
 | Java Order Status | Our Domain Event |
 |---|---|
-| `PACKING` | Order needs a trip (Assignment context reads this) |
+| `READY_FOR_DELIVERY` | Order needs a trip (Assignment context reads this) |
 | `OUT_FOR_DELIVERY` | PickupCompleted (we write this to Java) |
 | `DELIVERED` | TripCompleted (we write this to Java) |
 | `CANCELLED` | TripCancelled (cron detects this) |

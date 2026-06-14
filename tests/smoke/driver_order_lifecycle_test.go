@@ -10,7 +10,7 @@ import (
 )
 
 // assignmentStoreID matches internal/service/assignment_cron.go defaultStoreID.
-// The DE must start duty at this store for the cron to offer PACKING orders.
+// The DE must start duty at this store for the cron to offer READY_FOR_DELIVERY orders.
 const assignmentStoreID = "221"
 
 const (
@@ -143,7 +143,7 @@ func assertDEStatus(t *testing.T, token, want string) {
 //	register → duty start (store 221) → cron assigns trip → accept →
 //	pickup complete → drop complete (OTP) → DE returns to free.
 //
-// Skips when Java has no PACKING orders for store 221 (cross-service dependency).
+// Skips when Java has no READY_FOR_DELIVERY orders for store 221 (cross-service dependency).
 func TestSmoke_DriverOrderLifecycle(t *testing.T) {
 	phone := smokePhone()
 	registerDE(t, phone)
@@ -154,10 +154,10 @@ func TestSmoke_DriverOrderLifecycle(t *testing.T) {
 	startDutyOnStore(t, auth, assignmentStoreID)
 	assertDEStatus(t, auth, "eligible")
 
-	// 2. Wait for the cron to assign a PACKING order.
+	// 2. Wait for the cron to assign a READY_FOR_DELIVERY order.
 	trip := pollAssignedTrip(t, auth)
 	if trip == nil {
-		t.Skip("no trip assigned within poll window — ensure Java has a PACKING order for store " + assignmentStoreID)
+		t.Skip("no trip assigned within poll window — ensure Java has a READY_FOR_DELIVERY order for store " + assignmentStoreID)
 	}
 
 	tripID, _ := trip["trip_id"].(string)
