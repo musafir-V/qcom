@@ -718,4 +718,17 @@ func TestGetMe_HomeStatsFields(t *testing.T) {
 	if te != 0 {
 		t.Fatalf("fresh DE: expected today_earnings_zmw=0, got %v", te)
 	}
+
+	// Profile screen: lifetime trips + joined date.
+	lt, ok := result["total_trips_completed"].(float64)
+	if !ok {
+		t.Fatalf("missing/!number total_trips_completed: %v", result["total_trips_completed"])
+	}
+	if lt != 0 {
+		t.Fatalf("fresh DE: expected total_trips_completed=0, got %v", lt)
+	}
+
+	if ca, ok := result["created_at"].(string); !ok || ca == "" {
+		t.Fatalf("missing/empty created_at: %v", result["created_at"])
+	}
 }

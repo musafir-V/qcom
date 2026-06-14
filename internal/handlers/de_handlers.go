@@ -109,16 +109,17 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 
 	tripsToday := de.TripsToday(timezone.DateString())
 	resp := map[string]interface{}{
-		"de_id":              de.DEID,
-		"phone_number":       de.PhoneNumber,
-		"name":               de.Name,
-		"profile_url":        de.ProfileURL,
-		"status":             de.Status,
-		"current_store_id":   de.CurrentStoreID,
-		"current_order_id":   de.CurrentOrderID,
-		"created_at":         de.CreatedAt,
-		"trips_today":        tripsToday,
-		"today_earnings_zmw": todayEarnings,
+		"de_id":                 de.DEID,
+		"phone_number":          de.PhoneNumber,
+		"name":                  de.Name,
+		"profile_url":           de.ProfileURL,
+		"status":                de.Status,
+		"current_store_id":      de.CurrentStoreID,
+		"current_order_id":      de.CurrentOrderID,
+		"created_at":            de.CreatedAt,
+		"trips_today":           tripsToday,
+		"total_trips_completed": de.TotalTripsCompleted,
+		"today_earnings_zmw":    todayEarnings,
 	}
 
 	payoutCfg, err := h.payoutConfigRepo.Get(r.Context())
