@@ -129,3 +129,58 @@ func TestRandomOTP_FourNumericDigitsInRange(t *testing.T) {
 		}
 	}
 }
+
+func TestPaymentFromOrder_COD_CollectsCash(t *testing.T) {
+	order := JavaOrder{PaymentMethod: "COD", GrandTotal: 12.74, Currency: "ZMW"}
+	p := paymentFromOrder(order)
+	if !p.CollectCash {
+		t.Error("expected CollectCash==true for COD")
+	}
+	if p.AmountZMW != 12.74 {
+		t.Errorf("expected AmountZMW==12.74, got %v", p.AmountZMW)
+	}
+	if p.Currency != "ZMW" {
+		t.Errorf("expected Currency==ZMW, got %q", p.Currency)
+	}
+}
+
+func TestPaymentFromOrder_Online_NoCollect(t *testing.T) {
+	order := JavaOrder{PaymentMethod: "AIRTEL_MONEY", GrandTotal: 50}
+	p := paymentFromOrder(order)
+	if p.CollectCash {
+		t.Error("expected CollectCash==false for AIRTEL_MONEY")
+	}
+	if p.AmountZMW != 50 {
+		t.Errorf("expected AmountZMW==50, got %v", p.AmountZMW)
+	}
+}
+
+func TestPaymentFromOrder_UnknownMethodTreatedAsOnline(t *testing.T) {
+	order := JavaOrder{PaymentMethod: "WEIRD_NEW_METHOD"}
+	p := paymentFromOrder(order)
+	if p.CollectCash {
+		t.Error("expected CollectCash==false for unrecognized method")
+	}
+}
+
+func TestPaymentFromOrder_EmptyMethod(t *testing.T) {
+	p := paymentFromOrder(JavaOrder{})
+	if p.CollectCash {
+		t.Error("expected CollectCash==false for empty order")
+	}
+}
+
+func TestIsKnownPaymentMethod(t *testing.T) {
+	known := []string{"COD", "AIRTEL_MONEY", "CARD", "BANK_TRANSFER"}
+	for _, m := range known {
+		if !isKnownPaymentMethod(m) {
+			t.Errorf("expected %q to be a known payment method", m)
+		}
+	}
+	unknown := []string{"", "WEIRD"}
+	for _, m := range unknown {
+		if isKnownPaymentMethod(m) {
+			t.Errorf("expected %q to be unrecognized", m)
+		}
+	}
+}

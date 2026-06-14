@@ -326,6 +326,13 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 	pickupTaskID := uuid.New().String()
 	dropTaskID := uuid.New().String()
 
+	if order.PaymentMethod != "" && !isKnownPaymentMethod(order.PaymentMethod) {
+		c.logger.WithFields(logrus.Fields{
+			"order_id":       orderID,
+			"payment_method": order.PaymentMethod,
+		}).Warn("createTrip: unrecognized paymentMethod, treating as online (collect no cash)")
+	}
+
 	trip := &models.Trip{
 		TripID:     tripID,
 		OrderID:    orderID,
@@ -334,6 +341,7 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 		DistanceKM: distKM,
 		BasePayZMW: basePayZMW,
 		Items:      tripItemsFromOrder(order),
+		Payment:    paymentFromOrder(order),
 		Tasks: []models.Task{
 			{
 				TaskID:  pickupTaskID,
@@ -404,6 +412,36 @@ func tripItemsFromOrder(order JavaOrder) []models.TripItem {
 		})
 	}
 	return items
+}
+
+// paymentMethodCOD is the order-service wire value for cash-on-delivery — the
+// only method for which the driver collects cash at drop-off.
+const paymentMethodCOD = "COD"
+
+// knownOnlinePaymentMethods are paymentMethod wire values that mean the order
+// was already paid for online, so the driver collects nothing.
+var knownOnlinePaymentMethods = map[string]bool{
+	"AIRTEL_MONEY":  true,
+	"CARD":          true,
+	"BANK_TRANSFER": true,
+}
+
+// paymentFromOrder maps the Java order's payment fields onto a trip Payment.
+// CollectCash is true only for explicit cash-on-delivery ("COD"); any unknown
+// or empty method is treated as online (collect nothing); callers should
+// warn-log unrecognized non-empty methods — this function does not.
+func paymentFromOrder(order JavaOrder) *models.Payment {
+	return &models.Payment{
+		CollectCash: order.PaymentMethod == paymentMethodCOD,
+		AmountZMW:   order.GrandTotal,
+		Currency:    order.Currency,
+	}
+}
+
+// isKnownPaymentMethod reports whether a paymentMethod wire value is one qcom
+// recognizes ("COD" or a known online method).
+func isKnownPaymentMethod(method string) bool {
+	return method == paymentMethodCOD || knownOnlinePaymentMethods[method]
 }
 
 // firstNonEmpty returns a if it is non-blank (ignoring surrounding whitespace),

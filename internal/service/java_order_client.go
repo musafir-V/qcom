@@ -20,6 +20,11 @@ type JavaOrder struct {
 	Delivery    JavaDelivery    `json:"delivery"`
 	StoreID     string          `json:"storeId"` // may be empty; cron defaults to defaultStoreID
 	Items       []JavaOrderItem `json:"items"`
+
+	PaymentMethod string  `json:"paymentMethod"`
+	PaymentStatus string  `json:"paymentStatus"`
+	GrandTotal    float64 `json:"grandTotal"`
+	Currency      string  `json:"currency"`
 }
 
 // EffectiveOrderID returns orderId when set, otherwise orderNumber. Some Java

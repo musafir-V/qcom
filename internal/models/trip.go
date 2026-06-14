@@ -26,6 +26,12 @@ type TripItem struct {
 	Sku      string `json:"sku,omitempty" dynamodbav:"sku,omitempty"`
 }
 
+type Payment struct {
+	CollectCash bool    `json:"collect_cash" dynamodbav:"collect_cash"`
+	AmountZMW   float64 `json:"amount_zmw" dynamodbav:"amount_zmw"`
+	Currency    string  `json:"currency,omitempty" dynamodbav:"currency,omitempty"`
+}
+
 type Task struct {
 	TaskID        string     `json:"task_id" dynamodbav:"task_id"`
 	Type          TaskType   `json:"type" dynamodbav:"type"`
@@ -47,6 +53,7 @@ type Trip struct {
 	Status  TripStatus `json:"status" dynamodbav:"status"`
 	Tasks   []Task     `json:"tasks" dynamodbav:"tasks"`
 	Items   []TripItem `json:"items,omitempty" dynamodbav:"items,omitempty"`
+	Payment *Payment   `json:"payment,omitempty" dynamodbav:"payment,omitempty"`
 
 	// Payout — set at creation (base) and completion (bonus+total)
 	DistanceKM        float64 `json:"distance_km" dynamodbav:"distance_km"`
