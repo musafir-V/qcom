@@ -68,3 +68,33 @@ func TestJavaOrder_MissingDeliveryNameDecodesEmpty(t *testing.T) {
 		t.Errorf("expected empty delivery name, got %q", order.Delivery.Name)
 	}
 }
+
+func TestJavaOrder_EffectiveOrderID_FallsBackToOrderNumber(t *testing.T) {
+	payload := `{
+		"orderId": null,
+		"orderNumber": "ORD1162844363",
+		"status": "READY_FOR_DELIVERY",
+		"delivery": {"address": "1 Main", "latitude": -15.4, "longitude": 28.3, "phone": "0970000000"},
+		"items": []
+	}`
+
+	var order JavaOrder
+	if err := json.Unmarshal([]byte(payload), &order); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if got, want := order.EffectiveOrderID(), "ORD1162844363"; got != want {
+		t.Fatalf("EffectiveOrderID() = %q, want %q", got, want)
+	}
+
+	order.normalizeOrderID()
+	if got, want := order.OrderID, "ORD1162844363"; got != want {
+		t.Fatalf("OrderID after normalize = %q, want %q", got, want)
+	}
+}
+
+func TestJavaOrder_EffectiveOrderID_PrefersOrderID(t *testing.T) {
+	order := JavaOrder{OrderID: "uuid-123", OrderNumber: "ORD999"}
+	if got, want := order.EffectiveOrderID(), "uuid-123"; got != want {
+		t.Fatalf("EffectiveOrderID() = %q, want %q", got, want)
+	}
+}

@@ -14,11 +14,28 @@ import (
 
 // JavaOrder is the subset of fields the cron needs from the Java order response.
 type JavaOrder struct {
-	OrderID  string          `json:"orderId"`
-	Status   string          `json:"status"`
-	Delivery JavaDelivery    `json:"delivery"`
-	StoreID  string          `json:"storeId"` // may be empty; cron defaults to defaultStoreID
-	Items    []JavaOrderItem `json:"items"`
+	OrderID     string          `json:"orderId"`
+	OrderNumber string          `json:"orderNumber"`
+	Status      string          `json:"status"`
+	Delivery    JavaDelivery    `json:"delivery"`
+	StoreID     string          `json:"storeId"` // may be empty; cron defaults to defaultStoreID
+	Items       []JavaOrderItem `json:"items"`
+}
+
+// EffectiveOrderID returns orderId when set, otherwise orderNumber. Some Java
+// deployments return a null orderId but always populate orderNumber (e.g.
+// ORD1162844363), which the order-service also accepts in /orders/{id} paths.
+func (o JavaOrder) EffectiveOrderID() string {
+	if id := strings.TrimSpace(o.OrderID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(o.OrderNumber)
+}
+
+// normalizeOrderID copies EffectiveOrderID into OrderID so downstream code and
+// DynamoDB trip.order_id always have a stable lookup key.
+func (o *JavaOrder) normalizeOrderID() {
+	o.OrderID = o.EffectiveOrderID()
 }
 
 type JavaOrderItem struct {
@@ -91,6 +108,9 @@ func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID
 			return nil, op.Fail(fmt.Errorf("failed to decode order response: %w", err))
 		}
 
+		for i := range paged.Content {
+			paged.Content[i].normalizeOrderID()
+		}
 		allOrders = append(allOrders, paged.Content...)
 		if paged.Meta.Last {
 			break

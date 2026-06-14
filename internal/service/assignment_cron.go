@@ -179,9 +179,15 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 		wg.Add(1)
 		go func(idx int, o JavaOrder) {
 			defer wg.Done()
-			existing, err := c.tripRepo.GetByOrderID(ctx, o.OrderID)
+			orderID := o.EffectiveOrderID()
+			if orderID == "" {
+				c.logger.Error("assignment cron: skipping order with no orderId or orderNumber")
+				return
+			}
+			o.OrderID = orderID
+			existing, err := c.tripRepo.GetByOrderID(ctx, orderID)
 			if err != nil {
-				c.logger.WithError(err).WithField("order_id", o.OrderID).
+				c.logger.WithError(err).WithField("order_id", orderID).
 					Error("assignment cron: failed to check trip existence")
 				return
 			}
@@ -287,6 +293,12 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 }
 
 func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *models.PayoutConfig) (*models.Trip, error) {
+	orderID := order.EffectiveOrderID()
+	if orderID == "" {
+		return nil, fmt.Errorf("order has no orderId or orderNumber")
+	}
+	order.OrderID = orderID
+
 	storeID := order.StoreID
 	if storeID == "" {
 		storeID = defaultStoreID
@@ -305,7 +317,7 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 
 	distKM, err := c.distanceService.DistanceKM(ctx, ds.Latitude, ds.Longitude, order.Delivery.Lat, order.Delivery.Lng)
 	if err != nil {
-		return nil, fmt.Errorf("distance lookup failed for order %s: %w", order.OrderID, err)
+		return nil, fmt.Errorf("distance lookup failed for order %s: %w", orderID, err)
 	}
 
 	basePayZMW := computeBasePay(distKM, cfg)
@@ -316,7 +328,7 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 
 	trip := &models.Trip{
 		TripID:     tripID,
-		OrderID:    order.OrderID,
+		OrderID:    orderID,
 		StoreID:    storeID,
 		Status:     models.TripStatusCreated,
 		DistanceKM: distKM,
@@ -346,7 +358,7 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 	}
 
 	if err := c.tripRepo.Create(ctx, trip); err != nil {
-		return nil, fmt.Errorf("failed to persist trip for order %s: %w", order.OrderID, err)
+		return nil, fmt.Errorf("failed to persist trip for order %s: %w", orderID, err)
 	}
 	return trip, nil
 }
