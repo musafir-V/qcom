@@ -27,7 +27,7 @@ export AWS_REGION="${REGION}"
 export AWS_DEFAULT_REGION="${REGION}"
 
 # Pin the Go version so all instances always build with the same toolchain.
-GO_VERSION="1.24.3"
+GO_VERSION="1.25.8"
 
 # Public GitHub URL — no SSH key or deploy key needed since the repo is public.
 REPO_URL="https://github.com/musafir-V/qcom.git"
