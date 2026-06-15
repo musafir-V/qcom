@@ -47,9 +47,12 @@ func (h *CashDepositHandlers) RecordCashDeposit(w http.ResponseWriter, r *http.R
 			h.respondWithError(w, http.StatusBadRequest, "NO_CASH_IN_HAND", err.Error())
 		case errors.Is(err, service.ErrDepositDENotFound):
 			h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", err.Error())
+		case errors.Is(err, service.ErrDepositConflict):
+			// Optimistic-lock clash or idempotent replay — expected, not an alert.
+			h.respondWithError(w, http.StatusConflict, "DEPOSIT_FAILED", err.Error())
 		default:
 			h.logger.WithError(err).Error("unexpected error recording cash deposit")
-			h.respondWithError(w, http.StatusConflict, "DEPOSIT_FAILED", err.Error())
+			h.respondWithError(w, http.StatusInternalServerError, "DEPOSIT_ERROR", "internal error recording cash deposit")
 		}
 		return
 	}

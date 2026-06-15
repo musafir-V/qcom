@@ -17,6 +17,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ErrCashDepositConflict is returned when a cash-deposit transaction is
+// cancelled — either the in-hand balance changed since it was read, or the
+// deposit_id was already applied (idempotent replay). Callers map this to 409.
+var ErrCashDepositConflict = errors.New("cash deposit conflict: balance changed or deposit_id already applied")
+
 type DERepository struct {
 	client    *dynamodb.Client
 	tableName string
@@ -456,7 +461,7 @@ func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expec
 	if err != nil {
 		var txErr *types.TransactionCanceledException
 		if errors.As(err, &txErr) {
-			return op.Outcome("conflict", fmt.Errorf("cash deposit conflict: balance changed or deposit_id already applied"))
+			return op.Outcome("conflict", ErrCashDepositConflict)
 		}
 		return op.Fail(fmt.Errorf("failed to apply cash deposit: %w", err))
 	}

@@ -17,6 +17,9 @@ var (
 	ErrInvalidDepositAmount = errors.New("amount_zmw must be positive")
 	ErrDepositDENotFound    = errors.New("delivery executive not found")
 	ErrNoCashInHand         = errors.New("no in-hand cash to deposit")
+	// ErrDepositConflict surfaces an optimistic-lock / idempotent-replay
+	// conflict from the deposit transaction (maps to HTTP 409).
+	ErrDepositConflict = errors.New("cash deposit conflict")
 )
 
 // ValidateDepositAmount rejects non-positive deposit amounts.
@@ -96,6 +99,9 @@ func (s *CashDepositService) RecordDeposit(ctx context.Context, phone, depositID
 	}
 
 	if err := s.deRepo.ApplyCashDeposit(ctx, de.PhoneNumber, de.InHandCashZMW, newBalance, entry); err != nil {
+		if errors.Is(err, repository.ErrCashDepositConflict) {
+			return nil, op.Outcome("conflict", ErrDepositConflict)
+		}
 		return nil, op.Fail(fmt.Errorf("failed to apply cash deposit: %w", err))
 	}
 
