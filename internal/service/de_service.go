@@ -151,3 +151,8 @@ func (s *DEService) EndDuty(ctx context.Context, dePhone string) error {
 	}
 	return nil
 }
+
+// UpdateFCMToken stores (or clears, if empty) the DE's push token.
+func (s *DEService) UpdateFCMToken(ctx context.Context, phone, token string) error {
+	return s.deRepo.UpdateFCMToken(ctx, phone, token)
+}

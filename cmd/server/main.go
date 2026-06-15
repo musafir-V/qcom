@@ -84,7 +84,8 @@ func main() {
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
 	adminService := service.NewAdminService(tripRepo, deRepo, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
-	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, darkstoreRepo, javaOrderClient, distanceService, logger)
+	notificationService := service.NewNotificationService(&cfg.Firebase, deRepo, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, darkstoreRepo, javaOrderClient, distanceService, notificationService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
 	s3Client, err := initS3(cfg, logger)
@@ -309,6 +310,7 @@ func setupRouter(
 	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST", "OPTIONS")
 	deProtected.HandleFunc("/duty/end", deHandlers.EndDuty).Methods("POST", "OPTIONS")
+	deProtected.HandleFunc("/fcm-token", deHandlers.UpdateFCMToken).Methods("POST", "OPTIONS")
 	deProtected.HandleFunc("/trip", tripHandlers.GetCurrentTrip).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/earnings/summary", earningsHandlers.GetEarningsSummary).Methods("GET", "OPTIONS")
