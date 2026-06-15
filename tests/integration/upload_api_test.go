@@ -315,6 +315,8 @@ func setupServer() (*httptest.Server, error) {
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	disbursementRepo := repository.NewDisbursementRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	tripRepo := repository.NewTripRepository(dynamo, cfg.DynamoDB.TableName, logger)
+	cashConfigRepo := repository.NewCashConfigRepository(dynamo, cfg.DynamoDB.TableName, logger)
 
 	// Services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -339,7 +341,11 @@ func setupServer() (*httptest.Server, error) {
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, testGeocoder, testETAService, logger, false)
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
-	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, logger)
+	javaOrderClient := service.NewJavaOrderClient("http://localhost:9", logger)
+	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
+	cashDepositService := service.NewCashDepositService(deRepo, cashConfigRepo, logger)
+	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, logger)
 
 	// Handlers
 	authHandlers := handlers.NewAuthHandlers(otpService, jwtService, refreshTokenService, userRepo, deRepo, logger)
@@ -347,17 +353,19 @@ func setupServer() (*httptest.Server, error) {
 	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
 	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
 	serviceabilityHandlers := handlers.NewServiceabilityHandlers(serviceabilityService, logger)
-	deHandlers := handlers.NewDEHandlers(deService, qrService, payoutConfigRepo, logger)
+	deHandlers := handlers.NewDEHandlers(deService, qrService, payoutConfigRepo, cashConfigRepo, logger)
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
 	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
+	tripHandlers := handlers.NewTripHandlers(tripService, logger)
+	cashDepositHandlers := handlers.NewCashDepositHandlers(cashDepositService, logger)
 
 	// Middleware
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
 
 	// Router
-	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, earningsHandlers, disbursementHandlers, authMiddleware, logger)
+	router := buildRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, earningsHandlers, disbursementHandlers, tripHandlers, cashDepositHandlers, authMiddleware, logger)
 	server := httptest.NewServer(router)
 
 	fmt.Printf("Test server started at %s\n", server.URL)
@@ -375,6 +383,8 @@ func buildRouter(
 	configHandlers *handlers.ConfigHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
+	tripHandlers *handlers.TripHandlers,
+	cashDepositHandlers *handlers.CashDepositHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -404,6 +414,9 @@ func buildRouter(
 
 	// Ops disbursement recording (no auth)
 	api.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST")
+
+	// Ops cash-deposit recording (no auth)
+	api.HandleFunc("/admin/de/{phone}/cash-deposit", cashDepositHandlers.RecordCashDeposit).Methods("POST")
 
 	protected := api.PathPrefix("/").Subrouter()
 	protected.Use(authMiddleware.RequireAuth)
@@ -435,6 +448,11 @@ func buildRouter(
 	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET")
 	deProtected.HandleFunc("/earnings/summary", earningsHandlers.GetEarningsSummary).Methods("GET")
 	deProtected.HandleFunc("/earnings/disbursements", earningsHandlers.GetDisbursements).Methods("GET")
+
+	// Trip task updates (DE auth) — needed for drop-completion accrual tests
+	tripRoutes := api.PathPrefix("/trip").Subrouter()
+	tripRoutes.Use(authMiddleware.RequireDEAuth)
+	tripRoutes.HandleFunc("/{tripId}/task/{taskId}/status/update", tripHandlers.UpdateTaskStatus).Methods("POST")
 
 	return router
 }
