@@ -26,6 +26,7 @@ type DeliveryExecutive struct {
 	TotalTripsCompleted int    `json:"total_trips_completed" dynamodbav:"total_trips_completed"`
 	DailyTripCount      int    `json:"daily_trip_count" dynamodbav:"daily_trip_count"`
 	DailyCountDate      string `json:"daily_count_date,omitempty" dynamodbav:"daily_count_date,omitempty"`
+	InHandCashZMW       float64 `json:"in_hand_cash_zmw" dynamodbav:"in_hand_cash_zmw"`
 	LastDisbursedAt     string `json:"last_disbursed_at,omitempty" dynamodbav:"last_disbursed_at,omitempty"`
 	ReferralCode        string `json:"referral_code,omitempty" dynamodbav:"referral_code,omitempty"`
 	CreatedAt           string `json:"created_at" dynamodbav:"created_at"`
@@ -48,4 +49,10 @@ func (de *DeliveryExecutive) TripsToday(today string) int {
 		return 0
 	}
 	return de.DailyTripCount
+}
+
+// CashExceeds reports whether the DE's in-hand COD cash is strictly above the
+// given limit. At exactly the limit the DE is still eligible.
+func (de *DeliveryExecutive) CashExceeds(limit float64) bool {
+	return de.InHandCashZMW > limit
 }
