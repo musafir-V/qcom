@@ -27,26 +27,32 @@ type NotificationService interface {
 }
 
 // buildAssignmentMessage constructs the FCM message for an order assignment.
-// Pure (no I/O) so it is unit-testable.
+// Data-only on Android (no Notification/Android.Notification block) so the
+// driver app's FCM background handler can render a full-screen-intent
+// notification via Notifee. iOS can't run JS in the background, so an APNS
+// alert + custom sound is attached for it. Pure (no I/O) so it is unit-testable.
 func buildAssignmentMessage(token string, trip *models.Trip) *messaging.Message {
 	return &messaging.Message{
 		Token: token,
 		Data: map[string]string{
-			"type":     "ORDER_ASSIGNED",
-			"trip_id":  trip.TripID,
-			"order_id": trip.OrderID,
-		},
-		Notification: &messaging.Notification{
-			Title: "New order!",
-			Body:  "Tap to view your trip.",
+			"type":            "ORDER_ASSIGNED",
+			"trip_id":         trip.TripID,
+			"order_id":        trip.OrderID,
+			"accept_deadline": trip.AcceptDeadline,
 		},
 		Android: &messaging.AndroidConfig{
 			Priority: "high",
-			Notification: &messaging.AndroidNotification{
-				ChannelID: assignmentChannelID,
-				Sound:     assignmentSound,
-				Priority:  messaging.PriorityHigh,
-				Tag:       trip.TripID,
+		},
+		APNS: &messaging.APNSConfig{
+			Headers: map[string]string{"apns-priority": "10"},
+			Payload: &messaging.APNSPayload{
+				Aps: &messaging.Aps{
+					Alert: &messaging.ApsAlert{
+						Title: "New order!",
+						Body:  "Tap to view your trip.",
+					},
+					Sound: assignmentSound + ".wav",
+				},
 			},
 		},
 	}
