@@ -57,6 +57,7 @@ func main() {
 	disbursementRepo := repository.NewDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	vonageJWTRepo := repository.NewVonageJWTRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	cashConfigRepo := repository.NewCashConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -77,14 +78,15 @@ func main() {
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest)
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
-	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, logger)
+	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, logger)
+	cashDepositService := service.NewCashDepositService(deRepo, cashConfigRepo, logger)
 
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
 	adminService := service.NewAdminService(tripRepo, deRepo, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
-	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, darkstoreRepo, javaOrderClient, distanceService, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
 	s3Client, err := initS3(cfg, logger)
@@ -106,7 +108,7 @@ func main() {
 	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
 	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
 	serviceabilityHandlers := handlers.NewServiceabilityHandlers(serviceabilityService, logger)
-	deHandlers := handlers.NewDEHandlers(deService, qrService, payoutConfigRepo, logger)
+	deHandlers := handlers.NewDEHandlers(deService, qrService, payoutConfigRepo, cashConfigRepo, logger)
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 	tripHandlers := handlers.NewTripHandlers(tripService, logger)
@@ -114,10 +116,11 @@ func main() {
 	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
 	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
 	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
+	cashDepositHandlers := handlers.NewCashDepositHandlers(cashDepositService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, webhookHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, webhookHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -228,6 +231,7 @@ func setupRouter(
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
+	cashDepositHandlers *handlers.CashDepositHandlers,
 	webhookHandlers *handlers.WebhookHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
@@ -274,6 +278,7 @@ func setupRouter(
 
 	// Ops disbursement recording endpoint (no auth — internal)
 	api.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST", "OPTIONS")
+	api.HandleFunc("/admin/de/{phone}/cash-deposit", cashDepositHandlers.RecordCashDeposit).Methods("POST", "OPTIONS")
 
 	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()
