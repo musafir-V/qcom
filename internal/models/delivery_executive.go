@@ -28,6 +28,7 @@ type DeliveryExecutive struct {
 	DailyCountDate      string `json:"daily_count_date,omitempty" dynamodbav:"daily_count_date,omitempty"`
 	LastDisbursedAt     string `json:"last_disbursed_at,omitempty" dynamodbav:"last_disbursed_at,omitempty"`
 	ReferralCode        string `json:"referral_code,omitempty" dynamodbav:"referral_code,omitempty"`
+	FCMToken            string `json:"fcm_token,omitempty" dynamodbav:"fcm_token,omitempty"`
 	CreatedAt           string `json:"created_at" dynamodbav:"created_at"`
 	UpdatedAt           string `json:"updated_at" dynamodbav:"updated_at"`
 }
