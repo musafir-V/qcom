@@ -433,7 +433,9 @@ func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expec
 						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 					},
 					UpdateExpression:    aws.String("SET in_hand_cash_zmw = :new, updated_at = :now"),
-					ConditionExpression: aws.String("if_not_exists(in_hand_cash_zmw, :zero) = :expected"),
+					// DynamoDB forbids if_not_exists() inside a ConditionExpression, so the
+					// "attribute absent ⇔ expected 0" case is spelled out explicitly.
+					ConditionExpression: aws.String("(attribute_not_exists(in_hand_cash_zmw) AND :expected = :zero) OR in_hand_cash_zmw = :expected"),
 					ExpressionAttributeValues: map[string]types.AttributeValue{
 						":new":      &types.AttributeValueMemberN{Value: fmtFloat(newBalance)},
 						":expected": &types.AttributeValueMemberN{Value: fmtFloat(expectedInHand)},
