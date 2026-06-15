@@ -125,3 +125,26 @@ func TestValidatePickupScan_WrongState(t *testing.T) {
 		t.Fatalf("expected ErrInvalidTripTransition, got: %v", err)
 	}
 }
+
+func TestCodAccrualAmount(t *testing.T) {
+	cases := []struct {
+		name string
+		trip *models.Trip
+		want float64
+	}{
+		{"nil payment", &models.Trip{}, 0},
+		{"online prepaid (no cash to collect)", &models.Trip{
+			Payment: &models.Payment{CollectCash: false, AmountZMW: 120},
+		}, 0},
+		{"COD accrues amount", &models.Trip{
+			Payment: &models.Payment{CollectCash: true, AmountZMW: 120},
+		}, 120},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := codAccrualAmount(c.trip); got != c.want {
+				t.Fatalf("codAccrualAmount = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

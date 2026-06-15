@@ -141,7 +141,7 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 	task.Status = newStatus
 
 	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
-		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, tripID, de.PhoneNumber, trip.Tasks); err != nil {
+		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, tripID, de.PhoneNumber, trip.Tasks, codAccrualAmount(trip)); err != nil {
 			return op.Fail(err)
 		}
 		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
@@ -229,6 +229,15 @@ func validateDropOTP(task models.Task, otp string) error {
 		return fmt.Errorf("%w", ErrInvalidOTP)
 	}
 	return nil
+}
+
+// codAccrualAmount returns the cash a DE collects on completing this trip's
+// drop. Only COD (collect_cash) trips accrue in-hand cash; prepaid trips are 0.
+func codAccrualAmount(trip *models.Trip) float64 {
+	if trip.Payment != nil && trip.Payment.CollectCash {
+		return trip.Payment.AmountZMW
+	}
+	return 0
 }
 
 // validateTaskAgainstTripStatus enforces that a task may only be completed when
