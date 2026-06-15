@@ -17,11 +17,12 @@ type DEService struct {
 	qrService          *QRService
 	referralService    *ReferralService
 	earningsLedgerRepo *repository.EarningsLedgerRepository
+	cashConfigRepo     *repository.CashConfigRepository
 	logger             *logrus.Logger
 }
 
-func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo *repository.EarningsLedgerRepository, logger *logrus.Logger) *DEService {
-	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, earningsLedgerRepo: earningsLedgerRepo, logger: logger}
+func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo *repository.EarningsLedgerRepository, cashConfigRepo *repository.CashConfigRepository, logger *logrus.Logger) *DEService {
+	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, earningsLedgerRepo: earningsLedgerRepo, cashConfigRepo: cashConfigRepo, logger: logger}
 }
 
 type RegisterDERequest struct {
@@ -107,6 +108,14 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string) (stri
 	}
 	if de.Status == models.DEStatusEligible {
 		return "", op.Outcome("already_on_duty", fmt.Errorf("already on duty at store %s", de.CurrentStoreID))
+	}
+
+	cfg, err := s.cashConfigRepo.Get(ctx)
+	if err != nil {
+		return "", op.Fail(fmt.Errorf("failed to fetch cash config: %w", err))
+	}
+	if de.CashExceeds(cfg.EffectiveLimitZMW()) {
+		return "", op.Outcome("cash_limit_exceeded", fmt.Errorf("in-hand cash limit exceeded; deposit cash to resume"))
 	}
 
 	storeID, err := s.qrService.ParseStoreID(qrCode)

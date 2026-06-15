@@ -35,6 +35,7 @@ type AssignmentCron struct {
 	cronLockRepo         *repository.CronLockRepository
 	payoutConfigRepo     *repository.PayoutConfigRepository
 	assignmentConfigRepo *repository.AssignmentConfigRepository
+	cashConfigRepo       *repository.CashConfigRepository
 	darkstoreRepo        *repository.DarkstoreRepository
 	javaClient           *JavaOrderClient
 	distanceService      *DistanceService
@@ -51,6 +52,7 @@ func NewAssignmentCron(
 	cronLockRepo *repository.CronLockRepository,
 	payoutConfigRepo *repository.PayoutConfigRepository,
 	assignmentConfigRepo *repository.AssignmentConfigRepository,
+	cashConfigRepo *repository.CashConfigRepository,
 	darkstoreRepo *repository.DarkstoreRepository,
 	javaClient *JavaOrderClient,
 	distanceService *DistanceService,
@@ -63,6 +65,7 @@ func NewAssignmentCron(
 		cronLockRepo:         cronLockRepo,
 		payoutConfigRepo:     payoutConfigRepo,
 		assignmentConfigRepo: assignmentConfigRepo,
+		cashConfigRepo:       cashConfigRepo,
 		darkstoreRepo:        darkstoreRepo,
 		javaClient:           javaClient,
 		distanceService:      distanceService,
@@ -170,6 +173,13 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 		return
 	}
 
+	cashCfg, err := c.cashConfigRepo.Get(ctx)
+	if err != nil {
+		c.logger.WithError(err).Error("assignment cron: failed to fetch cash config — skipping tick")
+		return
+	}
+	cashLimit := cashCfg.EffectiveLimitZMW()
+
 	// 4. For each READY_FOR_DELIVERY order: check trip existence in parallel
 	type orderResult struct {
 		order       JavaOrder
@@ -276,7 +286,7 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 	usedDE := make(map[string]bool)
 	for _, trip := range unassigned {
 		for _, de := range eligibleDEs {
-			if usedDE[de.DEID] || trip.HasRejected(de.DEID) {
+			if usedDE[de.DEID] || trip.HasRejected(de.DEID) || de.CashExceeds(cashLimit) {
 				continue
 			}
 			deadline := now.Add(time.Duration(autoRejectSecs) * time.Second).Format(time.RFC3339)

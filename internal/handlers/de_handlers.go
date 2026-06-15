@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/qcom/qcom/internal/timezone"
@@ -16,11 +17,12 @@ type DEHandlers struct {
 	deService        *service.DEService
 	qrService        *service.QRService
 	payoutConfigRepo *repository.PayoutConfigRepository
+	cashConfigRepo   *repository.CashConfigRepository
 	logger           *logrus.Logger
 }
 
-func NewDEHandlers(deService *service.DEService, qrService *service.QRService, payoutConfigRepo *repository.PayoutConfigRepository, logger *logrus.Logger) *DEHandlers {
-	return &DEHandlers{deService: deService, qrService: qrService, payoutConfigRepo: payoutConfigRepo, logger: logger}
+func NewDEHandlers(deService *service.DEService, qrService *service.QRService, payoutConfigRepo *repository.PayoutConfigRepository, cashConfigRepo *repository.CashConfigRepository, logger *logrus.Logger) *DEHandlers {
+	return &DEHandlers{deService: deService, qrService: qrService, payoutConfigRepo: payoutConfigRepo, cashConfigRepo: cashConfigRepo, logger: logger}
 }
 
 // POST /api/v1/de/register
@@ -129,6 +131,16 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 		resp["daily_milestone"] = service.ComputeDailyMilestone(tripsToday, payoutCfg)
 	}
 
+	// Unlike daily_milestone (omitted on payout-config error), cash_blocked must
+	// always be present so the app can render the cash-limit screen; default the limit on error.
+	cashCfg, err := h.cashConfigRepo.Get(r.Context())
+	if err != nil {
+		h.logger.WithError(err).Warn("failed to fetch cash config; defaulting limit")
+		cashCfg = &models.CashConfig{}
+	}
+	resp["cash_limit_zmw"] = cashCfg.EffectiveLimitZMW()
+	resp["cash_blocked"] = de.CashExceeds(cashCfg.EffectiveLimitZMW())
+
 	h.respondWithJSON(w, http.StatusOK, resp)
 }
 
@@ -156,6 +168,9 @@ func (h *DEHandlers) StartDuty(w http.ResponseWriter, r *http.Request) {
 			code = "QR_EXPIRED"
 		} else if strings.Contains(err.Error(), "active delivery") || strings.Contains(err.Error(), "already on duty") {
 			code = "INVALID_STATE"
+		} else if strings.Contains(err.Error(), "in-hand cash limit") {
+			status = http.StatusConflict
+			code = "CASH_LIMIT_EXCEEDED"
 		}
 		h.respondWithError(w, status, code, err.Error())
 		return

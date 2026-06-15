@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -214,11 +215,12 @@ func (r *TripRepository) UpdateStatus(ctx context.Context, tripID string, status
 	return nil
 }
 
-// CompleteTripAndFreeDE atomically marks the trip completed (with final tasks)
-// and frees the assigned DE. The DE must be busy on this trip.
-func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone string, tasks []models.Task) error {
+// CompleteTripAndFreeDE atomically marks the trip completed (with final tasks),
+// frees the assigned DE, and accrues the COD cash amount to the DE's in-hand
+// balance. The DE must be busy on this trip.
+func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone string, tasks []models.Task, codAmount float64) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.CompleteTripAndFreeDE", logrus.Fields{
-		"trip_id": tripID, "de_phone": dePhone,
+		"trip_id": tripID, "de_phone": dePhone, "cod_amount_zmw": codAmount,
 	})
 	defer op.End()
 
@@ -259,7 +261,7 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 					},
 					UpdateExpression: aws.String(
-						"SET #status = :free, updated_at = :now " +
+						"SET #status = :free, updated_at = :now, in_hand_cash_zmw = if_not_exists(in_hand_cash_zmw, :zero) + :cod " +
 							"REMOVE current_order_id, current_trip_id, current_store_id, duty_index_key",
 					),
 					ConditionExpression: aws.String("#status = :busy AND current_trip_id = :tid"),
@@ -269,6 +271,10 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 						":busy": &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
 						":tid":  &types.AttributeValueMemberS{Value: tripID},
 						":now":  &types.AttributeValueMemberS{Value: now},
+						// FormatFloat with precision -1 preserves fractional ZMW (e.g. 482.50); the
+						// payout fields elsewhere use "%.0f" because they round to whole kwacha.
+						":cod":  &types.AttributeValueMemberN{Value: strconv.FormatFloat(codAmount, 'f', -1, 64)},
+						":zero": &types.AttributeValueMemberN{Value: "0"},
 					},
 				},
 			},
