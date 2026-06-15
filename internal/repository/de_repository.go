@@ -396,3 +396,55 @@ func (r *DERepository) UpdateLastDisbursedAt(ctx context.Context, phone, disburs
 	}
 	return nil
 }
+// UpdateFCMToken sets the DE's FCM device token (overwrites any existing token —
+// single device per DE). An empty token clears it.
+func (r *DERepository) UpdateFCMToken(ctx context.Context, phone, token string) error {
+	op := logging.Start(ctx, r.logger, "UpdateFCMToken", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	if token == "" {
+		return r.ClearFCMToken(ctx, phone)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String("SET fcm_token = :tok, updated_at = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":tok": &types.AttributeValueMemberS{Value: token},
+			":now": &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to update fcm_token: %w", err))
+	}
+	return nil
+}
+
+// ClearFCMToken removes the DE's FCM token. Used on logout and when FCM reports
+// the token is no longer valid (UNREGISTERED / INVALID_ARGUMENT).
+func (r *DERepository) ClearFCMToken(ctx context.Context, phone string) error {
+	op := logging.Start(ctx, r.logger, "ClearFCMToken", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String("REMOVE fcm_token SET updated_at = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":now": &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to clear fcm_token: %w", err))
+	}
+	return nil
+}
