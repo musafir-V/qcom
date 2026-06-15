@@ -17,6 +17,7 @@ type Config struct {
 	Google   GoogleConfig
 	Java     JavaConfig
 	Vonage   VonageConfig
+	Firebase FirebaseConfig
 	IsTest   bool
 }
 
@@ -66,6 +67,13 @@ type VonageConfig struct {
 	WhatsAppFrom  string
 }
 
+type FirebaseConfig struct {
+	// CredentialsB64 is the base64-encoded Firebase service-account JSON.
+	// When empty or invalid, push notifications degrade to a logged no-op
+	// (assignment + the app's foreground-service poll still work).
+	CredentialsB64 string
+}
+
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -105,6 +113,9 @@ func Load() (*Config, error) {
 			AppID:         getEnv("VONAGE_APP_ID", ""),
 			PrivateKeyB64: getEnv("VONAGE_PRIVATE_KEY", ""),
 			WhatsAppFrom:  getEnv("VONAGE_WHATSAPP_FROM", ""),
+		},
+		Firebase: FirebaseConfig{
+			CredentialsB64: getEnv("FIREBASE_CREDENTIALS_B64", ""),
 		},
 		// IS_TEST (or IS_TRUE): skip polygon check; use first active darkstore from DDB.
 		IsTest: envBool("IS_TEST") || envBool("IS_TRUE"),
