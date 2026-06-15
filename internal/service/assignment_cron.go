@@ -30,15 +30,16 @@ const (
 )
 
 type AssignmentCron struct {
-	tripRepo         *repository.TripRepository
-	deRepo           *repository.DERepository
-	cronLockRepo     *repository.CronLockRepository
+	tripRepo             *repository.TripRepository
+	deRepo               *repository.DERepository
+	cronLockRepo         *repository.CronLockRepository
 	payoutConfigRepo     *repository.PayoutConfigRepository
 	assignmentConfigRepo *repository.AssignmentConfigRepository
 	darkstoreRepo        *repository.DarkstoreRepository
-	javaClient       *JavaOrderClient
-	distanceService  *DistanceService
-	logger           *logrus.Logger
+	javaClient           *JavaOrderClient
+	distanceService      *DistanceService
+	notifier             NotificationService
+	logger               *logrus.Logger
 
 	wg     sync.WaitGroup
 	stopCh chan struct{}
@@ -53,19 +54,21 @@ func NewAssignmentCron(
 	darkstoreRepo *repository.DarkstoreRepository,
 	javaClient *JavaOrderClient,
 	distanceService *DistanceService,
+	notifier NotificationService,
 	logger *logrus.Logger,
 ) *AssignmentCron {
 	return &AssignmentCron{
-		tripRepo:         tripRepo,
-		deRepo:           deRepo,
-		cronLockRepo:     cronLockRepo,
+		tripRepo:             tripRepo,
+		deRepo:               deRepo,
+		cronLockRepo:         cronLockRepo,
 		payoutConfigRepo:     payoutConfigRepo,
 		assignmentConfigRepo: assignmentConfigRepo,
 		darkstoreRepo:        darkstoreRepo,
-		javaClient:       javaClient,
-		distanceService:  distanceService,
-		logger:           logger,
-		stopCh:           make(chan struct{}),
+		javaClient:           javaClient,
+		distanceService:      distanceService,
+		notifier:             notifier,
+		logger:               logger,
+		stopCh:               make(chan struct{}),
 	}
 }
 
@@ -287,6 +290,11 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 			c.logger.WithFields(logrus.Fields{
 				"trip_id": trip.TripID, "de_id": de.DEID,
 			}).Info("assignment cron: trip assigned")
+			// Best-effort push: never block the tick. Capture loop vars; use a
+			// detached context so cancellation of the tick can't kill the send.
+			assignedDE := de
+			assignedTrip := trip
+			go c.notifier.NotifyOrderAssigned(context.Background(), assignedDE, assignedTrip)
 			break
 		}
 	}
@@ -470,4 +478,3 @@ func isAcceptExpired(trip *models.Trip, now time.Time) bool {
 	}
 	return now.After(deadline)
 }
-
