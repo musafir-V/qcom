@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -339,19 +340,21 @@ func (r *DERepository) IncrementDailyCount(ctx context.Context, phone, todayZamb
 	if de.DailyCountDate != todayZambia {
 		// New day — reset to 1
 		newCount = 1
-		expr = "SET daily_trip_count = :one, daily_count_date = :today, total_trips_completed = total_trips_completed + :one, updated_at = :now"
+		expr = "SET daily_trip_count = :one, daily_count_date = :today, total_trips_completed = if_not_exists(total_trips_completed, :zero) + :one, updated_at = :now"
 		values = map[string]types.AttributeValue{
 			":one":   &types.AttributeValueMemberN{Value: "1"},
+			":zero":  &types.AttributeValueMemberN{Value: "0"},
 			":today": &types.AttributeValueMemberS{Value: todayZambia},
 			":now":   &types.AttributeValueMemberS{Value: now},
 		}
 	} else {
 		// Same day — increment
 		newCount = de.DailyTripCount + 1
-		expr = "SET daily_trip_count = daily_trip_count + :one, total_trips_completed = total_trips_completed + :one, updated_at = :now"
+		expr = "SET daily_trip_count = daily_trip_count + :one, total_trips_completed = if_not_exists(total_trips_completed, :zero) + :one, updated_at = :now"
 		values = map[string]types.AttributeValue{
-			":one": &types.AttributeValueMemberN{Value: "1"},
-			":now": &types.AttributeValueMemberS{Value: now},
+			":one":  &types.AttributeValueMemberN{Value: "1"},
+			":zero": &types.AttributeValueMemberN{Value: "0"},
+			":now":  &types.AttributeValueMemberS{Value: now},
 		}
 	}
 
@@ -393,6 +396,67 @@ func (r *DERepository) UpdateLastDisbursedAt(ctx context.Context, phone, disburs
 	})
 	if err != nil {
 		return op.Fail(fmt.Errorf("failed to update last_disbursed_at: %w", err))
+	}
+	return nil
+}
+
+// ApplyCashDeposit atomically decrements the DE's in-hand cash to newBalance
+// and appends a cash-deposit ledger entry. The DE update is guarded by an
+// optimistic condition (in-hand unchanged since read) and the ledger Put is
+// conditional on the deposit_id not already existing (idempotent retry).
+func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expectedInHand, newBalance float64, entry *models.CashDepositLedger) error {
+	op := logging.Start(ctx, r.logger, "ApplyCashDeposit", logrus.Fields{
+		"phone": phone, "deposit_id": entry.DepositID,
+	})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	ledgerItem, err := attributevalue.MarshalMap(entry)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to marshal cash deposit entry: %w", err))
+	}
+	ledgerItem["PK"] = &types.AttributeValueMemberS{Value: entry.GetPK()}
+	ledgerItem["SK"] = &types.AttributeValueMemberS{Value: entry.GetSK()}
+
+	// FormatFloat precision -1 preserves fractional ZMW; it must match how the
+	// value is stored elsewhere so the optimistic-lock equality holds.
+	fmtFloat := func(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression:    aws.String("SET in_hand_cash_zmw = :new, updated_at = :now"),
+					ConditionExpression: aws.String("if_not_exists(in_hand_cash_zmw, :zero) = :expected"),
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":new":      &types.AttributeValueMemberN{Value: fmtFloat(newBalance)},
+						":expected": &types.AttributeValueMemberN{Value: fmtFloat(expectedInHand)},
+						":zero":     &types.AttributeValueMemberN{Value: "0"},
+						":now":      &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+			{
+				Put: &types.Put{
+					TableName:           aws.String(r.tableName),
+					Item:                ledgerItem,
+					ConditionExpression: aws.String("attribute_not_exists(PK)"),
+				},
+			},
+		},
+	})
+	if err != nil {
+		var txErr *types.TransactionCanceledException
+		if errors.As(err, &txErr) {
+			return op.Outcome("conflict", fmt.Errorf("cash deposit conflict: balance changed or deposit_id already applied"))
+		}
+		return op.Fail(fmt.Errorf("failed to apply cash deposit: %w", err))
 	}
 	return nil
 }
