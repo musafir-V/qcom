@@ -9,6 +9,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	HeaderUserCategory = "X-User-Category"
+	UserCategoryGuest  = "guest"
+	EntityTypeGuest    = "guest"
+)
+
 type AuthMiddleware struct {
 	jwtService *service.JWTService
 	logger     *logrus.Logger
@@ -59,6 +65,20 @@ func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, "entity_type", claims.EntityType)
 
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// RequireAuthOrGuest allows unauthenticated access when X-User-Category is "guest".
+// Otherwise it enforces the same rules as RequireAuth.
+func (m *AuthMiddleware) RequireAuthOrGuest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get(HeaderUserCategory), UserCategoryGuest) {
+			ctx := context.WithValue(r.Context(), "entity_type", EntityTypeGuest)
+			ctx = context.WithValue(ctx, "entity_id", "")
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		m.RequireAuth(next).ServeHTTP(w, r)
 	})
 }
 

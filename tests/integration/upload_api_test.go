@@ -430,8 +430,11 @@ func buildRouter(
 	}).Methods("GET")
 	protected.HandleFunc("/users/me", authHandlers.DeleteAccount).Methods("DELETE")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST")
-	protected.HandleFunc("/serviceability", serviceabilityHandlers.CheckServiceability).Methods("POST")
 	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST")
+
+	serviceability := api.PathPrefix("/").Subrouter()
+	serviceability.Use(authMiddleware.RequireAuthOrGuest)
+	serviceability.HandleFunc("/serviceability", serviceabilityHandlers.CheckServiceability).Methods("POST")
 
 	protected.HandleFunc("/addresses/suggest", addressHandlers.GetSuggestedAddresses).Methods("GET")
 	protected.HandleFunc("/addresses", addressHandlers.GetMyAddresses).Methods("GET")

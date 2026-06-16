@@ -15,6 +15,11 @@ import (
 
 func doAddressRequest(t *testing.T, method, path, token string, body interface{}) (*http.Response, map[string]interface{}) {
 	t.Helper()
+	return doAddressRequestWithHeaders(t, method, path, token, nil, body)
+}
+
+func doAddressRequestWithHeaders(t *testing.T, method, path, token string, headers map[string]string, body interface{}) (*http.Response, map[string]interface{}) {
+	t.Helper()
 
 	var reqBody io.Reader
 	if body != nil {
@@ -26,6 +31,9 @@ func doAddressRequest(t *testing.T, method, path, token string, body interface{}
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := http.DefaultClient.Do(req)

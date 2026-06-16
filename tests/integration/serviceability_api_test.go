@@ -113,7 +113,12 @@ func seedTestDarkstores(t *testing.T) {
 
 func doServiceabilityRequest(t *testing.T, token string, body interface{}) (*http.Response, map[string]interface{}) {
 	t.Helper()
-	return doAddressRequest(t, "POST", "/api/v1/serviceability", token, body)
+	return doServiceabilityRequestWithHeaders(t, token, nil, body)
+}
+
+func doServiceabilityRequestWithHeaders(t *testing.T, token string, headers map[string]string, body interface{}) (*http.Response, map[string]interface{}) {
+	t.Helper()
+	return doAddressRequestWithHeaders(t, "POST", "/api/v1/serviceability", token, headers, body)
 }
 
 // ── validation / auth ─────────────────────────────────────────────────────
@@ -124,6 +129,64 @@ func TestServiceability_NoAuth(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestServiceability_GuestNoAuth(t *testing.T) {
+	seedTestDarkstores(t)
+
+	resp, result := doServiceabilityRequestWithHeaders(t, "", map[string]string{
+		"X-User-Category": "guest",
+	}, map[string]interface{}{
+		"latitude": 12.975, "longitude": 77.640,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %v", resp.StatusCode, result)
+	}
+
+	data := result["data"].(map[string]interface{})
+	if data["serviceable"].(bool) != true {
+		t.Fatal("expected serviceable=true for guest")
+	}
+	if data["darkstore_id"].(string) != "DS-TEST-1" {
+		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
+	}
+
+	ra := data["resolved_address"].(map[string]interface{})
+	if ra["source"].(string) != "geocoded" {
+		t.Fatalf("expected geocoded address for guest, got %v", ra["source"])
+	}
+}
+
+func TestServiceability_GuestSkipsSavedAddresses(t *testing.T) {
+	seedTestDarkstores(t)
+	userA := authenticateUser(t, "+13000000025")
+
+	createTestAddress(t, userA.AccessToken, map[string]interface{}{
+		"latitude":       12.975,
+		"longitude":      77.640,
+		"address_line_2": "Someone else's home",
+		"tag":            "home",
+	})
+
+	resp, result := doServiceabilityRequestWithHeaders(t, "", map[string]string{
+		"X-User-Category": "guest",
+	}, map[string]interface{}{
+		"latitude": 12.975, "longitude": 77.640,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %v", resp.StatusCode, result)
+	}
+
+	ra := result["data"].(map[string]interface{})["resolved_address"].(map[string]interface{})
+	if ra["source"].(string) != "geocoded" {
+		t.Fatalf("guest must not match saved addresses; expected geocoded, got %v", ra["source"])
+	}
+	if ra["tag"] != nil {
+		t.Fatalf("guest must not inherit saved address tag, got %v", ra["tag"])
+	}
+	if ra["address_id"] != nil {
+		t.Fatalf("guest must not inherit saved address_id, got %v", ra["address_id"])
 	}
 }
 

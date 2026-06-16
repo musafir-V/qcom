@@ -101,13 +101,15 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 		}
 	}
 
-	resolved, err := s.resolveFromSavedAddress(ctx, userID, lat, lng)
-	if err != nil {
-		return nil, op.Fail(err)
-	}
-	if resolved != nil {
-		result.ResolvedAddress = resolved
-		return result, nil
+	if userID != "" {
+		resolved, err := s.resolveFromSavedAddress(ctx, userID, lat, lng)
+		if err != nil {
+			return nil, op.Fail(err)
+		}
+		if resolved != nil {
+			result.ResolvedAddress = resolved
+			return result, nil
+		}
 	}
 
 	result.ResolvedAddress = s.resolveFromGeocode(ctx, lat, lng)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/qcom/qcom/internal/middleware"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/sirupsen/logrus"
 )
@@ -28,8 +29,9 @@ type ServiceabilityRequest struct {
 }
 
 func (h *ServiceabilityHandlers) CheckServiceability(w http.ResponseWriter, r *http.Request) {
-	userID, ok := r.Context().Value("entity_id").(string)
-	if !ok || userID == "" {
+	entityType, _ := r.Context().Value("entity_type").(string)
+	userID, _ := r.Context().Value("entity_id").(string)
+	if entityType != middleware.EntityTypeGuest && userID == "" {
 		respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
 		return
 	}

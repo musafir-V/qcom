@@ -295,8 +295,12 @@ func setupRouter(
 	// Account deletion (App Store Guideline 5.1.1(v)) — deletes the caller's own account.
 	protected.HandleFunc("/users/me", authHandlers.DeleteAccount).Methods("DELETE", "OPTIONS")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST", "OPTIONS")
-	protected.HandleFunc("/serviceability", serviceabilityHandlers.CheckServiceability).Methods("POST", "OPTIONS")
 	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST", "OPTIONS")
+
+	// Serviceability — Bearer token or guest (X-User-Category: guest)
+	serviceability := api.PathPrefix("/").Subrouter()
+	serviceability.Use(authMiddleware.RequireAuthOrGuest)
+	serviceability.HandleFunc("/serviceability", serviceabilityHandlers.CheckServiceability).Methods("POST", "OPTIONS")
 
 	// Address endpoints — specific routes must be registered before the parameterized /:id route
 	protected.HandleFunc("/addresses/suggest", addressHandlers.GetSuggestedAddresses).Methods("GET")
