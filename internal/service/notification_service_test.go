@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/qcom/qcom/internal/models"
+	firebase "firebase.google.com/go/v4/messaging"
 )
 
 func testTrip() *models.Trip {
@@ -14,7 +15,7 @@ func testTrip() *models.Trip {
 	}
 }
 
-func TestBuildAssignmentMessage_DataOnlyAndroidWithApnsForIOS(t *testing.T) {
+func TestBuildAssignmentMessage_HybridTrayWithData(t *testing.T) {
 	trip := testTrip()
 	trip.AcceptDeadline = "2026-06-15T12:00:00Z"
 	msg := buildAssignmentMessage("device-token-abc", trip)
@@ -25,37 +26,23 @@ func TestBuildAssignmentMessage_DataOnlyAndroidWithApnsForIOS(t *testing.T) {
 	if msg.Data["type"] != "ORDER_ASSIGNED" {
 		t.Errorf("expected data.type ORDER_ASSIGNED, got %q", msg.Data["type"])
 	}
-	if msg.Data["trip_id"] != "trip-123" {
-		t.Errorf("expected data.trip_id trip-123, got %q", msg.Data["trip_id"])
+	if msg.Notification == nil || msg.Notification.Title != "New order!" {
+		t.Fatalf("expected tray notification title New order!, got %+v", msg.Notification)
 	}
-	if msg.Data["order_id"] != "order-456" {
-		t.Errorf("expected data.order_id order-456, got %q", msg.Data["order_id"])
+	if msg.Android == nil || msg.Android.Notification == nil {
+		t.Fatalf("expected android notification block")
 	}
-	if msg.Data["accept_deadline"] != "2026-06-15T12:00:00Z" {
-		t.Errorf("expected data.accept_deadline carried through, got %q", msg.Data["accept_deadline"])
+	if msg.Android.Notification.ChannelID != assignmentChannelID {
+		t.Errorf("expected channel %q, got %q", assignmentChannelID, msg.Android.Notification.ChannelID)
 	}
-
-	if msg.Notification != nil {
-		t.Errorf("expected no top-level Notification block (data-only), got %+v", msg.Notification)
+	if msg.Android.Notification.Sound != assignmentSound {
+		t.Errorf("expected sound %q, got %q", assignmentSound, msg.Android.Notification.Sound)
 	}
-	if msg.Android == nil {
-		t.Fatalf("expected an android config")
+	if msg.Android.Notification.Tag != "trip-123" {
+		t.Errorf("expected tag trip-123, got %q", msg.Android.Notification.Tag)
 	}
-	if msg.Android.Priority != "high" {
-		t.Errorf("expected android priority high, got %q", msg.Android.Priority)
-	}
-	if msg.Android.Notification != nil {
-		t.Errorf("expected no android notification block (data-only), got %+v", msg.Android.Notification)
-	}
-
-	if msg.APNS == nil || msg.APNS.Payload == nil || msg.APNS.Payload.Aps == nil {
-		t.Fatalf("expected an APNS payload for iOS")
-	}
-	if msg.APNS.Payload.Aps.Alert == nil || msg.APNS.Payload.Aps.Alert.Title == "" {
-		t.Fatalf("expected an APNS alert with a title")
-	}
-	if msg.APNS.Payload.Aps.Sound != assignmentSound+".wav" {
-		t.Errorf("expected APNS sound %q, got %q", assignmentSound+".wav", msg.APNS.Payload.Aps.Sound)
+	if msg.Android.Notification.Priority != firebase.PriorityHigh {
+		t.Errorf("expected high notification priority, got %v", msg.Android.Notification.Priority)
 	}
 	if msg.APNS.Headers["apns-collapse-id"] != "trip-123" {
 		t.Errorf("expected apns-collapse-id trip-123, got %q", msg.APNS.Headers["apns-collapse-id"])

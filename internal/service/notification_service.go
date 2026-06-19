@@ -27,9 +27,10 @@ type NotificationService interface {
 }
 
 // buildAssignmentMessage constructs the FCM message for an order assignment.
-// Data-only on Android so the background handler + foreground-service poll can
-// wake JS and render the looping Notifee alarm (OS tray from FCM does not loop
-// on a locked screen). iOS uses APNS alert + custom sound.
+// Hybrid payload: OS tray notification (sound + vibration, no loop) via
+// order-alert channel when backgrounded/killed/locked; data fields for the app.
+// Foreground tray is shown locally; looping bell starts when the driver opens the app
+// or taps the notification.
 func buildAssignmentMessage(token string, trip *models.Trip) *messaging.Message {
 	return &messaging.Message{
 		Token: token,
@@ -39,8 +40,18 @@ func buildAssignmentMessage(token string, trip *models.Trip) *messaging.Message 
 			"order_id":        trip.OrderID,
 			"accept_deadline": trip.AcceptDeadline,
 		},
+		Notification: &messaging.Notification{
+			Title: "New order!",
+			Body:  "Tap to view your trip.",
+		},
 		Android: &messaging.AndroidConfig{
 			Priority: "high",
+			Notification: &messaging.AndroidNotification{
+				ChannelID: assignmentChannelID,
+				Sound:     assignmentSound,
+				Tag:       trip.TripID,
+				Priority:  messaging.PriorityHigh,
+			},
 		},
 		APNS: &messaging.APNSConfig{
 			Headers: map[string]string{
