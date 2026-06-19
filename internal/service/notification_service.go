@@ -27,10 +27,10 @@ type NotificationService interface {
 }
 
 // buildAssignmentMessage constructs the FCM message for an order assignment.
-// Data-only on Android (no Notification/Android.Notification block) so the
-// driver app's FCM background handler can render a full-screen-intent
-// notification via Notifee. iOS can't run JS in the background, so an APNS
-// alert + custom sound is attached for it. Pure (no I/O) so it is unit-testable.
+// Hybrid payload: data fields for the app + an OS-rendered tray notification on
+// Android (channel order-alert) and APNS on iOS. The driver app treats tray
+// alerts as server-owned when backgrounded/killed; foreground uses in-app alarm
+// only (no second tray entry). Tag collapses repeats per trip_id.
 func buildAssignmentMessage(token string, trip *models.Trip) *messaging.Message {
 	return &messaging.Message{
 		Token: token,
@@ -40,11 +40,24 @@ func buildAssignmentMessage(token string, trip *models.Trip) *messaging.Message 
 			"order_id":        trip.OrderID,
 			"accept_deadline": trip.AcceptDeadline,
 		},
+		Notification: &messaging.Notification{
+			Title: "New order!",
+			Body:  "Tap to view your trip.",
+		},
 		Android: &messaging.AndroidConfig{
 			Priority: "high",
+			Notification: &messaging.AndroidNotification{
+				ChannelID: assignmentChannelID,
+				Sound:     assignmentSound,
+				Tag:       trip.TripID,
+				Priority:  messaging.PriorityHigh,
+			},
 		},
 		APNS: &messaging.APNSConfig{
-			Headers: map[string]string{"apns-priority": "10"},
+			Headers: map[string]string{
+				"apns-priority":   "10",
+				"apns-collapse-id": trip.TripID,
+			},
 			Payload: &messaging.APNSPayload{
 				Aps: &messaging.Aps{
 					Alert: &messaging.ApsAlert{
