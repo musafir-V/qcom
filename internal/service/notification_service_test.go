@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/qcom/qcom/internal/models"
-	firebase "firebase.google.com/go/v4/messaging"
 )
 
 func testTrip() *models.Trip {
@@ -15,7 +14,7 @@ func testTrip() *models.Trip {
 	}
 }
 
-func TestBuildAssignmentMessage_HybridPayloadWithTrayAndData(t *testing.T) {
+func TestBuildAssignmentMessage_DataOnlyAndroidWithApnsForIOS(t *testing.T) {
 	trip := testTrip()
 	trip.AcceptDeadline = "2026-06-15T12:00:00Z"
 	msg := buildAssignmentMessage("device-token-abc", trip)
@@ -36,30 +35,17 @@ func TestBuildAssignmentMessage_HybridPayloadWithTrayAndData(t *testing.T) {
 		t.Errorf("expected data.accept_deadline carried through, got %q", msg.Data["accept_deadline"])
 	}
 
-	if msg.Notification == nil || msg.Notification.Title != "New order!" {
-		t.Fatalf("expected top-level notification title New order!, got %+v", msg.Notification)
+	if msg.Notification != nil {
+		t.Errorf("expected no top-level Notification block (data-only), got %+v", msg.Notification)
 	}
-
 	if msg.Android == nil {
 		t.Fatalf("expected an android config")
 	}
 	if msg.Android.Priority != "high" {
 		t.Errorf("expected android priority high, got %q", msg.Android.Priority)
 	}
-	if msg.Android.Notification == nil {
-		t.Fatalf("expected android notification block")
-	}
-	if msg.Android.Notification.ChannelID != assignmentChannelID {
-		t.Errorf("expected channel %q, got %q", assignmentChannelID, msg.Android.Notification.ChannelID)
-	}
-	if msg.Android.Notification.Sound != assignmentSound {
-		t.Errorf("expected sound %q, got %q", assignmentSound, msg.Android.Notification.Sound)
-	}
-	if msg.Android.Notification.Tag != "trip-123" {
-		t.Errorf("expected tag trip-123, got %q", msg.Android.Notification.Tag)
-	}
-	if msg.Android.Notification.Priority != firebase.PriorityHigh {
-		t.Errorf("expected android notification priority high, got %v", msg.Android.Notification.Priority)
+	if msg.Android.Notification != nil {
+		t.Errorf("expected no android notification block (data-only), got %+v", msg.Android.Notification)
 	}
 
 	if msg.APNS == nil || msg.APNS.Payload == nil || msg.APNS.Payload.Aps == nil {
