@@ -13,9 +13,10 @@ import (
 	"google.golang.org/api/option"
 )
 
-// assignmentChannelID must match the driver app's expo-notifications channel
-// (driver-app/src/services/pollingService.ts ALERT_CHANNEL) and its custom sound.
-const assignmentChannelID = "order-alert"
+// assignmentChannelID must match driver-app orderChannel.ts and firebase.json.
+// Bumped v2 → v3: v2 was created silent on some devices and Android locks channel
+// sound settings to the id, so a new id is required to deliver the alarm sound.
+const assignmentChannelID = "order-alert-v3"
 
 // assignmentSound is the bare resource name (no extension) of the channel sound.
 const assignmentSound = "order_alarm"
