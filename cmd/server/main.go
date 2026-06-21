@@ -59,6 +59,7 @@ func main() {
 	vonageJWTRepo := repository.NewVonageJWTRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cashConfigRepo := repository.NewCashConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	deviceTokenRepo := repository.NewDeviceTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	uploadUseCaseRepo := repository.NewUploadUseCaseRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -95,7 +96,12 @@ func main() {
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to initialize S3")
 	}
-	uploadService := service.NewUploadService(s3Client, &cfg.S3, logger)
+	uploadService := service.NewUploadService(
+		s3.NewPresignClient(s3Client),
+		uploadUseCaseRepo,
+		time.Duration(cfg.S3.PresignExpirySeconds)*time.Second,
+		logger,
+	)
 
 	authHandlers := handlers.NewAuthHandlers(
 		otpService,
@@ -298,7 +304,8 @@ func setupRouter(
 	// Account deletion (App Store Guideline 5.1.1(v)) — deletes the caller's own account.
 	protected.HandleFunc("/users/me", authHandlers.DeleteAccount).Methods("DELETE", "OPTIONS")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST", "OPTIONS")
-	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GenerateUploadURL).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/uploads/url", uploadHandlers.GenerateUploadURL).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GeneratePrintUploadURL).Methods("POST", "OPTIONS")
 
 	// Serviceability — Bearer token or guest (X-User-Category: guest)
 	serviceability := api.PathPrefix("/").Subrouter()

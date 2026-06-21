@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/qcom/qcom/internal/service"
@@ -14,13 +15,11 @@ type UploadHandlers struct {
 }
 
 func NewUploadHandlers(uploadService *service.UploadService, logger *logrus.Logger) *UploadHandlers {
-	return &UploadHandlers{
-		uploadService: uploadService,
-		logger:        logger,
-	}
+	return &UploadHandlers{uploadService: uploadService, logger: logger}
 }
 
 type GenerateUploadURLRequest struct {
+	UseCase  string `json:"use_case"`
 	FileName string `json:"file_name"`
 	FileType string `json:"file_type"`
 	FileSize int64  `json:"file_size"`
@@ -34,46 +33,45 @@ type GenerateUploadURLResponse struct {
 	MaxFileSize      int64  `json:"max_file_size"`
 }
 
-func (h *UploadHandlers) ValidateFileRequest(w http.ResponseWriter, r *http.Request) (string, *GenerateUploadURLRequest, bool) {
-	userID, ok := r.Context().Value("entity_id").(string)
-	if !ok || userID == "" {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "User ID not found in token")
-		return "", nil, false
+// GenerateUploadURL is the generalized, use-case-driven presign endpoint.
+func (h *UploadHandlers) GenerateUploadURL(w http.ResponseWriter, r *http.Request) {
+	h.generate(w, r, "")
+}
+
+// GeneratePrintUploadURL preserves the legacy print route by forcing use_case=print_file.
+func (h *UploadHandlers) GeneratePrintUploadURL(w http.ResponseWriter, r *http.Request) {
+	h.generate(w, r, "print_file")
+}
+
+func (h *UploadHandlers) generate(w http.ResponseWriter, r *http.Request, forcedUseCase string) {
+	entityID, _ := r.Context().Value("entity_id").(string)
+	entityType, _ := r.Context().Value("entity_type").(string)
+	if entityID == "" {
+		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
+		return
 	}
 
 	var req GenerateUploadURLRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
-		return "", nil, false
+		return
 	}
-
-	if err := h.uploadService.ValidateFileRequest(req.FileName, req.FileType, req.FileSize); err != nil {
-		h.logger.WithError(err).WithField("entity_id", userID).Warn("Upload validation failed")
-		h.respondWithError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error())
-		return "", nil, false
+	useCase := req.UseCase
+	if forcedUseCase != "" {
+		useCase = forcedUseCase
 	}
-
-	return userID, &req, true
-}
-
-func (h *UploadHandlers) GenerateUploadURL(w http.ResponseWriter, r *http.Request) {
-	userID, req, ok := h.ValidateFileRequest(w, r)
-	if !ok {
+	if useCase == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "use_case is required")
 		return
 	}
 
-	result, err := h.uploadService.GeneratePresignedURL(r.Context(), userID, req.FileName, req.FileType, req.FileSize)
+	result, err := h.uploadService.GeneratePresignedURL(r.Context(), useCase, entityType, entityID, req.FileName, req.FileType, req.FileSize)
 	if err != nil {
-		h.logger.WithError(err).WithField("entity_id", userID).Error("Failed to generate presigned URL")
-		h.respondWithError(w, http.StatusInternalServerError, "PRESIGN_FAILED", "Failed to generate upload URL")
+		status, code := classifyUploadError(err)
+		h.logger.WithError(err).WithField("use_case", useCase).Warn("upload presign failed")
+		h.respondWithError(w, status, code, err.Error())
 		return
 	}
-
-	h.logger.WithFields(logrus.Fields{
-		"entity_id":    userID,
-		"file_id":    result.FileID,
-		"object_key": result.ObjectKey,
-	}).Info("Presigned upload URL generated")
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -86,13 +84,25 @@ func (h *UploadHandlers) GenerateUploadURL(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func classifyUploadError(err error) (int, string) {
+	switch {
+	case errors.Is(err, service.ErrUnknownUseCase):
+		return http.StatusBadRequest, "UNKNOWN_USE_CASE"
+	case errors.Is(err, service.ErrEntityTypeNotAllowed):
+		return http.StatusForbidden, "ENTITY_TYPE_NOT_ALLOWED"
+	case errors.Is(err, service.ErrMimeNotAllowed):
+		return http.StatusBadRequest, "MIME_NOT_ALLOWED"
+	case errors.Is(err, service.ErrFileTooLarge):
+		return http.StatusBadRequest, "FILE_TOO_LARGE"
+	case errors.Is(err, service.ErrInvalidFileRequest):
+		return http.StatusBadRequest, "INVALID_REQUEST"
+	default:
+		return http.StatusInternalServerError, "PRESIGN_FAILED"
+	}
+}
+
 func (h *UploadHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{
-		Error: ErrorDetail{
-			Code:    code,
-			Message: message,
-		},
-	})
+	json.NewEncoder(w).Encode(ErrorResponse{Error: ErrorDetail{Code: code, Message: message}})
 }
