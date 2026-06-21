@@ -127,6 +127,44 @@ func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID
 	return allOrders, nil
 }
 
+// GetOrderNotificationTarget fetches customerId for customer push notifications.
+type OrderNotificationTarget struct {
+	CustomerID  string `json:"customerId"`
+	OrderUUID   string `json:"orderUuid"`
+	OrderNumber string `json:"orderNumber"`
+}
+
+// GetNotificationTarget resolves the customer notification target for an order.
+func (c *JavaOrderClient) GetNotificationTarget(ctx context.Context, orderRef string) (*OrderNotificationTarget, error) {
+	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetNotificationTarget", logrus.Fields{"order_ref": orderRef})
+	defer op.End()
+
+	url := fmt.Sprintf("%s/internal/v1/orders/%s/notification-target", c.baseURL, orderRef)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to build request: %w", err))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("java order-service unavailable: %w", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, op.Fail(fmt.Errorf("java order-service returned %d", resp.StatusCode))
+	}
+
+	var target OrderNotificationTarget
+	if err := json.NewDecoder(resp.Body).Decode(&target); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to decode notification target: %w", err))
+	}
+	return &target, nil
+}
+
 // UpdateOrderStatus calls Java to transition an order to a new status.
 // actorID identifies who triggered the change (e.g. "DE:{deID}").
 func (c *JavaOrderClient) UpdateOrderStatus(ctx context.Context, orderID, status, actorID string) error {

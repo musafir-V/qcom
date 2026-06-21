@@ -311,6 +311,7 @@ func setupServer() (*httptest.Server, error) {
 	addressRepo := repository.NewAddressRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	darkstoreRepo := repository.NewDarkstoreRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	deRepo := repository.NewDERepository(dynamo, cfg.DynamoDB.TableName, logger)
+	deviceTokenRepo := repository.NewDeviceTokenRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	referralRepo := repository.NewReferralRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamo, cfg.DynamoDB.TableName, logger)
@@ -343,7 +344,8 @@ func setupServer() (*httptest.Server, error) {
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
 	javaOrderClient := service.NewJavaOrderClient("http://localhost:9", logger)
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
-	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
+	notificationService := service.NewNotificationService(&config.FirebaseConfig{}, deviceTokenRepo, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, logger)
 	cashDepositService := service.NewCashDepositService(deRepo, cashConfigRepo, logger)
 	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, logger)
 

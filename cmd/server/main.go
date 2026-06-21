@@ -84,10 +84,10 @@ func main() {
 
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
-	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
-	adminService := service.NewAdminService(tripRepo, deRepo, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, logger)
+	adminService := service.NewAdminService(tripRepo, deRepo, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, notificationService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 

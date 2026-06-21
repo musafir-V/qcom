@@ -34,6 +34,7 @@ type TripService struct {
 	deRepo        *repository.DERepository
 	javaClient    *JavaOrderClient
 	payoutService *PayoutService
+	notifier      NotificationService
 	logger        *logrus.Logger
 }
 
@@ -42,6 +43,7 @@ func NewTripService(
 	deRepo *repository.DERepository,
 	javaClient *JavaOrderClient,
 	payoutService *PayoutService,
+	notifier NotificationService,
 	logger *logrus.Logger,
 ) *TripService {
 	return &TripService{
@@ -49,6 +51,7 @@ func NewTripService(
 		deRepo:        deRepo,
 		javaClient:    javaClient,
 		payoutService: payoutService,
+		notifier:      notifier,
 		logger:        logger,
 	}
 }
@@ -145,6 +148,7 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 			return op.Fail(err)
 		}
 		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
+		s.notifyCustomerOrderDelivered(trip.OrderID)
 		// Synchronous: the payout ledger entry (this trip's earning) must be
 		// written before we respond, so the driver app can immediately fetch the
 		// trip earning for the success screen. recordTripPayout is best-effort
@@ -176,8 +180,58 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 		}
 		// Async: notify Java OUT_FOR_DELIVERY
 		go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", de.DEID)
+		s.notifyCustomerOutForDelivery(trip.OrderID)
 
 	}
+}
+
+func (s *TripService) notifyCustomerOutForDelivery(orderID string) {
+	s.notifyCustomer(orderID, "ORDER_OUT_FOR_DELIVERY", models.PriorityHigh,
+		"On the way!", "Your order is out for delivery.")
+}
+
+func (s *TripService) notifyCustomerOrderDelivered(orderID string) {
+	s.notifyCustomer(orderID, "ORDER_DELIVERED", models.PriorityHigh,
+		"Delivered!", "Your order has been delivered.")
+}
+
+func (s *TripService) notifyCustomer(orderID, eventType string, priority models.NotificationPriority, title, body string) {
+	if s.notifier == nil {
+		return
+	}
+	go func() {
+		ctx := context.Background()
+		target, err := s.javaClient.GetNotificationTarget(ctx, orderID)
+		if err != nil {
+			s.logger.WithError(err).WithField("order_id", orderID).Warn("customer notification target lookup failed")
+			return
+		}
+		if target == nil || target.CustomerID == "" {
+			s.logger.WithField("order_id", orderID).Debug("customer notification skipped — no target")
+			return
+		}
+
+		orderRef := target.OrderNumber
+		if orderRef == "" {
+			orderRef = orderID
+		}
+		data := map[string]string{
+			"order_id": orderRef,
+		}
+		if target.OrderUUID != "" {
+			data["order_uuid"] = target.OrderUUID
+		}
+
+		s.notifier.Send(ctx, models.NotificationSendRequest{
+			RecipientType: models.RecipientTypeCustomer,
+			RecipientID:   target.CustomerID,
+			EventType:     eventType,
+			Priority:      priority,
+			Title:         title,
+			Body:          body,
+			Data:          data,
+		})
+	}()
 }
 
 // syncJavaWithRetry retries the Java status update up to 3 times with backoff.
