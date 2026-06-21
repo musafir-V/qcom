@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/qcom/qcom/internal/models"
@@ -207,5 +208,48 @@ func TestGetDisputeByOrder_NotFound(t *testing.T) {
 	_, err := svc.GetDisputeByOrder(context.Background(), "cust-1", "order-x")
 	if !errors.Is(err, ErrDisputeNotFound) {
 		t.Fatalf("want ErrDisputeNotFound, got %v", err)
+	}
+}
+
+func TestCreateDispute_OrderStatusNotFound(t *testing.T) {
+	ov := &stubOrderValidator{
+		target: &OrderNotificationTarget{CustomerID: "cust-1"},
+		status: "NOT_FOUND",
+	}
+	svc := newTestDisputeService(&stubDisputeStore{}, &stubDispositionStore{disp: basicDisposition()}, ov)
+	_, err := svc.CreateDispute(context.Background(), validInput())
+	if !errors.Is(err, ErrOrderNotFound) {
+		t.Fatalf("want ErrOrderNotFound, got %v", err)
+	}
+}
+
+func TestCreateDispute_DescriptionTooShort(t *testing.T) {
+	disp := basicDisposition()
+	disp.DescriptionRequired = true
+	in := validInput()
+	in.Description = "short"
+	svc := newTestDisputeService(&stubDisputeStore{}, &stubDispositionStore{disp: disp}, ownedDelivered("cust-1"))
+	_, err := svc.CreateDispute(context.Background(), in)
+	if !errors.Is(err, ErrDescriptionTooShort) {
+		t.Fatalf("want ErrDescriptionTooShort, got %v", err)
+	}
+}
+
+func TestCreateDispute_DescriptionTooLong(t *testing.T) {
+	in := validInput()
+	in.Description = strings.Repeat("a", 501)
+	svc := newTestDisputeService(&stubDisputeStore{}, &stubDispositionStore{disp: basicDisposition()}, ownedDelivered("cust-1"))
+	_, err := svc.CreateDispute(context.Background(), in)
+	if !errors.Is(err, ErrDescriptionTooLong) {
+		t.Fatalf("want ErrDescriptionTooLong, got %v", err)
+	}
+}
+
+func TestGetDisputeByOrder_Forbidden(t *testing.T) {
+	ds := &stubDisputeStore{byOrder: &models.Dispute{DisputeID: "d2", CustomerID: "owner"}}
+	svc := newTestDisputeService(ds, &stubDispositionStore{}, &stubOrderValidator{})
+	_, err := svc.GetDisputeByOrder(context.Background(), "intruder", "order-1")
+	if !errors.Is(err, ErrDisputeForbidden) {
+		t.Fatalf("want ErrDisputeForbidden, got %v", err)
 	}
 }

@@ -14,6 +14,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// orderStatusNotFound is the sentinel JavaOrderClient.GetOrderStatus returns on a 404.
+const orderStatusNotFound = "NOT_FOUND"
+
 var (
 	ErrOrderNotFound       = errors.New("order not found")
 	ErrNotOrderOwner       = errors.New("order does not belong to customer")
@@ -101,7 +104,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch order status: %w", err)
 	}
-	if status == "NOT_FOUND" {
+	if status == orderStatusNotFound {
 		return nil, ErrOrderNotFound
 	}
 	if !s.eligibleStatuses[strings.ToUpper(status)] {
