@@ -133,6 +133,11 @@ create_gsi "OrderIndex" \
   '[{"Create":{"IndexName":"OrderIndex","KeySchema":[{"AttributeName":"order_id","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}}]' \
   "AttributeName=order_id,AttributeType=S"
 
+# DisputeOrderIndex — dispute lookup by order (sparse: only dispute items set dispute_order_id)
+create_gsi "DisputeOrderIndex" \
+  '[{"Create":{"IndexName":"DisputeOrderIndex","KeySchema":[{"AttributeName":"dispute_order_id","KeyType":"HASH"},{"AttributeName":"created_at","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]' \
+  "AttributeName=dispute_order_id,AttributeType=S"
+
 # DETripsIndex — DE earnings / payout queries
 create_gsi "DETripsIndex" \
   '[{"Create":{"IndexName":"DETripsIndex","KeySchema":[{"AttributeName":"de_id","KeyType":"HASH"},{"AttributeName":"completed_at","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]' \
