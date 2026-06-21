@@ -7,6 +7,7 @@ import (
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
+	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
@@ -16,7 +17,18 @@ const (
 
 	sourceSavedAddress = "saved_address"
 	sourceGeocoded     = "geocoded"
+
+	ReasonOutsideDeliveryZone = "outside_delivery_zone"
+	ReasonStoreInactive       = "store_inactive"
+	ReasonStoreClosed         = "store_closed"
 )
+
+// OperatingHours is the daily schedule surfaced to the customer app.
+type OperatingHours struct {
+	OpensAt  string `json:"opens_at"`
+	ClosesAt string `json:"closes_at"`
+	Timezone string `json:"timezone"`
+}
 
 // ResolvedAddress is the address surfaced to the customer on a serviceable location.
 type ResolvedAddress struct {
@@ -28,10 +40,14 @@ type ResolvedAddress struct {
 
 // ServiceabilityResult is the outcome of a serviceability check.
 type ServiceabilityResult struct {
-	Serviceable     bool             `json:"serviceable"`
-	DarkstoreID     string           `json:"darkstore_id,omitempty"`
-	ResolvedAddress *ResolvedAddress `json:"resolved_address,omitempty"`
-	ETAMinutes      *int             `json:"eta_minutes,omitempty"`
+	Serviceable     bool              `json:"serviceable"`
+	Reason          string            `json:"reason,omitempty"`
+	DarkstoreID     string            `json:"darkstore_id,omitempty"`
+	IsOperational   *bool             `json:"is_operational,omitempty"`
+	OperatingHours  *OperatingHours   `json:"operating_hours,omitempty"`
+	NextOpensAt     string            `json:"next_opens_at,omitempty"`
+	ResolvedAddress *ResolvedAddress  `json:"resolved_address,omitempty"`
+	ETAMinutes      *int              `json:"eta_minutes,omitempty"`
 }
 
 type ServiceabilityService struct {
@@ -71,21 +87,69 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 	})
 	defer op.End()
 
-	darkstores, err := s.darkstoreRepo.ListActive(ctx)
+	darkstores, err := s.darkstoreRepo.ListAll(ctx)
 	if err != nil {
 		return nil, op.Fail(err)
 	}
 
 	matched := s.matchDarkstore(op, darkstores, lat, lng)
 	if matched == nil {
-		op.With("serviceable", false)
-		return &ServiceabilityResult{Serviceable: false}, nil
+		op.With("serviceable", false).With("reason", ReasonOutsideDeliveryZone)
+		return &ServiceabilityResult{
+			Serviceable: false,
+			Reason:      ReasonOutsideDeliveryZone,
+		}, nil
+	}
+
+	if !matched.IsActive || !matched.ValidOperatingHours() {
+		op.With("serviceable", false).
+			With("reason", ReasonStoreInactive).
+			With("darkstore_id", matched.DarkstoreID)
+		return &ServiceabilityResult{
+			Serviceable: false,
+			Reason:      ReasonStoreInactive,
+			DarkstoreID: matched.DarkstoreID,
+		}, nil
+	}
+
+	now := timezone.Now()
+	hours := operatingHoursFromDarkstore(matched)
+	isOperational := matched.IsOperationalAt(now)
+
+	if !isOperational {
+		nextOpensAt, ok := matched.NextOpensAt(now)
+		if !ok {
+			op.With("serviceable", false).
+				With("reason", ReasonStoreInactive).
+				With("darkstore_id", matched.DarkstoreID)
+			return &ServiceabilityResult{
+				Serviceable: false,
+				Reason:      ReasonStoreInactive,
+				DarkstoreID: matched.DarkstoreID,
+			}, nil
+		}
+
+		isOp := false
+		op.With("serviceable", false).
+			With("reason", ReasonStoreClosed).
+			With("darkstore_id", matched.DarkstoreID)
+		return &ServiceabilityResult{
+			Serviceable:    false,
+			Reason:         ReasonStoreClosed,
+			DarkstoreID:    matched.DarkstoreID,
+			IsOperational:  &isOp,
+			OperatingHours: hours,
+			NextOpensAt:    nextOpensAt,
+		}, nil
 	}
 
 	op.With("serviceable", true).With("darkstore_id", matched.DarkstoreID)
+	isOp := true
 	result := &ServiceabilityResult{
-		Serviceable: true,
-		DarkstoreID: matched.DarkstoreID,
+		Serviceable:    true,
+		DarkstoreID:    matched.DarkstoreID,
+		IsOperational:  &isOp,
+		OperatingHours: hours,
 	}
 
 	if s.isTest {
@@ -116,8 +180,16 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 	return result, nil
 }
 
+func operatingHoursFromDarkstore(ds *models.Darkstore) *OperatingHours {
+	return &OperatingHours{
+		OpensAt:  ds.OpensAt,
+		ClosesAt: ds.ClosesAt,
+		Timezone: models.OperatingHoursTimezone,
+	}
+}
+
 // matchDarkstore picks the darkstore for this request. When IS_TEST/IS_TRUE is set,
-// polygon checks are skipped: the first active darkstore from DDB is used and the
+// polygon checks are skipped: the first darkstore from DDB is used and the
 // rest of the flow (ETA, address resolution) proceeds as normal.
 func (s *ServiceabilityService) matchDarkstore(op *logging.Op, darkstores []models.Darkstore, lat, lng float64) *models.Darkstore {
 	if len(darkstores) == 0 {

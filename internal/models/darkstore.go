@@ -15,6 +15,8 @@ type Darkstore struct {
 	Longitude   float64        `json:"longitude" dynamodbav:"longitude"`
 	Polygon     []PolygonPoint `json:"polygon" dynamodbav:"polygon"`
 	IsActive    bool           `json:"is_active" dynamodbav:"is_active"`
+	OpensAt     string         `json:"opens_at" dynamodbav:"opens_at"`
+	ClosesAt    string         `json:"closes_at" dynamodbav:"closes_at"`
 	CreatedAt   string         `json:"created_at" dynamodbav:"created_at"`
 	UpdatedAt   string         `json:"updated_at" dynamodbav:"updated_at"`
 }

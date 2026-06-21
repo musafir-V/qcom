@@ -101,10 +101,22 @@ Content-Type: application/json
 
 | Field | Type | Always present? | Description |
 |---|---|---|---|
-| `serviceable` | boolean | **yes** | `true` iff the coordinate lies inside an active darkstore's polygon. The *only* field guaranteed to be present. |
-| `darkstore_id` | string | only when `serviceable=true` | Stable ID of the fulfilling darkstore. The app should pass this through to subsequent catalog and cart calls — the same coordinate may fall in a different darkstore tomorrow. |
+| `serviceable` | boolean | **yes** | `true` iff the coordinate lies inside a darkstore polygon, the store is active, and the store is within its operating hours. The *only* field guaranteed to be present. |
+| `reason` | string | only when `serviceable=false` | Why the location is not serviceable. One of `outside_delivery_zone`, `store_inactive`, `store_closed`. |
+| `darkstore_id` | string | when a polygon match exists | Stable ID of the matched darkstore. Present for serviceable responses and for `store_inactive` / `store_closed`. Omitted for `outside_delivery_zone`. |
+| `is_operational` | boolean | when a polygon match exists and hours are valid | `true` when the matched store is within its daily operating window (Africa/Lusaka). `false` for `store_closed`. Omitted for `outside_delivery_zone` and `store_inactive`. |
+| `operating_hours` | object | when a polygon match exists and hours are valid | Daily schedule in Zambia time. Omitted for `outside_delivery_zone` and `store_inactive`. |
+| `next_opens_at` | string | only when `reason=store_closed` | Next opening instant as RFC3339 in `Africa/Lusaka`. |
 | `resolved_address` | object \| omitted | only when `serviceable=true` **and** an address could be resolved | See below. Omitted (not `null`) if neither saved-address matching nor reverse geocoding produced a result. |
 | `eta_minutes` | integer \| omitted | only when `serviceable=true` **and** the ETA service responded | Estimated delivery time in whole minutes from the darkstore to the customer's coordinate. Omitted if the upstream Google Distance Matrix call failed. |
+
+### `operating_hours` fields
+
+| Field | Type | Description |
+|---|---|---|
+| `opens_at` | string | Daily opening time as 24-hour `HH:MM` in Zambia time. |
+| `closes_at` | string | Daily closing time as 24-hour `HH:MM` in Zambia time (exclusive — store closes at this minute). |
+| `timezone` | string | Always `"Africa/Lusaka"`. |
 
 ### `resolved_address` fields
 
@@ -123,15 +135,58 @@ Content-Type: application/json
 
 The response shape is deliberately sparse — fields are *omitted*, not nulled, when not applicable. Here is the full case matrix.
 
-### Case 1 — Not serviceable
+### Case 1 — Not serviceable (outside delivery zone)
 
-> Customer's coordinate is outside every active darkstore polygon.
+> Customer's coordinate is outside every darkstore polygon.
 
 ```json
-{ "data": { "serviceable": false } }
+{ "data": { "serviceable": false, "reason": "outside_delivery_zone" } }
 ```
 
 **App should:** Show "Not deliverable here. Move the pin or try a saved address." Don't render the catalog.
+
+---
+
+### Case 1b — Not serviceable (store inactive)
+
+> Customer is inside a darkstore polygon, but the store is manually deactivated (`is_active=false`) or has invalid/missing operating hours.
+
+```json
+{
+  "data": {
+    "serviceable": false,
+    "reason": "store_inactive",
+    "darkstore_id": "ds_lusaka_01"
+  }
+}
+```
+
+**App should:** Show a generic temporary-unavailability message. Do not show operating hours.
+
+---
+
+### Case 1c — Not serviceable (store closed)
+
+> Customer is inside an active darkstore polygon, but the current Zambia time is outside the store's daily operating window.
+
+```json
+{
+  "data": {
+    "serviceable": false,
+    "reason": "store_closed",
+    "darkstore_id": "ds_lusaka_01",
+    "is_operational": false,
+    "operating_hours": {
+      "opens_at": "08:00",
+      "closes_at": "22:00",
+      "timezone": "Africa/Lusaka"
+    },
+    "next_opens_at": "2026-06-22T08:00:00+02:00"
+  }
+}
+```
+
+**App should:** Show a closed-store message using `next_opens_at` (e.g. "We're closed — opens at 8:00 AM"). Don't render the catalog.
 
 ---
 
@@ -144,6 +199,12 @@ The response shape is deliberately sparse — fields are *omitted*, not nulled, 
   "data": {
     "serviceable": true,
     "darkstore_id": "ds_mumbai_powai_01",
+    "is_operational": true,
+    "operating_hours": {
+      "opens_at": "08:00",
+      "closes_at": "22:00",
+      "timezone": "Africa/Lusaka"
+    },
     "resolved_address": {
       "address_line": "Flat 4B, Sapphire Heights, MG Road, Near Test Park",
       "tag": "home",
@@ -168,6 +229,12 @@ The response shape is deliberately sparse — fields are *omitted*, not nulled, 
   "data": {
     "serviceable": true,
     "darkstore_id": "ds_mumbai_powai_01",
+    "is_operational": true,
+    "operating_hours": {
+      "opens_at": "08:00",
+      "closes_at": "22:00",
+      "timezone": "Africa/Lusaka"
+    },
     "resolved_address": {
       "address_line": "Flat 4B, Sapphire Heights, MG Road, Near Test Park",
       "tag": "home",
@@ -191,6 +258,12 @@ The response shape is deliberately sparse — fields are *omitted*, not nulled, 
   "data": {
     "serviceable": true,
     "darkstore_id": "ds_mumbai_powai_01",
+    "is_operational": true,
+    "operating_hours": {
+      "opens_at": "08:00",
+      "closes_at": "22:00",
+      "timezone": "Africa/Lusaka"
+    },
     "resolved_address": {
       "address_line": "Hiranandani Gardens, Powai, Mumbai 400076, India",
       "source": "geocoded"
@@ -291,11 +364,13 @@ All errors follow the standard envelope:
 
 Plain-English version of `ServiceabilityService.CheckServiceability`. Helpful for debugging:
 
-1. **Fetch active darkstores.** Read all `DARKSTORE!*` rows where `is_active = true` from DynamoDB.
-2. **Polygon test.** Iterate; the **first** darkstore whose polygon contains the point (ray-casting test) is the match. If none match, return `{ serviceable: false }` and stop.
-3. **ETA (best-effort).** Call `ETAService.GetETA(ctx, matchedDarkstore, lat, lng)`. This goes through an H3-cell-keyed cache; on miss it hits Google Distance Matrix. If anything errors, log a warning and continue without `eta_minutes`.
-4. **Saved-address resolution.** Load the caller's addresses (`AddressService.GetMyAddresses`). Walk them with the Haversine distance; track the nearest one within **50 m**. If found, populate `resolved_address` with `source = "saved_address"` and return.
-5. **Geocoded-address fallback.** If no saved address was close enough, reverse-geocode the coordinate via the Google Geocoder. On success, populate `resolved_address` with `source = "geocoded"`. On failure, log a warning and omit the field.
+1. **Fetch all darkstores.** Read every `DARKSTORE!*` metadata row from DynamoDB (including inactive stores).
+2. **Polygon test.** Iterate; the **first** darkstore whose polygon contains the point is the match. If none match, return `{ serviceable: false, reason: "outside_delivery_zone" }` and stop.
+3. **Active + hours check.** If the matched store has `is_active=false` or invalid/missing `opens_at`/`closes_at`, return `{ serviceable: false, reason: "store_inactive", darkstore_id }` and stop.
+4. **Operating window.** Evaluate `is_operational` from the matched store's daily schedule in `Africa/Lusaka`. If closed, return `{ serviceable: false, reason: "store_closed", darkstore_id, is_operational: false, operating_hours, next_opens_at }` and stop.
+5. **ETA (best-effort).** Call `ETAService.GetETA(ctx, matchedDarkstore, lat, lng)`. This goes through an H3-cell-keyed cache; on miss it hits Google Distance Matrix. If anything errors, log a warning and continue without `eta_minutes`.
+6. **Saved-address resolution.** Load the caller's addresses (`AddressService.GetMyAddresses`). Walk them with the Haversine distance; track the nearest one within **50 m**. If found, populate `resolved_address` with `source = "saved_address"` and return.
+7. **Geocoded-address fallback.** If no saved address was close enough, reverse-geocode the coordinate via the Google Geocoder. On success, populate `resolved_address` with `source = "geocoded"`. On failure, log a warning and omit the field.
 
 The whole call is logged as one `op = "CheckServiceability"` entry with `duration_ms`, `serviceable`, and the `trace_id` propagated from the request — these are queryable in CloudWatch Logs Insights.
 
@@ -315,6 +390,12 @@ curl -X POST https://api.qcom.example/api/v1/serviceability \
   "data": {
     "serviceable": true,
     "darkstore_id": "ds_mumbai_powai_01",
+    "is_operational": true,
+    "operating_hours": {
+      "opens_at": "08:00",
+      "closes_at": "22:00",
+      "timezone": "Africa/Lusaka"
+    },
     "resolved_address": {
       "address_line": "Hiranandani Gardens, Powai",
       "tag": "home",

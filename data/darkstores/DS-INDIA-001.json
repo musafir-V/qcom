@@ -4,6 +4,8 @@
   "latitude": 12.9719,
   "longitude": 77.6412,
   "is_active": true,
+  "opens_at": "07:00",
+  "closes_at": "23:00",
   "created_at": "2026-05-27T00:00:00Z",
   "updated_at": "2026-05-31T00:00:00Z",
   "polygon": [

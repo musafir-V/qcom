@@ -63,6 +63,12 @@
             "is_active": {
                 "BOOL": true
             },
+            "opens_at": {
+                "S": "07:00"
+            },
+            "closes_at": {
+                "S": "23:00"
+            },
             "PK": {
                 "S": "DARKSTORE!DS-INDIA-001"
             },

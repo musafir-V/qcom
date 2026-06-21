@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,6 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/service"
+	"github.com/qcom/qcom/internal/timezone"
 )
 
 // ── mock geocoder ─────────────────────────────────────────────────────────
@@ -56,8 +59,34 @@ var testETAService = &mockETAService{}
 
 // ── darkstore seeding ─────────────────────────────────────────────────────
 
+func alwaysOpenOperatingHours() (opensAt, closesAt string) {
+	return "00:00", "23:59"
+}
+
+func closedOperatingHours(t *testing.T) (opensAt, closesAt string) {
+	t.Helper()
+	for start := 0; start < 23; start++ {
+		ds := models.Darkstore{
+			OpensAt:  fmt.Sprintf("%02d:00", start),
+			ClosesAt: fmt.Sprintf("%02d:00", start+1),
+		}
+		if ds.ValidOperatingHours() && !ds.IsOperationalAt(timezone.Now()) {
+			return ds.OpensAt, ds.ClosesAt
+		}
+	}
+	t.Fatal("could not find a closed operating-hours window for the current Zambia time")
+	return "", ""
+}
+
 func seedTestDarkstores(t *testing.T) {
 	t.Helper()
+	seedTestDarkstoresWithOverrides(t, nil)
+}
+
+func seedTestDarkstoresWithOverrides(t *testing.T, mutate func(*models.Darkstore)) {
+	t.Helper()
+
+	opensAt, closesAt := alwaysOpenOperatingHours()
 
 	darkstores := []models.Darkstore{
 		{
@@ -66,6 +95,8 @@ func seedTestDarkstores(t *testing.T) {
 			Latitude:    12.975,
 			Longitude:   77.640,
 			IsActive:    true,
+			OpensAt:     opensAt,
+			ClosesAt:    closesAt,
 			CreatedAt:   "2026-01-01T00:00:00Z",
 			UpdatedAt:   "2026-01-01T00:00:00Z",
 			Polygon: []models.PolygonPoint{
@@ -81,6 +112,8 @@ func seedTestDarkstores(t *testing.T) {
 			Latitude:    12.93,
 			Longitude:   77.62,
 			IsActive:    true,
+			OpensAt:     opensAt,
+			ClosesAt:    closesAt,
 			CreatedAt:   "2026-01-01T00:00:00Z",
 			UpdatedAt:   "2026-01-01T00:00:00Z",
 			Polygon: []models.PolygonPoint{
@@ -92,6 +125,11 @@ func seedTestDarkstores(t *testing.T) {
 		},
 	}
 
+	for i := range darkstores {
+		if mutate != nil {
+			mutate(&darkstores[i])
+		}
+	}
 	for _, ds := range darkstores {
 		item, err := attributevalue.MarshalMap(ds)
 		if err != nil {
@@ -285,12 +323,96 @@ func TestServiceability_Unserviceable(t *testing.T) {
 	if data["serviceable"].(bool) != false {
 		t.Fatalf("expected serviceable=false, got %v", data["serviceable"])
 	}
+	if data["reason"].(string) != service.ReasonOutsideDeliveryZone {
+		t.Fatalf("expected reason %q, got %v", service.ReasonOutsideDeliveryZone, data["reason"])
+	}
 	if _, present := data["resolved_address"]; present {
 		t.Fatal("unserviceable response must not include resolved_address")
+	}
+	if _, present := data["operating_hours"]; present {
+		t.Fatal("outside_delivery_zone response must not include operating_hours")
 	}
 	// ETA must be absent for unserviceable locations.
 	if _, present := data["eta_minutes"]; present {
 		t.Fatalf("unserviceable response must not include eta_minutes, got %v", data["eta_minutes"])
+	}
+}
+
+func TestServiceability_StoreInactive(t *testing.T) {
+	seedTestDarkstoresWithOverrides(t, func(ds *models.Darkstore) {
+		if ds.DarkstoreID == "DS-TEST-1" {
+			ds.IsActive = false
+		}
+	})
+	auth := authenticateUser(t, "+13000000015")
+
+	resp, result := doServiceabilityRequest(t, auth.AccessToken, map[string]interface{}{
+		"latitude": 12.975, "longitude": 77.640,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %v", resp.StatusCode, result)
+	}
+
+	data := result["data"].(map[string]interface{})
+	if data["serviceable"].(bool) != false {
+		t.Fatalf("expected serviceable=false, got %v", data["serviceable"])
+	}
+	if data["reason"].(string) != service.ReasonStoreInactive {
+		t.Fatalf("expected reason %q, got %v", service.ReasonStoreInactive, data["reason"])
+	}
+	if data["darkstore_id"].(string) != "DS-TEST-1" {
+		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
+	}
+	if _, present := data["operating_hours"]; present {
+		t.Fatal("store_inactive response must not include operating_hours")
+	}
+}
+
+func TestServiceability_StoreClosed(t *testing.T) {
+	opensAt, closesAt := closedOperatingHours(t)
+	seedTestDarkstoresWithOverrides(t, func(ds *models.Darkstore) {
+		if ds.DarkstoreID == "DS-TEST-1" {
+			ds.OpensAt = opensAt
+			ds.ClosesAt = closesAt
+		}
+	})
+	auth := authenticateUser(t, "+13000000016")
+
+	resp, result := doServiceabilityRequest(t, auth.AccessToken, map[string]interface{}{
+		"latitude": 12.975, "longitude": 77.640,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %v", resp.StatusCode, result)
+	}
+
+	data := result["data"].(map[string]interface{})
+	if data["serviceable"].(bool) != false {
+		t.Fatalf("expected serviceable=false, got %v", data["serviceable"])
+	}
+	if data["reason"].(string) != service.ReasonStoreClosed {
+		t.Fatalf("expected reason %q, got %v", service.ReasonStoreClosed, data["reason"])
+	}
+	if data["darkstore_id"].(string) != "DS-TEST-1" {
+		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
+	}
+	if data["is_operational"].(bool) != false {
+		t.Fatalf("expected is_operational=false, got %v", data["is_operational"])
+	}
+	hours := data["operating_hours"].(map[string]interface{})
+	if hours["opens_at"].(string) != opensAt {
+		t.Fatalf("expected opens_at %q, got %v", opensAt, hours["opens_at"])
+	}
+	if hours["closes_at"].(string) != closesAt {
+		t.Fatalf("expected closes_at %q, got %v", closesAt, hours["closes_at"])
+	}
+	if hours["timezone"].(string) != models.OperatingHoursTimezone {
+		t.Fatalf("expected timezone %q, got %v", models.OperatingHoursTimezone, hours["timezone"])
+	}
+	if _, present := data["next_opens_at"]; !present {
+		t.Fatal("store_closed response must include next_opens_at")
+	}
+	if _, present := data["eta_minutes"]; present {
+		t.Fatal("store_closed response must not include eta_minutes")
 	}
 }
 
@@ -313,6 +435,13 @@ func TestServiceability_ServiceableGeocoded(t *testing.T) {
 	}
 	if data["darkstore_id"].(string) != "DS-TEST-1" {
 		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
+	}
+	if data["is_operational"].(bool) != true {
+		t.Fatalf("expected is_operational=true, got %v", data["is_operational"])
+	}
+	hours := data["operating_hours"].(map[string]interface{})
+	if hours["timezone"].(string) != models.OperatingHoursTimezone {
+		t.Fatalf("expected timezone %q, got %v", models.OperatingHoursTimezone, hours["timezone"])
 	}
 
 	ra := data["resolved_address"].(map[string]interface{})

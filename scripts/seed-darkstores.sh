@@ -27,6 +27,8 @@ aws dynamodb put-item \
     "latitude": {"N": "12.9719"},
     "longitude": {"N": "77.6412"},
     "is_active": {"BOOL": true},
+    "opens_at": {"S": "07:00"},
+    "closes_at": {"S": "23:00"},
     "created_at": {"S": "'"$NOW"'"},
     "updated_at": {"S": "'"$NOW"'"},
     "polygon": {"L": [
@@ -51,6 +53,8 @@ aws dynamodb put-item \
     "latitude": {"N": "12.9352"},
     "longitude": {"N": "77.6245"},
     "is_active": {"BOOL": true},
+    "opens_at": {"S": "07:00"},
+    "closes_at": {"S": "23:00"},
     "created_at": {"S": "'"$NOW"'"},
     "updated_at": {"S": "'"$NOW"'"},
     "polygon": {"L": [

@@ -80,6 +80,28 @@ func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstor
 	op := logging.Start(ctx, r.logger, "ListActive", nil)
 	defer op.End()
 
+	all, err := r.ListAll(ctx)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+
+	active := make([]models.Darkstore, 0, len(all))
+	for _, ds := range all {
+		if ds.IsActive {
+			active = append(active, ds)
+		}
+	}
+	op.With("count", len(active))
+	return active, nil
+}
+
+// ListAll returns every darkstore regardless of is_active. Serviceability uses this
+// so inactive stores still match their polygon and return store_inactive instead
+// of outside_delivery_zone.
+func (r *DarkstoreRepository) ListAll(ctx context.Context) ([]models.Darkstore, error) {
+	op := logging.Start(ctx, r.logger, "ListAll", nil)
+	defer op.End()
+
 	ids, err := r.getDarkstoreIDs(ctx)
 	if err != nil {
 		return nil, op.Fail(fmt.Errorf("failed to read darkstore index: %w", err))
@@ -87,7 +109,7 @@ func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstor
 
 	if len(ids) == 0 {
 		op.Logger().Warn("darkstore index missing or empty; falling back to table scan")
-		darkstores, err := r.listActiveByScan(ctx)
+		darkstores, err := r.listByScan(ctx, false)
 		if err != nil {
 			return nil, op.Fail(err)
 		}
@@ -95,7 +117,7 @@ func (r *DarkstoreRepository) ListActive(ctx context.Context) ([]models.Darkstor
 		return darkstores, nil
 	}
 
-	darkstores, err := r.batchGetActive(ctx, ids)
+	darkstores, err := r.batchGet(ctx, ids)
 	if err != nil {
 		return nil, op.Fail(err)
 	}
@@ -137,10 +159,9 @@ func (r *DarkstoreRepository) getDarkstoreIDs(ctx context.Context) ([]string, er
 	}
 }
 
-// batchGetActive fetches the given darkstore IDs by primary key and returns only the
-// active ones. Keys are chunked to DynamoDB's 100-per-request limit and UnprocessedKeys
-// are retried until drained.
-func (r *DarkstoreRepository) batchGetActive(ctx context.Context, ids []string) ([]models.Darkstore, error) {
+// batchGet fetches the given darkstore IDs by primary key. Keys are chunked to
+// DynamoDB's 100-per-request limit and UnprocessedKeys are retried until drained.
+func (r *DarkstoreRepository) batchGet(ctx context.Context, ids []string) ([]models.Darkstore, error) {
 	var fetched []models.Darkstore
 
 	for start := 0; start < len(ids); start += batchGetMaxKeys {
@@ -181,31 +202,31 @@ func (r *DarkstoreRepository) batchGetActive(ctx context.Context, ids []string) 
 		}
 	}
 
-	active := make([]models.Darkstore, 0, len(fetched))
-	for _, ds := range fetched {
-		if ds.IsActive {
-			active = append(active, ds)
-		}
-	}
-	return active, nil
+	return fetched, nil
 }
 
-// listActiveByScan is the legacy full-table Scan, kept as a safety fallback for when
+// listByScan is the legacy full-table Scan, kept as a safety fallback for when
 // the darkstore index item is missing.
-func (r *DarkstoreRepository) listActiveByScan(ctx context.Context) ([]models.Darkstore, error) {
+func (r *DarkstoreRepository) listByScan(ctx context.Context, activeOnly bool) ([]models.Darkstore, error) {
+	filter := "begins_with(PK, :pk) AND SK = :sk"
+	values := map[string]types.AttributeValue{
+		":pk": &types.AttributeValueMemberS{Value: darkstoreKeyPrefix},
+		":sk": &types.AttributeValueMemberS{Value: darkstoreMetadataSK},
+	}
+	if activeOnly {
+		filter += " AND is_active = :active"
+		values[":active"] = &types.AttributeValueMemberBOOL{Value: true}
+	}
+
 	var darkstores []models.Darkstore
 	var startKey map[string]types.AttributeValue
 
 	for {
 		result, err := r.client.Scan(ctx, &dynamodb.ScanInput{
-			TableName:        aws.String(r.tableName),
-			FilterExpression: aws.String("begins_with(PK, :pk) AND SK = :sk AND is_active = :active"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":pk":     &types.AttributeValueMemberS{Value: darkstoreKeyPrefix},
-				":sk":     &types.AttributeValueMemberS{Value: darkstoreMetadataSK},
-				":active": &types.AttributeValueMemberBOOL{Value: true},
-			},
-			ExclusiveStartKey: startKey,
+			TableName:                 aws.String(r.tableName),
+			FilterExpression:          aws.String(filter),
+			ExpressionAttributeValues: values,
+			ExclusiveStartKey:         startKey,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan darkstores: %w", err)
@@ -224,4 +245,9 @@ func (r *DarkstoreRepository) listActiveByScan(ctx context.Context) ([]models.Da
 	}
 
 	return darkstores, nil
+}
+
+// listActiveByScan scans the table for active darkstores only.
+func (r *DarkstoreRepository) listActiveByScan(ctx context.Context) ([]models.Darkstore, error) {
+	return r.listByScan(ctx, true)
 }
