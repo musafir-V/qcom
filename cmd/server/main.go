@@ -133,7 +133,7 @@ func main() {
 	disputeNotifier := service.NewLoggingDisputeNotifier(logger)
 	disputeService := service.NewDisputeService(
 		disputeRepo, dispositionRepo, javaOrderClient, disputeNotifier,
-		[]string{"DELIVERED"}, // TODO(Task 8): replace with cfg.Dispute.EligibleOrderStatuses
+		cfg.Dispute.EligibleOrderStatuses,
 		logger,
 	)
 	disputeHandlers := handlers.NewDisputeHandlers(disputeService, logger)

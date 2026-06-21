@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type Config struct {
 	Java     JavaConfig
 	Vonage   VonageConfig
 	Firebase FirebaseConfig
+	Dispute  DisputeConfig
 	IsTest   bool
 }
 
@@ -74,6 +76,13 @@ type FirebaseConfig struct {
 	CredentialsB64 string
 }
 
+type DisputeConfig struct {
+	// EligibleOrderStatuses is the set of order statuses that allow a customer
+	// to open a dispute. Populated from DISPUTE_ELIGIBLE_ORDER_STATUSES
+	// (comma-separated); defaults to ["DELIVERED"].
+	EligibleOrderStatuses []string
+}
+
 func Load() (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
@@ -116,6 +125,9 @@ func Load() (*Config, error) {
 		},
 		Firebase: FirebaseConfig{
 			CredentialsB64: getEnv("FIREBASE_CREDENTIALS_B64", ""),
+		},
+		Dispute: DisputeConfig{
+			EligibleOrderStatuses: splitAndTrim(getEnv("DISPUTE_ELIGIBLE_ORDER_STATUSES", "DELIVERED")),
 		},
 		// IS_TEST (or IS_TRUE): skip polygon check; use first active darkstore from DDB.
 		IsTest: envBool("IS_TEST") || envBool("IS_TRUE"),
@@ -172,4 +184,17 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 		}
 	}
 	return defaultValue
+}
+
+// splitAndTrim splits a comma-separated string, trims whitespace from each
+// element, uppercases it, and drops empty entries.
+func splitAndTrim(csv string) []string {
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, strings.ToUpper(t))
+		}
+	}
+	return out
 }
