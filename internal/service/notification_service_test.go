@@ -7,18 +7,22 @@ import (
 	firebase "firebase.google.com/go/v4/messaging"
 )
 
-func testTrip() *models.Trip {
-	return &models.Trip{
-		TripID:     "trip-123",
-		OrderID:    "order-456",
-		BasePayZMW: 12.5,
+func TestBuildFCMMessage_OrderAssigned(t *testing.T) {
+	req := models.NotificationSendRequest{
+		RecipientType: models.RecipientTypeDriver,
+		RecipientID:   "DE-1",
+		EventType:     "ORDER_ASSIGNED",
+		Priority:      models.PriorityCritical,
+		Title:         "New order!",
+		Body:          "Tap to view your trip.",
+		Data: map[string]string{
+			"trip_id":         "trip-123",
+			"order_id":        "order-456",
+			"accept_deadline": "2026-06-15T12:00:00Z",
+		},
 	}
-}
 
-func TestBuildAssignmentMessage_HybridTrayWithData(t *testing.T) {
-	trip := testTrip()
-	trip.AcceptDeadline = "2026-06-15T12:00:00Z"
-	msg := buildAssignmentMessage("device-token-abc", trip)
+	msg := buildFCMMessage("device-token-abc", req)
 
 	if msg.Token != "device-token-abc" {
 		t.Fatalf("expected token device-token-abc, got %q", msg.Token)
@@ -32,11 +36,11 @@ func TestBuildAssignmentMessage_HybridTrayWithData(t *testing.T) {
 	if msg.Android == nil || msg.Android.Notification == nil {
 		t.Fatalf("expected android notification block")
 	}
-	if msg.Android.Notification.ChannelID != assignmentChannelID {
-		t.Errorf("expected channel %q, got %q", assignmentChannelID, msg.Android.Notification.ChannelID)
+	if msg.Android.Notification.ChannelID != driverChannelID {
+		t.Errorf("expected channel %q, got %q", driverChannelID, msg.Android.Notification.ChannelID)
 	}
-	if msg.Android.Notification.Sound != assignmentSound {
-		t.Errorf("expected sound %q, got %q", assignmentSound, msg.Android.Notification.Sound)
+	if msg.Android.Notification.Sound != "" {
+		t.Errorf("expected no custom sound, got %q", msg.Android.Notification.Sound)
 	}
 	if msg.Android.Notification.Tag != "trip-123" {
 		t.Errorf("expected tag trip-123, got %q", msg.Android.Notification.Tag)
@@ -46,5 +50,33 @@ func TestBuildAssignmentMessage_HybridTrayWithData(t *testing.T) {
 	}
 	if msg.APNS.Headers["apns-collapse-id"] != "trip-123" {
 		t.Errorf("expected apns-collapse-id trip-123, got %q", msg.APNS.Headers["apns-collapse-id"])
+	}
+}
+
+func TestValidateSendRequest_RejectsLowPriorityForOrderAssigned(t *testing.T) {
+	req := models.NotificationSendRequest{
+		RecipientType: models.RecipientTypeDriver,
+		RecipientID:   "DE-1",
+		EventType:     "ORDER_ASSIGNED",
+		Priority:      models.PriorityNormal,
+		Title:         "New order!",
+		Body:          "Tap to view your trip.",
+	}
+	if err := validateSendRequest(req); err == nil {
+		t.Fatal("expected validation error for ORDER_ASSIGNED with normal priority")
+	}
+}
+
+func TestRecipientTypeFromJWT(t *testing.T) {
+	driver, err := RecipientTypeFromJWT("de")
+	if err != nil || driver != models.RecipientTypeDriver {
+		t.Fatalf("expected driver, got %v err=%v", driver, err)
+	}
+	customer, err := RecipientTypeFromJWT("customer")
+	if err != nil || customer != models.RecipientTypeCustomer {
+		t.Fatalf("expected customer, got %v err=%v", customer, err)
+	}
+	if _, err := RecipientTypeFromJWT("guest"); err == nil {
+		t.Fatal("expected error for guest entity type")
 	}
 }

@@ -58,6 +58,7 @@ func main() {
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	vonageJWTRepo := repository.NewVonageJWTRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cashConfigRepo := repository.NewCashConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	deviceTokenRepo := repository.NewDeviceTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -86,7 +87,7 @@ func main() {
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, logger)
 	adminService := service.NewAdminService(tripRepo, deRepo, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
-	notificationService := service.NewNotificationService(&cfg.Firebase, deRepo, logger)
+	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, notificationService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
@@ -118,10 +119,11 @@ func main() {
 	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
 	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
 	cashDepositHandlers := handlers.NewCashDepositHandlers(cashDepositService, logger)
+	notificationHandlers := handlers.NewNotificationHandlers(notificationService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, webhookHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -233,6 +235,7 @@ func setupRouter(
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
 	cashDepositHandlers *handlers.CashDepositHandlers,
+	notificationHandlers *handlers.NotificationHandlers,
 	webhookHandlers *handlers.WebhookHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
@@ -312,6 +315,7 @@ func setupRouter(
 
 	// Customer order tracking
 	protected.HandleFunc("/orders/{orderId}/track", trackHandlers.Track).Methods("GET", "OPTIONS")
+	protected.HandleFunc("/device-token", notificationHandlers.PutDeviceToken).Methods("PUT", "OPTIONS")
 
 	// DE duty endpoints (require DE auth)
 	deProtected := api.PathPrefix("/de").Subrouter()
@@ -319,7 +323,6 @@ func setupRouter(
 	deProtected.HandleFunc("/me", deHandlers.GetMe).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/duty/start", deHandlers.StartDuty).Methods("POST", "OPTIONS")
 	deProtected.HandleFunc("/duty/end", deHandlers.EndDuty).Methods("POST", "OPTIONS")
-	deProtected.HandleFunc("/fcm-token", deHandlers.UpdateFCMToken).Methods("POST", "OPTIONS")
 	deProtected.HandleFunc("/trip", tripHandlers.GetCurrentTrip).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/referral", referralHandlers.GetReferralScreen).Methods("GET", "OPTIONS")
 	deProtected.HandleFunc("/earnings/summary", earningsHandlers.GetEarningsSummary).Methods("GET", "OPTIONS")
@@ -333,6 +336,9 @@ func setupRouter(
 	tripRoutes.HandleFunc("/{tripId}/accept", tripHandlers.AcceptTrip).Methods("POST", "OPTIONS")
 	tripRoutes.HandleFunc("/{tripId}/reject", tripHandlers.RejectTrip).Methods("POST", "OPTIONS")
 	tripRoutes.HandleFunc("/{tripId}/verify-pickup", tripHandlers.VerifyPickup).Methods("POST", "OPTIONS")
+
+	internal := router.PathPrefix("/internal/v1").Subrouter()
+	internal.HandleFunc("/notifications/send", notificationHandlers.SendNotification).Methods("POST", "OPTIONS")
 
 	return router
 }

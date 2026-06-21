@@ -304,7 +304,21 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 			// detached context so cancellation of the tick can't kill the send.
 			assignedDE := de
 			assignedTrip := trip
-			go c.notifier.NotifyOrderAssigned(context.Background(), assignedDE, assignedTrip)
+			go func() {
+				c.notifier.Send(context.Background(), models.NotificationSendRequest{
+					RecipientType: models.RecipientTypeDriver,
+					RecipientID:   assignedDE.DEID,
+					EventType:     "ORDER_ASSIGNED",
+					Priority:      models.PriorityCritical,
+					Title:         "New order!",
+					Body:          "Tap to view your trip.",
+					Data: map[string]string{
+						"trip_id":         assignedTrip.TripID,
+						"order_id":        assignedTrip.OrderID,
+						"accept_deadline": assignedTrip.AcceptDeadline,
+					},
+				})
+			}()
 			break
 		}
 	}

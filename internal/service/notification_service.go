@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
+	"strings"
 
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/messaging"
@@ -13,83 +16,69 @@ import (
 	"google.golang.org/api/option"
 )
 
-// assignmentChannelID must match driver-app orderChannel.ts and firebase.json.
-// Bumped v2 → v3: v2 was created silent on some devices and Android locks channel
-// sound settings to the id, so a new id is required to deliver the alarm sound.
-const assignmentChannelID = "order-alert-v3"
+var (
+	ErrInvalidNotificationRequest = errors.New("invalid notification request")
+	ErrUnsupportedRecipientType   = errors.New("unsupported recipient type")
+)
 
-// assignmentSound is the bare resource name (no extension) of the channel sound.
-const assignmentSound = "order_alarm"
+// driverChannelID must match driver-app orderChannel.ts (importance only; no custom sound).
+const driverChannelID = "order-alert-v3"
 
-// NotificationService delivers driver-facing push notifications. Implementations
-// must be safe to call from a goroutine and must never panic on bad input.
-type NotificationService interface {
-	NotifyOrderAssigned(ctx context.Context, de *models.DeliveryExecutive, trip *models.Trip)
+var eventMinPriority = map[string]models.NotificationPriority{
+	"ORDER_ASSIGNED": models.PriorityCritical,
 }
 
-// buildAssignmentMessage constructs the FCM message for an order assignment.
-// Hybrid payload: OS tray notification (sound + vibration, no loop) via
-// order-alert channel when backgrounded/killed/locked; data fields for the app.
-// Foreground tray is shown locally; looping bell starts when the driver opens the app
-// or taps the notification.
-func buildAssignmentMessage(token string, trip *models.Trip) *messaging.Message {
-	return &messaging.Message{
-		Token: token,
-		Data: map[string]string{
-			"type":            "ORDER_ASSIGNED",
-			"trip_id":         trip.TripID,
-			"order_id":        trip.OrderID,
-			"accept_deadline": trip.AcceptDeadline,
-		},
-		Notification: &messaging.Notification{
-			Title: "New order!",
-			Body:  "Tap to view your trip.",
-		},
-		Android: &messaging.AndroidConfig{
-			Priority: "high",
-			Notification: &messaging.AndroidNotification{
-				ChannelID: assignmentChannelID,
-				Sound:     assignmentSound,
-				Tag:       trip.TripID,
-				Priority:  messaging.PriorityHigh,
-			},
-		},
-		APNS: &messaging.APNSConfig{
-			Headers: map[string]string{
-				"apns-priority":    "10",
-				"apns-collapse-id": trip.TripID,
-			},
-			Payload: &messaging.APNSPayload{
-				Aps: &messaging.Aps{
-					Alert: &messaging.ApsAlert{
-						Title: "New order!",
-						Body:  "Tap to view your trip.",
-					},
-					Sound: assignmentSound + ".wav",
-				},
-			},
-		},
+// NotificationService is the central FCM sender and token store owner.
+type NotificationService interface {
+	Send(ctx context.Context, req models.NotificationSendRequest) models.NotificationSendResult
+	UpsertDeviceToken(ctx context.Context, recipientType models.RecipientType, recipientID, token, platform string) error
+	ClearDeviceToken(ctx context.Context, recipientType models.RecipientType, recipientID string) error
+}
+
+// RecipientTypeFromJWT maps JWT entity_type to notification recipient_type.
+func RecipientTypeFromJWT(entityType string) (models.RecipientType, error) {
+	switch entityType {
+	case "customer":
+		return models.RecipientTypeCustomer, nil
+	case "de":
+		return models.RecipientTypeDriver, nil
+	default:
+		return "", fmt.Errorf("%w: %q", ErrUnsupportedRecipientType, entityType)
 	}
 }
 
 type fcmNotificationService struct {
-	client *messaging.Client
-	deRepo *repository.DERepository
-	logger *logrus.Logger
+	client    *messaging.Client
+	tokenRepo *repository.DeviceTokenRepository
+	logger    *logrus.Logger
 }
 
 type noopNotificationService struct {
 	logger *logrus.Logger
 }
 
-func (n *noopNotificationService) NotifyOrderAssigned(_ context.Context, de *models.DeliveryExecutive, trip *models.Trip) {
-	n.logger.WithFields(logrus.Fields{"de_id": de.DEID, "trip_id": trip.TripID}).
-		Debug("notification service disabled — skipping ORDER_ASSIGNED push")
+func (n *noopNotificationService) Send(_ context.Context, req models.NotificationSendRequest) models.NotificationSendResult {
+	n.logger.WithFields(logrus.Fields{
+		"recipient_type": req.RecipientType,
+		"recipient_id":   req.RecipientID,
+		"event_type":     req.EventType,
+	}).Debug("notification service disabled — skipping push")
+	return models.NotificationSendResult{Status: models.SendStatusSkipped, Reason: "push_disabled"}
+}
+
+func (n *noopNotificationService) UpsertDeviceToken(_ context.Context, _ models.RecipientType, _, _, _ string) error {
+	n.logger.Debug("notification service disabled — skipping token upsert")
+	return nil
+}
+
+func (n *noopNotificationService) ClearDeviceToken(_ context.Context, _ models.RecipientType, _ string) error {
+	n.logger.Debug("notification service disabled — skipping token clear")
+	return nil
 }
 
 // NewNotificationService builds the live FCM service when credentials are present
 // and valid; otherwise it logs and returns a no-op so the server still boots.
-func NewNotificationService(cfg *config.FirebaseConfig, deRepo *repository.DERepository, logger *logrus.Logger) NotificationService {
+func NewNotificationService(cfg *config.FirebaseConfig, tokenRepo *repository.DeviceTokenRepository, logger *logrus.Logger) NotificationService {
 	if cfg.CredentialsB64 == "" {
 		logger.Warn("notification service: FIREBASE_CREDENTIALS_B64 not set — push disabled (no-op)")
 		return &noopNotificationService{logger: logger}
@@ -110,32 +99,158 @@ func NewNotificationService(cfg *config.FirebaseConfig, deRepo *repository.DERep
 		return &noopNotificationService{logger: logger}
 	}
 	logger.Info("notification service: FCM enabled")
-	return &fcmNotificationService{client: client, deRepo: deRepo, logger: logger}
+	return &fcmNotificationService{client: client, tokenRepo: tokenRepo, logger: logger}
 }
 
-func (s *fcmNotificationService) NotifyOrderAssigned(ctx context.Context, de *models.DeliveryExecutive, trip *models.Trip) {
-	if de.FCMToken == "" {
-		s.logger.WithField("de_id", de.DEID).Debug("ORDER_ASSIGNED push skipped — DE has no fcm_token")
-		return
+func (s *fcmNotificationService) UpsertDeviceToken(ctx context.Context, recipientType models.RecipientType, recipientID, token, platform string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return s.tokenRepo.Delete(ctx, recipientType, recipientID)
 	}
-	msg := buildAssignmentMessage(de.FCMToken, trip)
+	return s.tokenRepo.Upsert(ctx, recipientType, recipientID, token, platform)
+}
+
+func (s *fcmNotificationService) ClearDeviceToken(ctx context.Context, recipientType models.RecipientType, recipientID string) error {
+	return s.tokenRepo.Delete(ctx, recipientType, recipientID)
+}
+
+func (s *fcmNotificationService) Send(ctx context.Context, req models.NotificationSendRequest) models.NotificationSendResult {
+	if err := validateSendRequest(req); err != nil {
+		s.logger.WithError(err).Warn("notification send rejected")
+		return models.NotificationSendResult{Status: models.SendStatusSkipped, Reason: err.Error()}
+	}
+
+	record, err := s.tokenRepo.Get(ctx, req.RecipientType, req.RecipientID)
+	if err != nil {
+		s.logger.WithError(err).WithField("recipient_id", req.RecipientID).Warn("device token lookup failed")
+		return models.NotificationSendResult{Status: models.SendStatusSkipped, Reason: "token_lookup_failed"}
+	}
+	if record == nil || record.FCMToken == "" {
+		s.logger.WithFields(logrus.Fields{
+			"recipient_type": req.RecipientType,
+			"recipient_id":   req.RecipientID,
+			"event_type":     req.EventType,
+		}).Debug("push skipped — no device token registered")
+		return models.NotificationSendResult{Status: models.SendStatusSkipped, Reason: "no_token"}
+	}
+
+	msg := buildFCMMessage(record.FCMToken, req)
 	id, err := s.client.Send(ctx, msg)
 	if err != nil {
-		s.handleSendError(ctx, de, err)
-		return
+		s.handleSendError(ctx, req.RecipientType, req.RecipientID, err)
+		return models.NotificationSendResult{Status: models.SendStatusSkipped, Reason: "send_failed"}
 	}
-	s.logger.WithFields(logrus.Fields{"de_id": de.DEID, "trip_id": trip.TripID, "message_id": id}).
-		Info("ORDER_ASSIGNED push sent")
+
+	s.logger.WithFields(logrus.Fields{
+		"recipient_type": req.RecipientType,
+		"recipient_id":   req.RecipientID,
+		"event_type":     req.EventType,
+		"message_id":     id,
+	}).Info("push notification sent")
+	return models.NotificationSendResult{Status: models.SendStatusSent, MessageID: id}
 }
 
-// handleSendError clears the stored token when FCM says it is permanently invalid.
-func (s *fcmNotificationService) handleSendError(ctx context.Context, de *models.DeliveryExecutive, err error) {
+func validateSendRequest(req models.NotificationSendRequest) error {
+	if req.RecipientID == "" || req.EventType == "" {
+		return fmt.Errorf("%w: recipient_id and event_type are required", ErrInvalidNotificationRequest)
+	}
+	if strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Body) == "" {
+		return fmt.Errorf("%w: title and body are required", ErrInvalidNotificationRequest)
+	}
+	switch req.RecipientType {
+	case models.RecipientTypeDriver, models.RecipientTypeCustomer, models.RecipientTypePicker:
+	default:
+		return fmt.Errorf("%w: invalid recipient_type %q", ErrInvalidNotificationRequest, req.RecipientType)
+	}
+	if !isValidPriority(req.Priority) {
+		return fmt.Errorf("%w: invalid priority %q", ErrInvalidNotificationRequest, req.Priority)
+	}
+	if min, ok := eventMinPriority[req.EventType]; ok && priorityRank(req.Priority) < priorityRank(min) {
+		return fmt.Errorf("%w: event %s requires minimum priority %s", ErrInvalidNotificationRequest, req.EventType, min)
+	}
+	return nil
+}
+
+func isValidPriority(p models.NotificationPriority) bool {
+	switch p {
+	case models.PriorityCritical, models.PriorityHigh, models.PriorityNormal:
+		return true
+	default:
+		return false
+	}
+}
+
+func priorityRank(p models.NotificationPriority) int {
+	switch p {
+	case models.PriorityCritical:
+		return 3
+	case models.PriorityHigh:
+		return 2
+	case models.PriorityNormal:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func buildFCMMessage(token string, req models.NotificationSendRequest) *messaging.Message {
+	data := map[string]string{"type": req.EventType}
+	for k, v := range req.Data {
+		data[k] = v
+	}
+
+	highTransport := req.Priority == models.PriorityCritical || req.Priority == models.PriorityHigh
+
+	msg := &messaging.Message{
+		Token: token,
+		Data:  data,
+		Notification: &messaging.Notification{
+			Title: req.Title,
+			Body:  req.Body,
+		},
+	}
+
+	if highTransport {
+		msg.Android = &messaging.AndroidConfig{Priority: "high"}
+		if req.RecipientType == models.RecipientTypeDriver {
+			msg.Android.Notification = &messaging.AndroidNotification{
+				ChannelID: driverChannelID,
+				Priority:  messaging.PriorityHigh,
+				Tag:       data["trip_id"],
+			}
+		} else {
+			msg.Android.Notification = &messaging.AndroidNotification{
+				Priority: messaging.PriorityHigh,
+			}
+		}
+		msg.APNS = &messaging.APNSConfig{
+			Headers: map[string]string{"apns-priority": "10"},
+			Payload: &messaging.APNSPayload{
+				Aps: &messaging.Aps{
+					Alert: &messaging.ApsAlert{Title: req.Title, Body: req.Body},
+				},
+			},
+		}
+		if tripID := data["trip_id"]; tripID != "" {
+			msg.APNS.Headers["apns-collapse-id"] = tripID
+		}
+	} else {
+		msg.Android = &messaging.AndroidConfig{Priority: "normal"}
+	}
+
+	return msg
+}
+
+func (s *fcmNotificationService) handleSendError(ctx context.Context, recipientType models.RecipientType, recipientID string, err error) {
 	if messaging.IsUnregistered(err) || messaging.IsInvalidArgument(err) {
-		s.logger.WithField("de_id", de.DEID).Info("FCM token invalid — clearing fcm_token")
-		if cerr := s.deRepo.ClearFCMToken(ctx, de.PhoneNumber); cerr != nil {
-			s.logger.WithError(cerr).Warn("failed to clear invalid fcm_token")
+		s.logger.WithFields(logrus.Fields{
+			"recipient_type": recipientType,
+			"recipient_id":   recipientID,
+		}).Info("FCM token invalid — clearing device token")
+		if cerr := s.tokenRepo.Delete(ctx, recipientType, recipientID); cerr != nil {
+			s.logger.WithError(cerr).Warn("failed to clear invalid device token")
 		}
 		return
 	}
-	s.logger.WithError(err).WithField("de_id", de.DEID).Warn("ORDER_ASSIGNED push failed")
+	s.logger.WithError(err).WithField("recipient_id", recipientID).Warn("push notification failed")
 }

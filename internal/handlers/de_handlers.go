@@ -224,31 +224,6 @@ func (h *DEHandlers) EndDuty(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /api/v1/de/fcm-token
-func (h *DEHandlers) UpdateFCMToken(w http.ResponseWriter, r *http.Request) {
-	phone, _ := r.Context().Value("phone").(string)
-	if phone == "" {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing identity")
-		return
-	}
-
-	var req struct {
-		FCMToken string `json:"fcm_token"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
-		return
-	}
-
-	if err := h.deService.UpdateFCMToken(r.Context(), phone, strings.TrimSpace(req.FCMToken)); err != nil {
-		h.logger.WithError(err).Error("failed to update fcm token")
-		h.respondWithError(w, http.StatusInternalServerError, "FCM_TOKEN_UPDATE_FAILED", "Failed to update token")
-		return
-	}
-
-	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
 func (h *DEHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
