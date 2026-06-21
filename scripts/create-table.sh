@@ -136,7 +136,8 @@ create_gsi "OrderIndex" \
 # DisputeOrderIndex — dispute lookup by order (sparse: only dispute items set dispute_order_id)
 create_gsi "DisputeOrderIndex" \
   '[{"Create":{"IndexName":"DisputeOrderIndex","KeySchema":[{"AttributeName":"dispute_order_id","KeyType":"HASH"},{"AttributeName":"created_at","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]' \
-  "AttributeName=dispute_order_id,AttributeType=S"
+  "AttributeName=dispute_order_id,AttributeType=S" \
+  "AttributeName=created_at,AttributeType=S"
 
 # DETripsIndex — DE earnings / payout queries
 create_gsi "DETripsIndex" \

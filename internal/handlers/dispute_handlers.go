@@ -80,7 +80,11 @@ func (h *DisputeHandlers) CreateDispute(w http.ResponseWriter, r *http.Request) 
 		if status >= 500 {
 			h.logger.WithError(err).Error("create dispute failed")
 		}
-		h.respondWithError(w, status, code, err.Error())
+		msg := err.Error()
+		if status >= 500 {
+			msg = "Something went wrong, please try again"
+		}
+		h.respondWithError(w, status, code, msg)
 		return
 	}
 	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{"dispute": toDisputeDTO(d)})
@@ -95,7 +99,11 @@ func (h *DisputeHandlers) GetDispute(w http.ResponseWriter, r *http.Request) {
 	d, err := h.disputeService.GetDispute(r.Context(), customerID, id)
 	if err != nil {
 		status, code := classifyDisputeError(err)
-		h.respondWithError(w, status, code, err.Error())
+		msg := err.Error()
+		if status >= 500 {
+			msg = "Something went wrong, please try again"
+		}
+		h.respondWithError(w, status, code, msg)
 		return
 	}
 	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": toDisputeDTO(d)})
@@ -114,7 +122,11 @@ func (h *DisputeHandlers) GetDisputeByOrder(w http.ResponseWriter, r *http.Reque
 	d, err := h.disputeService.GetDisputeByOrder(r.Context(), customerID, orderID)
 	if err != nil {
 		status, code := classifyDisputeError(err)
-		h.respondWithError(w, status, code, err.Error())
+		msg := err.Error()
+		if status >= 500 {
+			msg = "Something went wrong, please try again"
+		}
+		h.respondWithError(w, status, code, msg)
 		return
 	}
 	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": toDisputeDTO(d)})

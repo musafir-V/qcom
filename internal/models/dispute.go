@@ -25,7 +25,7 @@ const (
 // Dispute is a customer-raised, order-bound complaint.
 type Dispute struct {
 	DisputeID       string        `json:"dispute_id" dynamodbav:"dispute_id"`
-	OrderID         string        `json:"order_id" dynamodbav:"order_id"`
+	OrderID         string        `json:"order_id" dynamodbav:"order_ref"`
 	// DisputeOrderID is the sparse-GSI (DisputeOrderIndex) hash key; equals OrderID.
 	// It is a dispute-only attribute so trip items never appear in the index.
 	DisputeOrderID  string        `json:"-" dynamodbav:"dispute_order_id"`
@@ -42,8 +42,8 @@ type Dispute struct {
 func (d *Dispute) GetPK() string { return "DISPUTE!" + d.DisputeID }
 func (d *Dispute) GetSK() string { return "METADATA" }
 
-// DisputeOpenGuardPK is the PK of the uniqueness-guard item that enforces
-// one open dispute per order.
+// DisputeOpenGuardPK is the PK of the uniqueness-guard item that enforces at most
+// one dispute per order in v1; the guard is not cleared until admin tooling lands.
 func DisputeOpenGuardPK(orderID string) string { return "DISPUTEOPEN!" + orderID }
 
 // DisputeDisposition is a predefined, backend-controlled dispute reason.

@@ -32,7 +32,9 @@ func buildOpenGuardKey(orderID string) (string, string) {
 }
 
 // Create writes the dispute item and an open-guard item atomically. The guard's
-// attribute_not_exists(PK) condition enforces one open dispute per order.
+// attribute_not_exists(PK) condition enforces at most one dispute per order in v1;
+// the guard is never cleared until admin tooling lands, so this is effectively a
+// permanent per-order cap until an admin manually removes the guard item.
 func (r *DisputeRepository) Create(ctx context.Context, d *models.Dispute) error {
 	d.DisputeOrderID = d.OrderID
 

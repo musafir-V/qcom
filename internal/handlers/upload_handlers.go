@@ -69,7 +69,11 @@ func (h *UploadHandlers) generate(w http.ResponseWriter, r *http.Request, forced
 	if err != nil {
 		status, code := classifyUploadError(err)
 		h.logger.WithError(err).WithField("use_case", useCase).Warn("upload presign failed")
-		h.respondWithError(w, status, code, err.Error())
+		msg := err.Error()
+		if status >= 500 {
+			msg = "Something went wrong, please try again"
+		}
+		h.respondWithError(w, status, code, msg)
 		return
 	}
 
