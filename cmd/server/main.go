@@ -128,8 +128,18 @@ func main() {
 	notificationHandlers := handlers.NewNotificationHandlers(notificationService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)
 
+	disputeRepo := repository.NewDisputeRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	dispositionRepo := repository.NewDisputeDispositionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	disputeNotifier := service.NewLoggingDisputeNotifier(logger)
+	disputeService := service.NewDisputeService(
+		disputeRepo, dispositionRepo, javaOrderClient, disputeNotifier,
+		[]string{"DELIVERED"}, // TODO(Task 8): replace with cfg.Dispute.EligibleOrderStatuses
+		logger,
+	)
+	disputeHandlers := handlers.NewDisputeHandlers(disputeService, logger)
+
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -243,6 +253,7 @@ func setupRouter(
 	cashDepositHandlers *handlers.CashDepositHandlers,
 	notificationHandlers *handlers.NotificationHandlers,
 	webhookHandlers *handlers.WebhookHandlers,
+	disputeHandlers *handlers.DisputeHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -346,6 +357,16 @@ func setupRouter(
 
 	internal := router.PathPrefix("/internal/v1").Subrouter()
 	internal.HandleFunc("/notifications/send", notificationHandlers.SendNotification).Methods("POST", "OPTIONS")
+
+	// Customer dispute endpoints (require customer auth).
+	// Static routes (/dispositions, /by-order) registered before parameterised /{id}
+	// so gorilla/mux match order does not shadow them.
+	customer := api.PathPrefix("/").Subrouter()
+	customer.Use(authMiddleware.RequireCustomerAuth)
+	customer.HandleFunc("/disputes/dispositions", disputeHandlers.ListDispositions).Methods("GET", "OPTIONS")
+	customer.HandleFunc("/disputes", disputeHandlers.CreateDispute).Methods("POST", "OPTIONS")
+	customer.HandleFunc("/disputes/by-order", disputeHandlers.GetDisputeByOrder).Methods("GET", "OPTIONS")
+	customer.HandleFunc("/disputes/{id}", disputeHandlers.GetDispute).Methods("GET", "OPTIONS")
 
 	return router
 }

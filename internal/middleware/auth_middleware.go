@@ -93,6 +93,18 @@ func (m *AuthMiddleware) RequireDEAuth(next http.Handler) http.Handler {
 	}))
 }
 
+// RequireCustomerAuth requires a valid token whose entity_type is "customer".
+func (m *AuthMiddleware) RequireCustomerAuth(next http.Handler) http.Handler {
+	return m.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entityType, _ := r.Context().Value("entity_type").(string)
+		if entityType != "customer" {
+			m.respondForbidden(w, "This endpoint requires customer authentication")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
 func (m *AuthMiddleware) respondUnauthorized(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
