@@ -198,13 +198,17 @@ func TestAnswerWebhookRejectsOverCap(t *testing.T) {
 }
 
 func TestEventWebhookRejectsBadSignature(t *testing.T) {
-	h := newTestVoiceHandlers(t, withSignatureSecret("sek"))
+	store := &fakeCallStore{}
+	h := newTestVoiceHandlers(t, withSignatureSecret("sek"), withCallStore(store))
 	req := httptest.NewRequest("POST", "/webhooks/voice/event", strings.NewReader(`{}`))
 	// no Authorization header
 	rr := httptest.NewRecorder()
 	h.EventWebhook(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if len(store.upserts) != 0 {
+		t.Fatalf("expected no upserts on auth failure, got %d", len(store.upserts))
 	}
 }
 
