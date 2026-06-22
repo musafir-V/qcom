@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/qcom/qcom/internal/models"
 )
@@ -174,6 +175,151 @@ func TestEvaluateAccumulator_B2AndB3Independent(t *testing.T) {
 	}
 }
 
+func TestEvaluateRanking_WeeklyTopNByScore(t *testing.T) {
+	spec := models.RankingSpec{
+		Window:       "weekly",
+		TopN:         3,
+		MinOnTime:    2,
+		WeightRate:   0.5,
+		WeightVolume: 0.5,
+		Reward: models.Reward{
+			Kind:      "in_kind",
+			AmountZMW: 0,
+			Label:     "Weekly Gift",
+			SKU:       "weekly_gift",
+		},
+	}
+
+	perDE := map[string][]*models.Trip{
+		"de-a": makeOnTimeTrips(10, "2026-06-16T08:00:00+02:00"),
+		"de-b": makeOnTimeTrips(9, "2026-06-16T08:00:00+02:00"),
+		"de-c": makeOnTimeTrips(8, "2026-06-16T08:00:00+02:00"),
+		"de-d": makeOnTimeTrips(7, "2026-06-16T08:00:00+02:00"),
+	}
+
+	got := EvaluateRanking(spec, "2026-W26", perDE)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	assertContainsDEs(t, got, []string{"de-a", "de-b", "de-c"})
+	for _, entry := range got {
+		if entry.Type != models.EarningTypeWeeklyGift {
+			t.Fatalf("Type = %q, want %q", entry.Type, models.EarningTypeWeeklyGift)
+		}
+		if entry.AmountZMW != 0 {
+			t.Fatalf("AmountZMW = %.2f, want 0", entry.AmountZMW)
+		}
+		if entry.Label != "Weekly Gift" {
+			t.Fatalf("Label = %q, want Weekly Gift", entry.Label)
+		}
+		if entry.ReferenceID != "2026-W26" {
+			t.Fatalf("ReferenceID = %q, want 2026-W26", entry.ReferenceID)
+		}
+	}
+}
+
+func TestEvaluateRanking_ExcludesBelowMinOnTimeFloor(t *testing.T) {
+	spec := models.RankingSpec{
+		Window:       "weekly",
+		TopN:         3,
+		MinOnTime:    5,
+		WeightRate:   0.5,
+		WeightVolume: 0.5,
+		Reward: models.Reward{
+			Kind:      "in_kind",
+			AmountZMW: 0,
+			Label:     "Weekly Gift",
+			SKU:       "weekly_gift",
+		},
+	}
+	perDE := map[string][]*models.Trip{
+		"eligible": makeOnTimeTrips(5, "2026-06-16T08:00:00+02:00"),
+		"low":      makeOnTimeTrips(4, "2026-06-16T08:00:00+02:00"),
+	}
+
+	got := EvaluateRanking(spec, "2026-W26", perDE)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].DEID != "eligible" {
+		t.Fatalf("winner = %q, want eligible", got[0].DEID)
+	}
+}
+
+func TestEvaluateRanking_TieBreakByOnTimeCountAtBoundary(t *testing.T) {
+	spec := models.RankingSpec{
+		Window:       "weekly",
+		TopN:         3,
+		MinOnTime:    1,
+		WeightRate:   1,
+		WeightVolume: 0,
+		Reward: models.Reward{
+			Kind:      "in_kind",
+			AmountZMW: 0,
+			Label:     "Weekly Gift",
+			SKU:       "weekly_gift",
+		},
+	}
+
+	perDE := map[string][]*models.Trip{
+		"de-10": makeOnTimeTrips(10, "2026-06-16T08:00:00+02:00"),
+		"de-9":  makeOnTimeTrips(9, "2026-06-16T08:00:00+02:00"),
+		"de-8":  makeOnTimeTrips(8, "2026-06-16T08:00:00+02:00"),
+		"de-7":  makeOnTimeTrips(7, "2026-06-16T08:00:00+02:00"),
+	}
+
+	got := EvaluateRanking(spec, "2026-W26", perDE)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	assertContainsDEs(t, got, []string{"de-10", "de-9", "de-8"})
+	for _, entry := range got {
+		if entry.DEID == "de-7" {
+			t.Fatalf("de-7 should lose tie-break to higher on-time count")
+		}
+	}
+}
+
+func TestEvaluateRanking_TieBreakByEarliestReachThenDEID(t *testing.T) {
+	spec := models.RankingSpec{
+		Window:       "weekly",
+		TopN:         1,
+		MinOnTime:    1,
+		WeightRate:   0.5,
+		WeightVolume: 0.5,
+		Reward: models.Reward{
+			Kind:      "in_kind",
+			AmountZMW: 0,
+			Label:     "Weekly Gift",
+			SKU:       "weekly_gift",
+		},
+	}
+
+	early := makeOnTimeTrips(8, "2026-06-16T08:00:00+02:00")
+	late := makeOnTimeTrips(8, "2026-06-16T09:00:00+02:00")
+	perDE := map[string][]*models.Trip{
+		"de-early": early,
+		"de-late":  late,
+	}
+	got := EvaluateRanking(spec, "2026-W26", perDE)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].DEID != "de-early" {
+		t.Fatalf("winner = %q, want de-early", got[0].DEID)
+	}
+
+	// Equal score, equal on-time count, equal reach time => deterministic by DEID.
+	perDE = map[string][]*models.Trip{
+		"de-a": makeOnTimeTrips(8, "2026-06-16T08:00:00+02:00"),
+		"de-b": makeOnTimeTrips(8, "2026-06-16T08:00:00+02:00"),
+	}
+	got = EvaluateRanking(spec, "2026-W26", perDE)
+	if got[0].DEID != "de-a" {
+		t.Fatalf("winner = %q, want de-a for deterministic DEID tie-break", got[0].DEID)
+	}
+}
+
 func completedTrip(onTime bool, completedAt string) *models.Trip {
 	return &models.Trip{
 		Status:      models.TripStatusCompleted,
@@ -187,4 +333,34 @@ func cancelledTrip(cancelledAt string) *models.Trip {
 		Status:      models.TripStatusCancelled,
 		CancelledAt: cancelledAt,
 	}
+}
+
+func makeOnTimeTrips(n int, firstCompletedAt string) []*models.Trip {
+	out := make([]*models.Trip, 0, n)
+	base := mustParseRFC3339(firstCompletedAt)
+	for i := 0; i < n; i++ {
+		out = append(out, completedTrip(true, base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339)))
+	}
+	return out
+}
+
+func assertContainsDEs(t *testing.T, entries []*models.EarningsLedger, want []string) {
+	t.Helper()
+	have := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		have[e.DEID] = true
+	}
+	for _, id := range want {
+		if !have[id] {
+			t.Fatalf("missing winner %q in %+v", id, entries)
+		}
+	}
+}
+
+func mustParseRFC3339(v string) time.Time {
+	parsed, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
 }
