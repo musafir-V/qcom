@@ -27,8 +27,8 @@ func NewDisputeRepository(client *dynamodb.Client, tableName string, logger *log
 	return &DisputeRepository{client: client, tableName: tableName, logger: logger}
 }
 
-func buildOpenGuardKey(orderID string) (string, string) {
-	return models.DisputeOpenGuardPK(orderID), "METADATA"
+func buildOpenGuardKey(orderNumber string) (string, string) {
+	return models.DisputeOpenGuardPK(orderNumber), "METADATA"
 }
 
 // Create writes the dispute item and an open-guard item atomically. The guard's
@@ -36,7 +36,7 @@ func buildOpenGuardKey(orderID string) (string, string) {
 // the guard is never cleared until admin tooling lands, so this is effectively a
 // permanent per-order cap until an admin manually removes the guard item.
 func (r *DisputeRepository) Create(ctx context.Context, d *models.Dispute) error {
-	d.DisputeOrderID = d.OrderID
+	d.DisputeOrderNumber = d.OrderNumber
 
 	item, err := attributevalue.MarshalMap(d)
 	if err != nil {
@@ -45,7 +45,7 @@ func (r *DisputeRepository) Create(ctx context.Context, d *models.Dispute) error
 	item["PK"] = &types.AttributeValueMemberS{Value: d.GetPK()}
 	item["SK"] = &types.AttributeValueMemberS{Value: d.GetSK()}
 
-	guardPK, guardSK := buildOpenGuardKey(d.OrderID)
+	guardPK, guardSK := buildOpenGuardKey(d.OrderNumber)
 
 	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
@@ -100,15 +100,15 @@ func (r *DisputeRepository) GetByID(ctx context.Context, id string) (*models.Dis
 	return &d, nil
 }
 
-// GetLatestByOrderID returns the most recent dispute for an order via the sparse
+// GetLatestByOrderNumber returns the most recent dispute for an order via the sparse
 // DisputeOrderIndex GSI, or (nil, nil) if none exist.
-func (r *DisputeRepository) GetLatestByOrderID(ctx context.Context, orderID string) (*models.Dispute, error) {
+func (r *DisputeRepository) GetLatestByOrderNumber(ctx context.Context, orderNumber string) (*models.Dispute, error) {
 	out, err := r.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
 		IndexName:              aws.String("DisputeOrderIndex"),
-		KeyConditionExpression: aws.String("dispute_order_id = :oid"),
+		KeyConditionExpression: aws.String("dispute_order_number = :onum"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":oid": &types.AttributeValueMemberS{Value: orderID},
+			":onum": &types.AttributeValueMemberS{Value: orderNumber},
 		},
 		ScanIndexForward: aws.Bool(false), // newest first
 		Limit:            aws.Int32(1),

@@ -31,7 +31,7 @@ type dispositionDTO struct {
 }
 
 type createDisputeRequest struct {
-	OrderID         string   `json:"order_id"`
+	OrderNumber     string   `json:"order_number"`
 	DispositionCode string   `json:"disposition_code"`
 	Description     string   `json:"description"`
 	PhotoKeys       []string `json:"photo_keys"`
@@ -64,13 +64,13 @@ func (h *DisputeHandlers) CreateDispute(w http.ResponseWriter, r *http.Request) 
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
 		return
 	}
-	if req.OrderID == "" || req.DispositionCode == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id and disposition_code are required")
+	if req.OrderNumber == "" || req.DispositionCode == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_number and disposition_code are required")
 		return
 	}
 	d, err := h.disputeService.CreateDispute(r.Context(), service.CreateDisputeInput{
 		CustomerID:      customerID,
-		OrderID:         req.OrderID,
+		OrderNumber:     req.OrderNumber,
 		DispositionCode: req.DispositionCode,
 		Description:     req.Description,
 		PhotoKeys:       req.PhotoKeys,
@@ -114,12 +114,12 @@ func (h *DisputeHandlers) GetDisputeByOrder(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	orderID := r.URL.Query().Get("order_id")
-	if orderID == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id query param is required")
+	orderNumber := r.URL.Query().Get("order_number")
+	if orderNumber == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_number query param is required")
 		return
 	}
-	d, err := h.disputeService.GetDisputeByOrder(r.Context(), customerID, orderID)
+	d, err := h.disputeService.GetDisputeByOrder(r.Context(), customerID, orderNumber)
 	if err != nil {
 		status, code := classifyDisputeError(err)
 		msg := err.Error()
@@ -134,7 +134,7 @@ func (h *DisputeHandlers) GetDisputeByOrder(w http.ResponseWriter, r *http.Reque
 
 type disputeDTO struct {
 	DisputeID       string   `json:"dispute_id"`
-	OrderID         string   `json:"order_id"`
+	OrderNumber     string   `json:"order_number"`
 	DispositionCode string   `json:"disposition_code"`
 	Description     string   `json:"description,omitempty"`
 	PhotoKeys       []string `json:"photo_keys,omitempty"`
@@ -146,7 +146,7 @@ type disputeDTO struct {
 
 func toDisputeDTO(d *models.Dispute) disputeDTO {
 	return disputeDTO{
-		DisputeID: d.DisputeID, OrderID: d.OrderID, DispositionCode: d.DispositionCode,
+		DisputeID: d.DisputeID, OrderNumber: d.OrderNumber, DispositionCode: d.DispositionCode,
 		Description: d.Description, PhotoKeys: d.PhotoKeys, Status: string(d.Status),
 		ResolutionNote: d.ResolutionNote, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}

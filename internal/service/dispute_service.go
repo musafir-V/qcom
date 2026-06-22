@@ -36,7 +36,7 @@ var (
 type disputeStore interface {
 	Create(ctx context.Context, d *models.Dispute) error
 	GetByID(ctx context.Context, id string) (*models.Dispute, error)
-	GetLatestByOrderID(ctx context.Context, orderID string) (*models.Dispute, error)
+	GetLatestByOrderNumber(ctx context.Context, orderNumber string) (*models.Dispute, error)
 }
 
 type dispositionStore interface {
@@ -76,7 +76,7 @@ func NewDisputeService(disputes disputeStore, dispositions dispositionStore, ord
 
 type CreateDisputeInput struct {
 	CustomerID      string
-	OrderID         string
+	OrderNumber     string
 	DispositionCode string
 	Description     string
 	PhotoKeys       []string
@@ -87,8 +87,9 @@ func (s *DisputeService) ListDispositions(ctx context.Context) ([]models.Dispute
 }
 
 func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInput) (*models.Dispute, error) {
-	// 1. Validate order ownership.
-	target, err := s.orders.GetNotificationTarget(ctx, in.OrderID)
+	// 1. Validate order ownership. The order-service accepts the orderNumber
+	// (e.g. ORD1162844363) directly in its /orders/{id} and notification-target paths.
+	target, err := s.orders.GetNotificationTarget(ctx, in.OrderNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate order: %w", err)
 	}
@@ -100,7 +101,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 	}
 
 	// 2. Validate order status eligibility.
-	status, err := s.orders.GetOrderStatus(ctx, in.OrderID)
+	status, err := s.orders.GetOrderStatus(ctx, in.OrderNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch order status: %w", err)
 	}
@@ -156,7 +157,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 	now := time.Now().UTC().Format(time.RFC3339)
 	d := &models.Dispute{
 		DisputeID:       uuid.New().String(),
-		OrderID:         in.OrderID,
+		OrderNumber:     in.OrderNumber,
 		CustomerID:      in.CustomerID,
 		DispositionCode: in.DispositionCode,
 		Description:     desc,
@@ -191,8 +192,8 @@ func (s *DisputeService) GetDispute(ctx context.Context, customerID, disputeID s
 	return d, nil
 }
 
-func (s *DisputeService) GetDisputeByOrder(ctx context.Context, customerID, orderID string) (*models.Dispute, error) {
-	d, err := s.disputes.GetLatestByOrderID(ctx, orderID)
+func (s *DisputeService) GetDisputeByOrder(ctx context.Context, customerID, orderNumber string) (*models.Dispute, error) {
+	d, err := s.disputes.GetLatestByOrderNumber(ctx, orderNumber)
 	if err != nil {
 		return nil, err
 	}

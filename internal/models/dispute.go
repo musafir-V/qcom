@@ -24,19 +24,19 @@ const (
 
 // Dispute is a customer-raised, order-bound complaint.
 type Dispute struct {
-	DisputeID       string        `json:"dispute_id" dynamodbav:"dispute_id"`
-	OrderID         string        `json:"order_id" dynamodbav:"order_ref"`
-	// DisputeOrderID is the sparse-GSI (DisputeOrderIndex) hash key; equals OrderID.
+	DisputeID   string `json:"dispute_id" dynamodbav:"dispute_id"`
+	OrderNumber string `json:"order_number" dynamodbav:"order_number"`
+	// DisputeOrderNumber is the sparse-GSI (DisputeOrderIndex) hash key; equals OrderNumber.
 	// It is a dispute-only attribute so trip items never appear in the index.
-	DisputeOrderID  string        `json:"-" dynamodbav:"dispute_order_id"`
-	CustomerID      string        `json:"customer_id" dynamodbav:"customer_id"`
-	DispositionCode string        `json:"disposition_code" dynamodbav:"disposition_code"`
-	Description     string        `json:"description,omitempty" dynamodbav:"description,omitempty"`
-	PhotoKeys       []string      `json:"photo_keys,omitempty" dynamodbav:"photo_keys,omitempty"`
-	Status          DisputeStatus `json:"status" dynamodbav:"status"`
-	ResolutionNote  string        `json:"resolution_note,omitempty" dynamodbav:"resolution_note,omitempty"`
-	CreatedAt       string        `json:"created_at" dynamodbav:"created_at"`
-	UpdatedAt       string        `json:"updated_at" dynamodbav:"updated_at"`
+	DisputeOrderNumber string        `json:"-" dynamodbav:"dispute_order_number"`
+	CustomerID         string        `json:"customer_id" dynamodbav:"customer_id"`
+	DispositionCode    string        `json:"disposition_code" dynamodbav:"disposition_code"`
+	Description        string        `json:"description,omitempty" dynamodbav:"description,omitempty"`
+	PhotoKeys          []string      `json:"photo_keys,omitempty" dynamodbav:"photo_keys,omitempty"`
+	Status             DisputeStatus `json:"status" dynamodbav:"status"`
+	ResolutionNote     string        `json:"resolution_note,omitempty" dynamodbav:"resolution_note,omitempty"`
+	CreatedAt          string        `json:"created_at" dynamodbav:"created_at"`
+	UpdatedAt          string        `json:"updated_at" dynamodbav:"updated_at"`
 }
 
 func (d *Dispute) GetPK() string { return "DISPUTE!" + d.DisputeID }
@@ -44,7 +44,7 @@ func (d *Dispute) GetSK() string { return "METADATA" }
 
 // DisputeOpenGuardPK is the PK of the uniqueness-guard item that enforces at most
 // one dispute per order in v1; the guard is not cleared until admin tooling lands.
-func DisputeOpenGuardPK(orderID string) string { return "DISPUTEOPEN!" + orderID }
+func DisputeOpenGuardPK(orderNumber string) string { return "DISPUTEOPEN!" + orderNumber }
 
 // DisputeDisposition is a predefined, backend-controlled dispute reason.
 type DisputeDisposition struct {

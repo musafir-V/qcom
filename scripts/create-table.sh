@@ -81,14 +81,10 @@ create_gsi() {
   fi
 
   echo "Adding $index_name GSI..."
-  local attr_args=()
-  for def in "${attr_defs[@]}"; do
-    attr_args+=(--attribute-definitions "$def")
-  done
 
   aws dynamodb update-table \
     --table-name "$TABLE_NAME" \
-    "${attr_args[@]}" \
+    --attribute-definitions "${attr_defs[@]}" \
     --global-secondary-index-updates "$gsi_json" \
     "${endpoint_args[@]}" \
     --region "$REGION" \
@@ -133,10 +129,10 @@ create_gsi "OrderIndex" \
   '[{"Create":{"IndexName":"OrderIndex","KeySchema":[{"AttributeName":"order_id","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}}]' \
   "AttributeName=order_id,AttributeType=S"
 
-# DisputeOrderIndex — dispute lookup by order (sparse: only dispute items set dispute_order_id)
+# DisputeOrderIndex — dispute lookup by order number (sparse: only dispute items set dispute_order_number)
 create_gsi "DisputeOrderIndex" \
-  '[{"Create":{"IndexName":"DisputeOrderIndex","KeySchema":[{"AttributeName":"dispute_order_id","KeyType":"HASH"},{"AttributeName":"created_at","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]' \
-  "AttributeName=dispute_order_id,AttributeType=S" \
+  '[{"Create":{"IndexName":"DisputeOrderIndex","KeySchema":[{"AttributeName":"dispute_order_number","KeyType":"HASH"},{"AttributeName":"created_at","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]' \
+  "AttributeName=dispute_order_number,AttributeType=S" \
   "AttributeName=created_at,AttributeType=S"
 
 # DETripsIndex — DE earnings / payout queries

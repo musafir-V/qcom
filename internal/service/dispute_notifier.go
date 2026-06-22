@@ -25,7 +25,7 @@ func (n *LoggingDisputeNotifier) DisputeCreated(ctx context.Context, d *models.D
 	n.logger.WithFields(logrus.Fields{
 		"event":            "dispute_created",
 		"dispute_id":       d.DisputeID,
-		"order_id":         d.OrderID,
+		"order_number":     d.OrderNumber,
 		"customer_id":      d.CustomerID,
 		"disposition_code": d.DispositionCode,
 	}).Info("dispute created")

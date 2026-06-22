@@ -29,7 +29,7 @@ func (s *stubDisputeStore) Create(_ context.Context, d *models.Dispute) error {
 func (s *stubDisputeStore) GetByID(_ context.Context, id string) (*models.Dispute, error) {
 	return s.byID, nil
 }
-func (s *stubDisputeStore) GetLatestByOrderID(_ context.Context, orderID string) (*models.Dispute, error) {
+func (s *stubDisputeStore) GetLatestByOrderNumber(_ context.Context, orderNumber string) (*models.Dispute, error) {
 	return s.byOrder, nil
 }
 
@@ -84,7 +84,7 @@ func ownedDelivered(customerID string) *stubOrderValidator {
 func validInput() CreateDisputeInput {
 	return CreateDisputeInput{
 		CustomerID:      "cust-1",
-		OrderID:         "order-1",
+		OrderNumber:     "ORD123",
 		DispositionCode: "ITEM_MISSING",
 		Description:     "two items were not in the bag",
 		PhotoKeys:       []string{"disputes/cust-1/abc.jpg"},

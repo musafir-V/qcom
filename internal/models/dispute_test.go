@@ -31,13 +31,13 @@ func TestDisputeDispositionSK(t *testing.T) {
 
 func TestDisputeMarshalHasNoOrderIDAttribute(t *testing.T) {
 	d := &Dispute{
-		DisputeID:      "d1",
-		OrderID:        "o1",
-		DisputeOrderID: "o1",
-		CustomerID:     "c1",
-		Status:         DisputeStatusOpen,
-		CreatedAt:      "2026-06-21T00:00:00Z",
-		UpdatedAt:      "2026-06-21T00:00:00Z",
+		DisputeID:          "d1",
+		OrderNumber:        "ORD123",
+		DisputeOrderNumber: "ORD123",
+		CustomerID:         "c1",
+		Status:             DisputeStatusOpen,
+		CreatedAt:          "2026-06-21T00:00:00Z",
+		UpdatedAt:          "2026-06-21T00:00:00Z",
 	}
 	m, err := attributevalue.MarshalMap(d)
 	if err != nil {
@@ -46,10 +46,10 @@ func TestDisputeMarshalHasNoOrderIDAttribute(t *testing.T) {
 	if _, ok := m["order_id"]; ok {
 		t.Errorf("marshaled map must NOT have key \"order_id\" (would pollute OrderIndex GSI), got: %v", m)
 	}
-	if _, ok := m["order_ref"]; !ok {
-		t.Errorf("marshaled map must have key \"order_ref\", got keys: %v", m)
+	if _, ok := m["order_number"]; !ok {
+		t.Errorf("marshaled map must have key \"order_number\", got keys: %v", m)
 	}
-	if _, ok := m["dispute_order_id"]; !ok {
-		t.Errorf("marshaled map must have key \"dispute_order_id\", got keys: %v", m)
+	if _, ok := m["dispute_order_number"]; !ok {
+		t.Errorf("marshaled map must have key \"dispute_order_number\", got keys: %v", m)
 	}
 }
