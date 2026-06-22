@@ -165,8 +165,6 @@ func classifyDisputeError(err error) (int, string) {
 	switch {
 	case errors.Is(err, service.ErrOrderNotFound):
 		return http.StatusNotFound, "ORDER_NOT_FOUND"
-	case errors.Is(err, service.ErrNotOrderOwner):
-		return http.StatusForbidden, "NOT_ORDER_OWNER"
 	case errors.Is(err, service.ErrOrderNotDisputable):
 		return http.StatusConflict, "ORDER_NOT_DISPUTABLE"
 	case errors.Is(err, service.ErrDispositionNotFound):

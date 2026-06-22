@@ -51,13 +51,9 @@ func (s *stubDispositionStore) GetByCode(_ context.Context, code string) (*model
 }
 
 type stubOrderValidator struct {
-	target *OrderNotificationTarget
 	status string
 }
 
-func (s *stubOrderValidator) GetNotificationTarget(_ context.Context, _ string) (*OrderNotificationTarget, error) {
-	return s.target, nil
-}
 func (s *stubOrderValidator) GetOrderStatus(_ context.Context, _ string) (string, error) {
 	return s.status, nil
 }
@@ -74,11 +70,8 @@ func basicDisposition() *models.DisputeDisposition {
 	return &models.DisputeDisposition{Code: "ITEM_MISSING", Title: "Item missing", Active: true}
 }
 
-func ownedDelivered(customerID string) *stubOrderValidator {
-	return &stubOrderValidator{
-		target: &OrderNotificationTarget{CustomerID: customerID},
-		status: "DELIVERED",
-	}
+func ownedDelivered(_ string) *stubOrderValidator {
+	return &stubOrderValidator{status: "DELIVERED"}
 }
 
 func validInput() CreateDisputeInput {
@@ -107,24 +100,15 @@ func TestCreateDispute_Success(t *testing.T) {
 }
 
 func TestCreateDispute_OrderNotFound(t *testing.T) {
-	svc := newTestDisputeService(&stubDisputeStore{}, &stubDispositionStore{disp: basicDisposition()}, &stubOrderValidator{target: nil})
+	svc := newTestDisputeService(&stubDisputeStore{}, &stubDispositionStore{disp: basicDisposition()}, &stubOrderValidator{status: "NOT_FOUND"})
 	_, err := svc.CreateDispute(context.Background(), validInput())
 	if !errors.Is(err, ErrOrderNotFound) {
 		t.Fatalf("want ErrOrderNotFound, got %v", err)
 	}
 }
 
-func TestCreateDispute_NotOwner(t *testing.T) {
-	ov := &stubOrderValidator{target: &OrderNotificationTarget{CustomerID: "someone-else"}, status: "DELIVERED"}
-	svc := newTestDisputeService(&stubDisputeStore{}, &stubDispositionStore{disp: basicDisposition()}, ov)
-	_, err := svc.CreateDispute(context.Background(), validInput())
-	if !errors.Is(err, ErrNotOrderOwner) {
-		t.Fatalf("want ErrNotOrderOwner, got %v", err)
-	}
-}
-
 func TestCreateDispute_NotDisputableStatus(t *testing.T) {
-	ov := &stubOrderValidator{target: &OrderNotificationTarget{CustomerID: "cust-1"}, status: "OUT_FOR_DELIVERY"}
+	ov := &stubOrderValidator{status: "OUT_FOR_DELIVERY"}
 	svc := newTestDisputeService(&stubDisputeStore{}, &stubDispositionStore{disp: basicDisposition()}, ov)
 	_, err := svc.CreateDispute(context.Background(), validInput())
 	if !errors.Is(err, ErrOrderNotDisputable) {
@@ -211,17 +195,6 @@ func TestGetDisputeByOrder_NotFound(t *testing.T) {
 	}
 }
 
-func TestCreateDispute_OrderStatusNotFound(t *testing.T) {
-	ov := &stubOrderValidator{
-		target: &OrderNotificationTarget{CustomerID: "cust-1"},
-		status: "NOT_FOUND",
-	}
-	svc := newTestDisputeService(&stubDisputeStore{}, &stubDispositionStore{disp: basicDisposition()}, ov)
-	_, err := svc.CreateDispute(context.Background(), validInput())
-	if !errors.Is(err, ErrOrderNotFound) {
-		t.Fatalf("want ErrOrderNotFound, got %v", err)
-	}
-}
 
 func TestCreateDispute_DescriptionTooShort(t *testing.T) {
 	disp := basicDisposition()

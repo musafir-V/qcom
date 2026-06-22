@@ -173,7 +173,6 @@ New disputes are always `status: "OPEN"`. (`resolution_note` appears later, once
 |------|------|--------------|
 | 400 | `MISSING_FIELD` | `order_number` or `disposition_code` missing |
 | 404 | `ORDER_NOT_FOUND` | order doesn't exist |
-| 403 | `NOT_ORDER_OWNER` | order isn't this customer's |
 | 409 | `ORDER_NOT_DISPUTABLE` | order isn't in a disputable (delivered) state |
 | 400 | `DISPOSITION_NOT_FOUND` | unknown/inactive `disposition_code` |
 | 400 | `DESCRIPTION_REQUIRED` | reason needs a description |

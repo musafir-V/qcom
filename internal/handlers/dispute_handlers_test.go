@@ -16,7 +16,6 @@ func TestClassifyDisputeError(t *testing.T) {
 		wantCode   string
 	}{
 		{"order not found", service.ErrOrderNotFound, http.StatusNotFound, "ORDER_NOT_FOUND"},
-		{"not owner", service.ErrNotOrderOwner, http.StatusForbidden, "NOT_ORDER_OWNER"},
 		{"not disputable", service.ErrOrderNotDisputable, http.StatusConflict, "ORDER_NOT_DISPUTABLE"},
 		{"unknown disposition", service.ErrDispositionNotFound, http.StatusBadRequest, "DISPOSITION_NOT_FOUND"},
 		{"description required", service.ErrDescriptionRequired, http.StatusBadRequest, "DESCRIPTION_REQUIRED"},

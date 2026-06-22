@@ -18,9 +18,8 @@ import (
 const orderStatusNotFound = "NOT_FOUND"
 
 var (
-	ErrOrderNotFound       = errors.New("order not found")
-	ErrNotOrderOwner       = errors.New("order does not belong to customer")
-	ErrOrderNotDisputable  = errors.New("order is not in a disputable state")
+	ErrOrderNotFound      = errors.New("order not found")
+	ErrOrderNotDisputable = errors.New("order is not in a disputable state")
 	ErrDispositionNotFound = errors.New("disposition not found")
 	ErrDescriptionRequired = errors.New("description is required for this disposition")
 	ErrDescriptionTooShort = errors.New("description is too short")
@@ -46,7 +45,6 @@ type dispositionStore interface {
 
 // orderValidator is satisfied by *JavaOrderClient.
 type orderValidator interface {
-	GetNotificationTarget(ctx context.Context, orderRef string) (*OrderNotificationTarget, error)
 	GetOrderStatus(ctx context.Context, orderID string) (string, error)
 }
 
@@ -87,20 +85,7 @@ func (s *DisputeService) ListDispositions(ctx context.Context) ([]models.Dispute
 }
 
 func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInput) (*models.Dispute, error) {
-	// 1. Validate order ownership. The order-service accepts the orderNumber
-	// (e.g. ORD1162844363) directly in its /orders/{id} and notification-target paths.
-	target, err := s.orders.GetNotificationTarget(ctx, in.OrderNumber)
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate order: %w", err)
-	}
-	if target == nil {
-		return nil, ErrOrderNotFound
-	}
-	if target.CustomerID != in.CustomerID {
-		return nil, ErrNotOrderOwner
-	}
-
-	// 2. Validate order status eligibility.
+	// 1. Validate order exists and status eligibility via order-service public API.
 	status, err := s.orders.GetOrderStatus(ctx, in.OrderNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch order status: %w", err)
@@ -112,7 +97,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 		return nil, ErrOrderNotDisputable
 	}
 
-	// 3. Validate disposition.
+	// 2. Validate disposition.
 	disp, err := s.dispositions.GetByCode(ctx, in.DispositionCode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load disposition: %w", err)
@@ -121,7 +106,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 		return nil, ErrDispositionNotFound
 	}
 
-	// 4. Validate description against disposition rules.
+	// 3. Validate description against disposition rules.
 	desc := strings.TrimSpace(in.Description)
 	if disp.DescriptionRequired && desc == "" {
 		return nil, ErrDescriptionRequired
@@ -135,7 +120,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 		}
 	}
 
-	// 5. Validate photos: count, min, and per-key ownership prefix.
+	// 4. Validate photos: count, min, and per-key ownership prefix.
 	if len(in.PhotoKeys) > models.MaxDisputePhotos {
 		return nil, ErrTooManyPhotos
 	}
@@ -153,7 +138,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 		return nil, ErrNotEnoughPhotos
 	}
 
-	// 6. Persist (transactional one-open guard inside the repo).
+	// 5. Persist (transactional one-open guard inside the repo).
 	now := time.Now().UTC().Format(time.RFC3339)
 	d := &models.Dispute{
 		DisputeID:       uuid.New().String(),
@@ -173,7 +158,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 		return nil, fmt.Errorf("failed to create dispute: %w", err)
 	}
 
-	// 7. Emit creation seam (best-effort).
+	// 6. Emit creation seam (best-effort).
 	s.notifier.DisputeCreated(ctx, d)
 	return d, nil
 }
