@@ -13,7 +13,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/qcom/qcom/internal/config"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/service"
@@ -56,12 +58,35 @@ func (f *fakeCallCounter) CountByTripDirection(_ context.Context, _, _ string) (
 	return f.count, nil
 }
 
+// fakeCallStore is a fake callRecorder for testing.
+type fakeCallStore struct {
+	upserts []*models.CallRecord
+}
+
+func (f *fakeCallStore) Upsert(_ context.Context, rec *models.CallRecord) error {
+	f.upserts = append(f.upserts, rec)
+	return nil
+}
+
+// signHS256 creates a valid HS256-signed JWT with the given secret.
+func signHS256(t *testing.T, secret string) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"iat": time.Now().Unix()})
+	signed, err := tok.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatalf("signHS256: %v", err)
+	}
+	return signed
+}
+
 // testVoiceOption is a functional option for newTestVoiceHandlers.
 type testVoiceOption func(*testVoiceOptions)
 
 type testVoiceOptions struct {
-	trip  *models.Trip
-	count int
+	trip      *models.Trip
+	count     int
+	secret    string
+	callStore callRecorder
 }
 
 func withTrip(trip *models.Trip) testVoiceOption {
@@ -72,11 +97,22 @@ func withCallCount(n int) testVoiceOption {
 	return func(o *testVoiceOptions) { o.count = n }
 }
 
+func withSignatureSecret(s string) testVoiceOption {
+	return func(o *testVoiceOptions) { o.secret = s }
+}
+
+func withCallStore(store callRecorder) testVoiceOption {
+	return func(o *testVoiceOptions) { o.callStore = store }
+}
+
 func newTestVoiceHandlers(t *testing.T, opts ...testVoiceOption) *VoiceHandlers {
 	t.Helper()
 	o := &testVoiceOptions{}
 	for _, opt := range opts {
 		opt(o)
+	}
+	if o.callStore == nil {
+		o.callStore = &fakeCallStore{}
 	}
 	cfg := config.VoiceConfig{AppID: "test-app", PrivateKeyB64: testVoiceRSAKeyB64(t)}
 	tokenSvc := service.NewVoiceTokenService(cfg, logrus.New())
@@ -85,6 +121,8 @@ func newTestVoiceHandlers(t *testing.T, opts ...testVoiceOption) *VoiceHandlers 
 		&fakeEnsurer{},
 		&fakeTripGetter{trip: o.trip},
 		&fakeCallCounter{count: o.count},
+		o.callStore,
+		o.secret,
 		logrus.New(),
 	)
 }
@@ -156,5 +194,34 @@ func TestAnswerWebhookRejectsOverCap(t *testing.T) {
 	json.Unmarshal(rr.Body.Bytes(), &ncco)
 	if ncco[0]["action"] != "talk" {
 		t.Fatalf("expected reject over cap, got %+v", ncco[0])
+	}
+}
+
+func TestEventWebhookRejectsBadSignature(t *testing.T) {
+	h := newTestVoiceHandlers(t, withSignatureSecret("sek"))
+	req := httptest.NewRequest("POST", "/webhooks/voice/event", strings.NewReader(`{}`))
+	// no Authorization header
+	rr := httptest.NewRecorder()
+	h.EventWebhook(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+}
+
+func TestEventWebhookPersistsRecord(t *testing.T) {
+	store := &fakeCallStore{}
+	h := newTestVoiceHandlers(t, withSignatureSecret("sek"), withCallStore(store))
+	tok := signHS256(t, "sek")
+	body := `{"uuid":"C2","status":"completed","duration":"42",
+		"custom_data":{"trip_id":"T1","direction":"de_to_cust"}}`
+	req := httptest.NewRequest("POST", "/webhooks/voice/event", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rr := httptest.NewRecorder()
+	h.EventWebhook(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if len(store.upserts) != 1 || store.upserts[0].CallID != "C2" || store.upserts[0].DurationSec != 42 {
+		t.Fatalf("upserts = %+v", store.upserts)
 	}
 }

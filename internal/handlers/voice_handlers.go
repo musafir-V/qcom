@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/qcom/qcom/internal/models"
@@ -29,12 +30,20 @@ type callCounter interface {
 	CountByTripDirection(ctx context.Context, tripID, direction string) (int, error)
 }
 
+// callRecorder abstracts CallRecordRepository.Upsert so the handler is
+// testable without a real DynamoDB connection.
+type callRecorder interface {
+	Upsert(ctx context.Context, rec *models.CallRecord) error
+}
+
 // VoiceHandlers handles VoIP-related HTTP endpoints.
 type VoiceHandlers struct {
 	tokenSvc   *service.VoiceTokenService
 	ensurer    userEnsurer
 	trips      tripGetter
 	callCounts callCounter
+	recorder   callRecorder
+	secret     string
 	logger     *logrus.Logger
 }
 
@@ -44,6 +53,8 @@ func NewVoiceHandlers(
 	ensurer userEnsurer,
 	trips tripGetter,
 	callCounts callCounter,
+	recorder callRecorder,
+	signatureSecret string,
 	logger *logrus.Logger,
 ) *VoiceHandlers {
 	return &VoiceHandlers{
@@ -51,6 +62,8 @@ func NewVoiceHandlers(
 		ensurer:    ensurer,
 		trips:      trips,
 		callCounts: callCounts,
+		recorder:   recorder,
+		secret:     signatureSecret,
 		logger:     logger,
 	}
 }
@@ -146,6 +159,56 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.respondWithJSON(w, http.StatusOK, service.ConnectAppNCCO(toUser))
+}
+
+// eventReq is the inbound payload Vonage POSTs to the event webhook.
+type eventReq struct {
+	UUID     string `json:"uuid"`
+	Status   string `json:"status"`
+	Duration string `json:"duration"`
+	CustomData struct {
+		TripID    string `json:"trip_id"`
+		Direction string `json:"direction"`
+	} `json:"custom_data"`
+}
+
+// EventWebhook handles POST /webhooks/voice/event.
+// Vonage calls this as a call progresses through its lifecycle.
+// It verifies the Vonage HS256 signature, then upserts a CallRecord
+// (idempotent: keyed on CALL!<uuid>).
+func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
+	if !service.VerifyVonageSignature(r.Header.Get("Authorization"), h.secret) {
+		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid signature")
+		return
+	}
+
+	var req eventReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body")
+		return
+	}
+
+	dur, err := strconv.Atoi(req.Duration)
+	if err != nil {
+		dur = 0
+	}
+
+	rec := models.CallRecord{
+		TripID:      req.CustomData.TripID,
+		CallID:      req.UUID,
+		Direction:   req.CustomData.Direction,
+		Status:      req.Status,
+		Answered:    req.Status == "answered" || req.Status == "completed",
+		DurationSec: dur,
+	}
+
+	if err := h.recorder.Upsert(r.Context(), &rec); err != nil {
+		h.logger.WithError(err).Error("voice: EventWebhook: Upsert failed")
+		h.respondWithError(w, http.StatusInternalServerError, "UPSERT_FAILED", "failed to persist call record")
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *VoiceHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {

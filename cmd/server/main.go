@@ -138,7 +138,7 @@ func main() {
 		cfg.VonageVoice.PrivateKeyB64,
 		logger,
 	)
-	voiceHandlers := handlers.NewVoiceHandlers(voiceTokenSvc, voiceProvisionSvc, tripRepo, callRecordRepo, logger)
+	voiceHandlers := handlers.NewVoiceHandlers(voiceTokenSvc, voiceProvisionSvc, tripRepo, callRecordRepo, callRecordRepo, cfg.VonageVoice.SignatureSecret, logger)
 
 	disputeRepo := repository.NewDisputeRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	dispositionRepo := repository.NewDisputeDispositionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -281,6 +281,8 @@ func setupRouter(
 	webhooks.HandleFunc("/inbound-whatsapp-message", webhookHandlers.InboundWhatsAppMessage).Methods("POST", "OPTIONS")
 	// Vonage answer webhook — no auth middleware; Vonage calls this directly.
 	webhooks.HandleFunc("/voice/answer", voiceHandlers.AnswerWebhook).Methods("POST", "OPTIONS")
+	// Vonage event webhook — no auth middleware; verified via HS256 signature inside handler.
+	webhooks.HandleFunc("/voice/event", voiceHandlers.EventWebhook).Methods("POST", "OPTIONS")
 
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
