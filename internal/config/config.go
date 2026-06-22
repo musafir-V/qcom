@@ -20,6 +20,7 @@ type Config struct {
 	Vonage   VonageConfig
 	Firebase FirebaseConfig
 	Dispute  DisputeConfig
+	VonageVoice VoiceConfig
 	IsTest   bool
 }
 
@@ -69,6 +70,12 @@ type VonageConfig struct {
 	WhatsAppFrom  string
 }
 
+type VoiceConfig struct {
+	AppID           string
+	PrivateKeyB64   string
+	SignatureSecret string
+}
+
 type FirebaseConfig struct {
 	// CredentialsB64 is the base64-encoded Firebase service-account JSON.
 	// When empty or invalid, push notifications degrade to a logged no-op
@@ -81,6 +88,14 @@ type DisputeConfig struct {
 	// to open a dispute. Populated from DISPUTE_ELIGIBLE_ORDER_STATUSES
 	// (comma-separated); defaults to ["DELIVERED"].
 	EligibleOrderStatuses []string
+}
+
+func loadVoiceConfig() VoiceConfig {
+	return VoiceConfig{
+		AppID:           getEnv("VONAGE_VOICE_APP_ID", ""),
+		PrivateKeyB64:   getEnv("VONAGE_VOICE_PRIVATE_KEY", ""),
+		SignatureSecret: getEnv("VONAGE_VOICE_SIGNATURE_SECRET", ""),
+	}
 }
 
 func Load() (*Config, error) {
@@ -129,6 +144,7 @@ func Load() (*Config, error) {
 		Dispute: DisputeConfig{
 			EligibleOrderStatuses: splitAndTrim(getEnv("DISPUTE_ELIGIBLE_ORDER_STATUSES", "DELIVERED")),
 		},
+		VonageVoice: loadVoiceConfig(),
 		// IS_TEST (or IS_TRUE): skip polygon check; use first active darkstore from DDB.
 		IsTest: envBool("IS_TEST") || envBool("IS_TRUE"),
 	}

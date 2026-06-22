@@ -25,6 +25,8 @@ type JavaOrder struct {
 	PaymentStatus string  `json:"paymentStatus"`
 	GrandTotal    float64 `json:"grandTotal"`
 	Currency      string  `json:"currency"`
+
+	CustomerID string `json:"customerId"`
 }
 
 // EffectiveOrderID returns orderId when set, otherwise orderNumber. Some Java

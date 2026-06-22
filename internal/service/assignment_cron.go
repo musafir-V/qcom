@@ -365,37 +365,7 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 		}).Warn("createTrip: unrecognized paymentMethod, treating as online (collect no cash)")
 	}
 
-	trip := &models.Trip{
-		TripID:     tripID,
-		OrderID:    orderID,
-		StoreID:    storeID,
-		Status:     models.TripStatusCreated,
-		DistanceKM: distKM,
-		BasePayZMW: basePayZMW,
-		Items:      tripItemsFromOrder(order),
-		Payment:    paymentFromOrder(order),
-		Tasks: []models.Task{
-			{
-				TaskID:  pickupTaskID,
-				Type:    models.TaskTypePickup,
-				Status:  models.TaskStatusCreated,
-				Address: ds.Name,
-				Lat:     ds.Latitude,
-				Lng:     ds.Longitude,
-			},
-			{
-				TaskID:        dropTaskID,
-				Type:          models.TaskTypeDrop,
-				Status:        models.TaskStatusCreated,
-				Phone:         order.Delivery.Phone,
-				Address:       order.Delivery.Address,
-				Lat:           order.Delivery.Lat,
-				Lng:           order.Delivery.Lng,
-				OTP:           randomOTP(),
-				RecipientName: firstNonEmpty(order.Delivery.Name, recipientFallback),
-			},
-		},
-	}
+	trip := buildTripFromOrder(order, tripID, pickupTaskID, dropTaskID, orderID, storeID, distKM, basePayZMW, ds)
 
 	if err := c.tripRepo.Create(ctx, trip); err != nil {
 		return nil, fmt.Errorf("failed to persist trip for order %s: %w", orderID, err)
@@ -424,6 +394,49 @@ func sortTripsByCreatedAt(trips []*models.Trip) {
 		for j := i; j > 0 && trips[j].CreatedAt < trips[j-1].CreatedAt; j-- {
 			trips[j], trips[j-1] = trips[j-1], trips[j]
 		}
+	}
+}
+
+// buildTripFromOrder constructs a Trip value from a normalized JavaOrder and the
+// pre-computed identifiers and metrics that createTrip resolves via I/O. It is
+// a pure field-mapping helper with no I/O so that it can be unit-tested.
+func buildTripFromOrder(
+	order JavaOrder,
+	tripID, pickupTaskID, dropTaskID, orderID, storeID string,
+	distKM, basePayZMW float64,
+	ds *models.Darkstore,
+) *models.Trip {
+	return &models.Trip{
+		TripID:         tripID,
+		OrderID:        orderID,
+		StoreID:        storeID,
+		Status:         models.TripStatusCreated,
+		DistanceKM:     distKM,
+		BasePayZMW:     basePayZMW,
+		CustomerUserID: order.CustomerID,
+		Items:          tripItemsFromOrder(order),
+		Payment:        paymentFromOrder(order),
+		Tasks: []models.Task{
+			{
+				TaskID:  pickupTaskID,
+				Type:    models.TaskTypePickup,
+				Status:  models.TaskStatusCreated,
+				Address: ds.Name,
+				Lat:     ds.Latitude,
+				Lng:     ds.Longitude,
+			},
+			{
+				TaskID:        dropTaskID,
+				Type:          models.TaskTypeDrop,
+				Status:        models.TaskStatusCreated,
+				Phone:         order.Delivery.Phone,
+				Address:       order.Delivery.Address,
+				Lat:           order.Delivery.Lat,
+				Lng:           order.Delivery.Lng,
+				OTP:           randomOTP(),
+				RecipientName: firstNonEmpty(order.Delivery.Name, recipientFallback),
+			},
+		},
 	}
 }
 

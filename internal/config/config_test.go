@@ -48,3 +48,13 @@ func TestDisputeEligibleStatuses_FromEnv(t *testing.T) {
 		t.Fatalf("got %v, want [DELIVERED COMPLETED]", got)
 	}
 }
+
+func TestVoiceConfigLoadsFromEnv(t *testing.T) {
+	t.Setenv("VONAGE_VOICE_APP_ID", "app-123")
+	t.Setenv("VONAGE_VOICE_PRIVATE_KEY", "cGVt") // base64("pem")
+	t.Setenv("VONAGE_VOICE_SIGNATURE_SECRET", "sek")
+	got := loadVoiceConfig()
+	if got.AppID != "app-123" || got.PrivateKeyB64 != "cGVt" || got.SignatureSecret != "sek" {
+		t.Fatalf("voice config = %+v", got)
+	}
+}
