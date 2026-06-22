@@ -184,3 +184,16 @@ func TestIsKnownPaymentMethod(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildTripCarriesCustomerUserID(t *testing.T) {
+	order := JavaOrder{
+		OrderID:    "ORD1",
+		CustomerID: "U9",
+		Delivery:   JavaDelivery{Phone: "+260970000000", Name: "Ada"},
+	}
+	ds := &models.Darkstore{Name: "Store A", Latitude: -15.4, Longitude: 28.3}
+	trip := buildTripFromOrder(order, "trip-1", "pick-1", "drop-1", "ORD1", "221", 3.5, 12.0, ds)
+	if trip.CustomerUserID != "U9" {
+		t.Fatalf("CustomerUserID = %q, want U9", trip.CustomerUserID)
+	}
+}

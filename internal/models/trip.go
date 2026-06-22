@@ -62,6 +62,8 @@ type Trip struct {
 	TotalPayZMW       float64 `json:"total_pay_zmw" dynamodbav:"total_pay_zmw"`
 	DeliveryRankOfDay int     `json:"delivery_rank_of_day" dynamodbav:"delivery_rank_of_day"`
 
+	CustomerUserID string `json:"customer_user_id,omitempty" dynamodbav:"customer_user_id,omitempty"`
+
 	CreatedAt   string `json:"created_at" dynamodbav:"created_at"`
 	UpdatedAt   string `json:"updated_at" dynamodbav:"updated_at"`
 	AssignedAt     string   `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
