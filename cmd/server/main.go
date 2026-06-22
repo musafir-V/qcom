@@ -60,6 +60,7 @@ func main() {
 	cashConfigRepo := repository.NewCashConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	deviceTokenRepo := repository.NewDeviceTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	uploadUseCaseRepo := repository.NewUploadUseCaseRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	voiceProvisionRepo := repository.NewVoiceProvisionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -128,6 +129,16 @@ func main() {
 	notificationHandlers := handlers.NewNotificationHandlers(notificationService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)
 
+	voiceTokenSvc := service.NewVoiceTokenService(cfg.VonageVoice, logger)
+	voiceProvisionSvc := service.NewVoiceProvisionService(
+		voiceProvisionRepo,
+		"https://api.nexmo.com",
+		cfg.VonageVoice.AppID,
+		cfg.VonageVoice.PrivateKeyB64,
+		logger,
+	)
+	voiceHandlers := handlers.NewVoiceHandlers(voiceTokenSvc, voiceProvisionSvc, logger)
+
 	disputeRepo := repository.NewDisputeRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	dispositionRepo := repository.NewDisputeDispositionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	disputeNotifier := service.NewLoggingDisputeNotifier(logger)
@@ -139,7 +150,7 @@ func main() {
 	disputeHandlers := handlers.NewDisputeHandlers(disputeService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, voiceHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -254,6 +265,7 @@ func setupRouter(
 	notificationHandlers *handlers.NotificationHandlers,
 	webhookHandlers *handlers.WebhookHandlers,
 	disputeHandlers *handlers.DisputeHandlers,
+	voiceHandlers *handlers.VoiceHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -357,6 +369,11 @@ func setupRouter(
 
 	internal := router.PathPrefix("/internal/v1").Subrouter()
 	internal.HandleFunc("/notifications/send", notificationHandlers.SendNotification).Methods("POST", "OPTIONS")
+
+	// VoIP token endpoint — accepts both customer and DE JWTs (RequireAuth).
+	voice := api.PathPrefix("/voice").Subrouter()
+	voice.Use(authMiddleware.RequireAuth)
+	voice.HandleFunc("/token", voiceHandlers.PostToken).Methods("POST", "OPTIONS")
 
 	// Customer dispute endpoints (require customer auth).
 	// Static routes (/dispositions, /by-order) registered before parameterised /{id}
