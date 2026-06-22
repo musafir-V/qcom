@@ -62,6 +62,7 @@ func main() {
 	uploadUseCaseRepo := repository.NewUploadUseCaseRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	voiceProvisionRepo := repository.NewVoiceProvisionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	callRecordRepo := repository.NewCallRecordRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	ruleRepo := repository.NewRuleRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -91,8 +92,17 @@ func main() {
 	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, logger)
 	adminService := service.NewAdminService(tripRepo, deRepo, logger)
-	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, nil, notificationService, logger)
+	appCtx, appCancel := context.WithCancel(context.Background())
+	ruleCache := service.NewRuleCache(ruleRepo, 60*time.Second, logger)
+	ruleCache.Start(appCtx)
+	fareEngine := service.NewFareEngine(ruleCache)
+	rewardCron := service.NewRewardCron(deRepo, tripRepo, ruleRepo, earningsLedgerRepo, cronLockRepo, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, fareEngine, notificationService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
+
+	if err := service.SeedDefaults(appCtx, ruleRepo); err != nil {
+		logger.WithError(err).Fatal("Failed to seed default rules")
+	}
 
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
@@ -123,6 +133,7 @@ func main() {
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
 	tripHandlers := handlers.NewTripHandlers(tripService, logger)
 	adminHandlers := handlers.NewAdminHandlers(adminService, logger)
+	adminRulesHandlers := handlers.NewAdminRulesHandlers(ruleRepo, logger)
 	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
 	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
 	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, earningsLedgerRepo, logger)
@@ -151,7 +162,7 @@ func main() {
 	disputeHandlers := handlers.NewDisputeHandlers(disputeService, uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, voiceHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, voiceHandlers, authMiddleware, os.Getenv("ADMIN_KEY"), logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -169,12 +180,14 @@ func main() {
 
 	assignmentCron.Start()
 	weeklyBonusCron.Start()
+	rewardCron.Start(appCtx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	logger.Info("Shutting down server...")
+	appCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -259,6 +272,7 @@ func setupRouter(
 	configHandlers *handlers.ConfigHandlers,
 	tripHandlers *handlers.TripHandlers,
 	adminHandlers *handlers.AdminHandlers,
+	adminRulesHandlers *handlers.AdminRulesHandlers,
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
@@ -268,6 +282,7 @@ func setupRouter(
 	disputeHandlers *handlers.DisputeHandlers,
 	voiceHandlers *handlers.VoiceHandlers,
 	authMiddleware *middleware.AuthMiddleware,
+	adminKey string,
 	logger *logrus.Logger,
 ) *mux.Router {
 	router := mux.NewRouter()
@@ -313,6 +328,12 @@ func setupRouter(
 
 	admin := api.PathPrefix("/admin").Subrouter()
 	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
+	adminRules := admin.PathPrefix("/rules").Subrouter()
+	adminRules.Use(handlers.AdminKeyMiddleware(adminKey))
+	adminRules.HandleFunc("", adminRulesHandlers.ListRules).Methods("GET", "OPTIONS")
+	adminRules.HandleFunc("", adminRulesHandlers.CreateRule).Methods("POST", "OPTIONS")
+	adminRules.HandleFunc("/{id}", adminRulesHandlers.UpdateRule).Methods("PUT", "OPTIONS")
+	adminRules.HandleFunc("/{id}", adminRulesHandlers.DeleteRule).Methods("DELETE", "OPTIONS")
 
 	// Ops disbursement recording endpoint (no auth — internal)
 	api.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST", "OPTIONS")
