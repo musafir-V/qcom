@@ -33,6 +33,12 @@ type GenerateUploadURLResponse struct {
 	MaxFileSize      int64  `json:"max_file_size"`
 }
 
+type GenerateViewURLResponse struct {
+	ViewURL          string `json:"view_url"`
+	ObjectKey        string `json:"object_key"`
+	ExpiresInSeconds int    `json:"expires_in_seconds"`
+}
+
 // GenerateUploadURL is the generalized, use-case-driven presign endpoint.
 func (h *UploadHandlers) GenerateUploadURL(w http.ResponseWriter, r *http.Request) {
 	h.generate(w, r, "")
@@ -41,6 +47,43 @@ func (h *UploadHandlers) GenerateUploadURL(w http.ResponseWriter, r *http.Reques
 // GeneratePrintUploadURL preserves the legacy print route by forcing use_case=print_file.
 func (h *UploadHandlers) GeneratePrintUploadURL(w http.ResponseWriter, r *http.Request) {
 	h.generate(w, r, "print_file")
+}
+
+// GetViewURL returns a short-lived presigned GET URL for an object the caller owns.
+func (h *UploadHandlers) GetViewURL(w http.ResponseWriter, r *http.Request) {
+	entityID, _ := r.Context().Value("entity_id").(string)
+	entityType, _ := r.Context().Value("entity_type").(string)
+	if entityID == "" {
+		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
+		return
+	}
+
+	useCase := r.URL.Query().Get("use_case")
+	objectKey := r.URL.Query().Get("object_key")
+	if useCase == "" || objectKey == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "use_case and object_key query params are required")
+		return
+	}
+
+	result, err := h.uploadService.GeneratePresignedViewURL(r.Context(), useCase, entityType, entityID, objectKey)
+	if err != nil {
+		status, code := classifyUploadError(err)
+		h.logger.WithError(err).WithField("use_case", useCase).Warn("upload view presign failed")
+		msg := err.Error()
+		if status >= 500 {
+			msg = "Something went wrong, please try again"
+		}
+		h.respondWithError(w, status, code, msg)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(GenerateViewURLResponse{
+		ViewURL:          result.ViewURL,
+		ObjectKey:        objectKey,
+		ExpiresInSeconds: result.ExpiresInSeconds,
+	})
 }
 
 func (h *UploadHandlers) generate(w http.ResponseWriter, r *http.Request, forcedUseCase string) {
@@ -100,6 +143,8 @@ func classifyUploadError(err error) (int, string) {
 		return http.StatusBadRequest, "FILE_TOO_LARGE"
 	case errors.Is(err, service.ErrInvalidFileRequest):
 		return http.StatusBadRequest, "INVALID_REQUEST"
+	case errors.Is(err, service.ErrInvalidObjectKey):
+		return http.StatusBadRequest, "INVALID_OBJECT_KEY"
 	default:
 		return http.StatusInternalServerError, "PRESIGN_FAILED"
 	}

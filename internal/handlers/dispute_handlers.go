@@ -2,6 +2,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,11 +15,12 @@ import (
 
 type DisputeHandlers struct {
 	disputeService *service.DisputeService
+	uploadService  *service.UploadService
 	logger         *logrus.Logger
 }
 
-func NewDisputeHandlers(disputeService *service.DisputeService, logger *logrus.Logger) *DisputeHandlers {
-	return &DisputeHandlers{disputeService: disputeService, logger: logger}
+func NewDisputeHandlers(disputeService *service.DisputeService, uploadService *service.UploadService, logger *logrus.Logger) *DisputeHandlers {
+	return &DisputeHandlers{disputeService: disputeService, uploadService: uploadService, logger: logger}
 }
 
 type dispositionDTO struct {
@@ -87,7 +89,7 @@ func (h *DisputeHandlers) CreateDispute(w http.ResponseWriter, r *http.Request) 
 		h.respondWithError(w, status, code, msg)
 		return
 	}
-	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{"dispute": toDisputeDTO(d)})
+	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
 }
 
 func (h *DisputeHandlers) GetDispute(w http.ResponseWriter, r *http.Request) {
@@ -106,7 +108,7 @@ func (h *DisputeHandlers) GetDispute(w http.ResponseWriter, r *http.Request) {
 		h.respondWithError(w, status, code, msg)
 		return
 	}
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": toDisputeDTO(d)})
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
 }
 
 func (h *DisputeHandlers) GetDisputeByOrder(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +131,7 @@ func (h *DisputeHandlers) GetDisputeByOrder(w http.ResponseWriter, r *http.Reque
 		h.respondWithError(w, status, code, msg)
 		return
 	}
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": toDisputeDTO(d)})
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
 }
 
 type disputeDTO struct {
@@ -138,18 +140,29 @@ type disputeDTO struct {
 	DispositionCode string   `json:"disposition_code"`
 	Description     string   `json:"description,omitempty"`
 	PhotoKeys       []string `json:"photo_keys,omitempty"`
+	PhotoURLs       []string `json:"photo_urls,omitempty"`
 	Status          string   `json:"status"`
 	ResolutionNote  string   `json:"resolution_note,omitempty"`
 	CreatedAt       string   `json:"created_at"`
 	UpdatedAt       string   `json:"updated_at"`
 }
 
-func toDisputeDTO(d *models.Dispute) disputeDTO {
-	return disputeDTO{
+func (h *DisputeHandlers) toDisputeDTO(ctx context.Context, customerID string, d *models.Dispute) disputeDTO {
+	dto := disputeDTO{
 		DisputeID: d.DisputeID, OrderNumber: d.OrderNumber, DispositionCode: d.DispositionCode,
 		Description: d.Description, PhotoKeys: d.PhotoKeys, Status: string(d.Status),
 		ResolutionNote: d.ResolutionNote, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
+	if len(d.PhotoKeys) == 0 || h.uploadService == nil {
+		return dto
+	}
+	urls, err := h.uploadService.GeneratePresignedViewURLs(ctx, "dispute_photo", "customer", customerID, d.PhotoKeys)
+	if err != nil {
+		h.logger.WithError(err).WithField("dispute_id", d.DisputeID).Warn("failed to presign dispute photo view URLs")
+		return dto
+	}
+	dto.PhotoURLs = urls
+	return dto
 }
 
 func (h *DisputeHandlers) customerID(w http.ResponseWriter, r *http.Request) (string, bool) {

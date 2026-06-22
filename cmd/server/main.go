@@ -136,7 +136,7 @@ func main() {
 		cfg.Dispute.EligibleOrderStatuses,
 		logger,
 	)
-	disputeHandlers := handlers.NewDisputeHandlers(disputeService, logger)
+	disputeHandlers := handlers.NewDisputeHandlers(disputeService, uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
 	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, authMiddleware, logger)
@@ -316,6 +316,7 @@ func setupRouter(
 	protected.HandleFunc("/users/me", authHandlers.DeleteAccount).Methods("DELETE", "OPTIONS")
 	protected.HandleFunc("/home", homeHandlers.GetHome).Methods("POST", "OPTIONS")
 	protected.HandleFunc("/uploads/url", uploadHandlers.GenerateUploadURL).Methods("POST", "OPTIONS")
+	protected.HandleFunc("/uploads/view-url", uploadHandlers.GetViewURL).Methods("GET", "OPTIONS")
 	protected.HandleFunc("/print/files/upload-url", uploadHandlers.GeneratePrintUploadURL).Methods("POST", "OPTIONS")
 
 	// Serviceability — Bearer token or guest (X-User-Category: guest)

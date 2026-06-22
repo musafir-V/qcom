@@ -71,3 +71,30 @@ func TestGeneratePresignedURL_TooLarge(t *testing.T) {
 		t.Fatalf("want ErrFileTooLarge, got %v", err)
 	}
 }
+
+func TestGeneratePresignedViewURLs_InvalidKey(t *testing.T) {
+	svc := newTestUploadService(disputePhotoEntry())
+	_, err := svc.GeneratePresignedViewURLs(context.Background(), "dispute_photo", "customer", "u1", []string{"disputes/other-cust/a.jpg"})
+	if !errors.Is(err, ErrInvalidObjectKey) {
+		t.Fatalf("want ErrInvalidObjectKey, got %v", err)
+	}
+}
+
+func TestGeneratePresignedViewURLs_UnknownUseCase(t *testing.T) {
+	svc := newTestUploadService(nil)
+	_, err := svc.GeneratePresignedViewURLs(context.Background(), "nope", "customer", "u1", []string{"disputes/u1/a.jpg"})
+	if !errors.Is(err, ErrUnknownUseCase) {
+		t.Fatalf("want ErrUnknownUseCase, got %v", err)
+	}
+}
+
+func TestGeneratePresignedViewURLs_EmptyKeys(t *testing.T) {
+	svc := newTestUploadService(disputePhotoEntry())
+	urls, err := svc.GeneratePresignedViewURLs(context.Background(), "dispute_photo", "customer", "u1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(urls) != 0 {
+		t.Fatalf("want empty urls, got %v", urls)
+	}
+}

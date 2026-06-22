@@ -347,6 +347,14 @@ func TestSmoke_DisputeCreateWithPhoto(t *testing.T) {
 	if len(keys) != 1 || keys[0].(string) != objectKey {
 		t.Fatalf("photo_keys mismatch: got %v want [%s]", keys, objectKey)
 	}
+	urls, _ := dispute["photo_urls"].([]interface{})
+	if len(urls) != 1 {
+		t.Fatalf("photo_urls: expected 1 presigned view URL, got %v", urls)
+	}
+	viewURL, _ := urls[0].(string)
+	if viewURL == "" || !strings.Contains(viewURL, "X-Amz-Signature=") {
+		t.Fatalf("photo_urls[0] should be a presigned S3 URL, got %q", viewURL)
+	}
 
 	resp, result = do(t, "GET", "/api/v1/disputes/"+disputeID, bearer(auth.AccessToken), nil)
 	if resp.StatusCode != http.StatusOK {
@@ -355,6 +363,10 @@ func TestSmoke_DisputeCreateWithPhoto(t *testing.T) {
 	got, _ := result["dispute"].(map[string]interface{})
 	if got["dispute_id"].(string) != disputeID {
 		t.Fatal("get by id: dispute_id mismatch")
+	}
+	gotURLs, _ := got["photo_urls"].([]interface{})
+	if len(gotURLs) != 1 {
+		t.Fatalf("get by id: expected photo_urls, got %v", got["photo_urls"])
 	}
 
 	resp, result = do(t, "GET",

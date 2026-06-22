@@ -22,6 +22,7 @@ var (
 	ErrMimeNotAllowed       = errors.New("file_type not allowed for this use case")
 	ErrFileTooLarge         = errors.New("file_size exceeds maximum for this use case")
 	ErrInvalidFileRequest   = errors.New("invalid file request")
+	ErrInvalidObjectKey     = errors.New("object key is not owned by this entity")
 )
 
 // mimeExtensions maps an allowed MIME type to its canonical file extension.
@@ -52,6 +53,11 @@ type PresignedUploadResult struct {
 	ObjectKey        string
 	ExpiresInSeconds int
 	MaxFileSize      int64
+}
+
+type PresignedViewResult struct {
+	ViewURL          string
+	ExpiresInSeconds int
 }
 
 func NewUploadService(presignClient *s3.PresignClient, registry UploadUseCaseStore, presignExpiry time.Duration, logger *logrus.Logger) *UploadService {
@@ -117,4 +123,85 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, useCase, entit
 		ExpiresInSeconds: int(s.presignExpiry.Seconds()),
 		MaxFileSize:      entry.MaxFileSize,
 	}, nil
+}
+
+// GeneratePresignedViewURL returns a short-lived GET URL for an object the caller owns.
+func (s *UploadService) GeneratePresignedViewURL(ctx context.Context, useCase, entityType, entityID, objectKey string) (*PresignedViewResult, error) {
+	entry, err := s.loadUseCaseForObjectKey(ctx, useCase, entityType, entityID, objectKey)
+	if err != nil {
+		return nil, err
+	}
+	url, err := s.presignGetObject(ctx, entry.Bucket, objectKey)
+	if err != nil {
+		return nil, err
+	}
+	return &PresignedViewResult{
+		ViewURL:          url,
+		ExpiresInSeconds: int(s.presignExpiry.Seconds()),
+	}, nil
+}
+
+// GeneratePresignedViewURLs presigns GET access for each object key in order.
+func (s *UploadService) GeneratePresignedViewURLs(ctx context.Context, useCase, entityType, entityID string, objectKeys []string) ([]string, error) {
+	if len(objectKeys) == 0 {
+		return nil, nil
+	}
+	entry, err := s.registry.GetByUseCase(ctx, useCase)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load use case: %w", err)
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownUseCase, useCase)
+	}
+	if !entry.AllowsEntityType(entityType) {
+		return nil, fmt.Errorf("%w: %q", ErrEntityTypeNotAllowed, entityType)
+	}
+	wantPrefix := entry.KeyPrefix + "/" + entityID + "/"
+	urls := make([]string, 0, len(objectKeys))
+	for _, key := range objectKeys {
+		if !strings.HasPrefix(key, wantPrefix) {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidObjectKey, key)
+		}
+		url, err := s.presignGetObject(ctx, entry.Bucket, key)
+		if err != nil {
+			return nil, err
+		}
+		urls = append(urls, url)
+	}
+	return urls, nil
+}
+
+func (s *UploadService) loadUseCaseForObjectKey(ctx context.Context, useCase, entityType, entityID, objectKey string) (*models.UploadUseCase, error) {
+	if strings.TrimSpace(objectKey) == "" {
+		return nil, fmt.Errorf("%w: empty object key", ErrInvalidObjectKey)
+	}
+	entry, err := s.registry.GetByUseCase(ctx, useCase)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load use case: %w", err)
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownUseCase, useCase)
+	}
+	if !entry.AllowsEntityType(entityType) {
+		return nil, fmt.Errorf("%w: %q", ErrEntityTypeNotAllowed, entityType)
+	}
+	wantPrefix := entry.KeyPrefix + "/" + entityID + "/"
+	if !strings.HasPrefix(objectKey, wantPrefix) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidObjectKey, objectKey)
+	}
+	return entry, nil
+}
+
+func (s *UploadService) presignGetObject(ctx context.Context, bucket, objectKey string) (string, error) {
+	if s.presignClient == nil {
+		return "", fmt.Errorf("presign client not configured")
+	}
+	presignResult, err := s.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(objectKey),
+	}, s3.WithPresignExpires(s.presignExpiry))
+	if err != nil {
+		return "", fmt.Errorf("failed to generate presigned view URL: %w", err)
+	}
+	return presignResult.URL, nil
 }

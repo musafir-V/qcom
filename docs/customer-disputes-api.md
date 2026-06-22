@@ -160,6 +160,7 @@ Returns the active, predefined dispute reasons, already ordered for display. **R
     "disposition_code": "ITEM_DAMAGED",
     "description": "The milk carton was crushed and leaking.",
     "photo_keys": ["disputes/<customerId>/<uuid>.jpg"],
+    "photo_urls": ["https://<bucket>.s3…/disputes/<customerId>/<uuid>.jpg?X-Amz-Signature=…"],
     "status": "OPEN",
     "created_at": "2026-06-22T10:31:00Z",
     "updated_at": "2026-06-22T10:31:00Z"
@@ -209,9 +210,37 @@ Returns the latest dispute for the order. Use it to decide whether Order Details
 
 **Response `200`** — `{ "dispute": { …same shape as §3… } }`
 
+Each `photo_urls[i]` is a short-lived presigned GET URL for `photo_keys[i]`. URLs expire after `expires_in_seconds` (same as upload presign, currently 300s). Re-fetch the dispute (or call §1b) to refresh expired URLs.
+
 **Errors:** `404 DISPUTE_NOT_FOUND`, `403 FORBIDDEN`.
 
 `status` is one of `OPEN`, `UNDER_REVIEW`, `RESOLVED`, `REJECTED`. In this release only `OPEN` is produced (resolution is handled by an internal tool that ships later). Render a status pill; show `resolution_note` if/when present.
+
+---
+
+## 1b. Get presigned view URL (refresh a single photo)
+
+`GET /api/v1/uploads/view-url?use_case=dispute_photo&object_key=disputes/<customerId>/<uuid>.jpg`
+
+Use when you already have an `object_key` and need a fresh view URL (e.g. after the URLs from §4/§5 expired).
+
+**Response `200`**
+```json
+{
+  "view_url": "https://<bucket>.s3…/disputes/<customerId>/<uuid>.jpg?X-Amz-Signature=…",
+  "object_key": "disputes/<customerId>/<uuid>.jpg",
+  "expires_in_seconds": 300
+}
+```
+
+**Errors**
+| HTTP | code | when |
+|------|------|------|
+| 400 | `MISSING_FIELD` | `use_case` or `object_key` missing |
+| 400 | `INVALID_OBJECT_KEY` | key isn't this customer's `disputes/<id>/…` key |
+| 400 | `UNKNOWN_USE_CASE` | unknown `use_case` |
+| 401 | `UNAUTHORIZED` | missing/invalid token |
+| 500 | `PRESIGN_FAILED` | server-side; retry |
 
 ---
 
@@ -221,17 +250,7 @@ Returns the latest dispute for the order. Use it to decide whether Order Details
 2. **One dispute per order.** Once one exists, flip the button to "View dispute". A second create returns `409 DISPUTE_ALREADY_OPEN`. (Note for this release: there is no customer "re-raise" — a resolved dispute does not re-open the ability to raise another, pending the internal resolution tool.)
 3. **Upload before submit.** Photos go to S3 first (§1), then you submit only their `object_key`s in §3. Don't send image bytes to `/disputes`.
 4. **Match the PUT `Content-Type`** to the `file_type` you presigned with, or S3 rejects the upload.
-
----
-
-## ⚠️ Open gap to confirm with backend: viewing photos on the status screen
-
-The dispute stores **object keys** for a **private** S3 bucket. There is currently **no endpoint that returns a viewable URL** for those keys. Implications:
-
-- On the **success/just-submitted** screen you can show the photos the user picked locally — you already have them.
-- For a **returning** user opening the status screen later, the app cannot render the stored photos yet (no read URL / CDN endpoint).
-
-If the status screen must display previously-submitted photos, request a read mechanism from backend (a read-presign endpoint or a CDN base for the `disputes/` prefix). Flag early if you need it for v1.
+5. **Show stored photos via `photo_urls`.** GET dispute responses include presigned view URLs alongside `photo_keys`. Use `photo_urls[i]` in `<Image source={{ uri }} />`. If a URL expires (~300s), re-fetch the dispute or call §1b.
 
 ---
 
@@ -240,6 +259,7 @@ If the status screen must display previously-submitted photos, request a read me
 | # | Method | Path | Auth | Purpose |
 |---|--------|------|------|---------|
 | 1 | POST | `/api/v1/uploads/url` | customer | presign a photo upload (`use_case=dispute_photo`) |
+| 1b | GET | `/api/v1/uploads/view-url` | customer | presign a photo view URL (`use_case=dispute_photo`) |
 | 2 | GET | `/api/v1/disputes/dispositions` | customer | list dispute reasons + rules |
 | 3 | POST | `/api/v1/disputes` | customer | create a dispute |
 | 4 | GET | `/api/v1/disputes/by-order?order_number=` | customer | latest dispute for an order |
