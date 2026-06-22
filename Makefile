@@ -148,7 +148,16 @@ test: ## Run unit tests
 
 test-smoke: ## Run smoke tests against the live API (SMOKE_BASE_URL defaults to https://api.bunzodelivery.com)
 	@echo "Running smoke tests against $${SMOKE_BASE_URL:-https://api.bunzodelivery.com}..."
-	@SMOKE_BASE_URL=$${SMOKE_BASE_URL:-https://api.bunzodelivery.com} go test -v -tags=smoke -timeout 180s ./tests/smoke/...
+	@SMOKE_BASE_URL=$${SMOKE_BASE_URL:-https://api.bunzodelivery.com} \
+	 SMOKE_ORDER_SERVICE_URL=$${SMOKE_ORDER_SERVICE_URL:-http://15.135.73.205:8082} \
+	 go test -v -tags=smoke -timeout 180s ./tests/smoke/...
+
+test-smoke-dispute: ## Run dispute smoke tests only (customer +919515365236 / 9515365236)
+	@echo "Running dispute smoke tests against $${SMOKE_BASE_URL:-https://api.bunzodelivery.com}..."
+	@SMOKE_BASE_URL=$${SMOKE_BASE_URL:-https://api.bunzodelivery.com} \
+	 SMOKE_ORDER_SERVICE_URL=$${SMOKE_ORDER_SERVICE_URL:-http://15.135.73.205:8082} \
+	 SMOKE_DISPUTE_CUSTOMER_PHONE=$${SMOKE_DISPUTE_CUSTOMER_PHONE:-+919515365236} \
+	 go test -v -tags=smoke -timeout 180s ./tests/smoke/... -run Dispute
 
 test-upload: ## Run upload API integration tests (requires Docker)
 	@echo "Running upload API integration tests..."
