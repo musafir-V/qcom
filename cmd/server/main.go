@@ -125,7 +125,7 @@ func main() {
 	adminHandlers := handlers.NewAdminHandlers(adminService, logger)
 	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
 	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
-	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, logger)
+	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, earningsLedgerRepo, logger)
 	cashDepositHandlers := handlers.NewCashDepositHandlers(cashDepositService, logger)
 	notificationHandlers := handlers.NewNotificationHandlers(notificationService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)

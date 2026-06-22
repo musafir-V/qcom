@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,20 +27,36 @@ var (
 )
 
 type DisbursementHandlers struct {
-	disbursementRepo *repository.DisbursementRepository
-	deRepo           *repository.DERepository
-	logger           *logrus.Logger
+	disbursementRepo   disbursementCreator
+	deRepo             disbursementDEReaderUpdater
+	earningsLedgerRepo earningsAppender
+	logger             *logrus.Logger
+}
+
+type disbursementCreator interface {
+	Create(ctx context.Context, d *models.Disbursement) error
+}
+
+type disbursementDEReaderUpdater interface {
+	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
+	UpdateLastDisbursedAt(ctx context.Context, phone, disbursedAt string) error
+}
+
+type earningsAppender interface {
+	Append(ctx context.Context, entry *models.EarningsLedger) error
 }
 
 func NewDisbursementHandlers(
 	disbursementRepo *repository.DisbursementRepository,
 	deRepo *repository.DERepository,
+	earningsLedgerRepo *repository.EarningsLedgerRepository,
 	logger *logrus.Logger,
 ) *DisbursementHandlers {
 	return &DisbursementHandlers{
-		disbursementRepo: disbursementRepo,
-		deRepo:           deRepo,
-		logger:           logger,
+		disbursementRepo:   disbursementRepo,
+		deRepo:             deRepo,
+		earningsLedgerRepo: earningsLedgerRepo,
+		logger:             logger,
 	}
 }
 
@@ -168,6 +185,24 @@ func (h *DisbursementHandlers) RecordDisbursement(w http.ResponseWriter, r *http
 			fmt.Sprintf("Disbursement recorded (%s) but failed to update earnings watermark — fix last_disbursed_at manually",
 				disbursement.DisbursementID))
 		return
+	}
+
+	mirror := &models.EarningsLedger{
+		DEID:        deID,
+		EarningID:   uuid.New().String(),
+		Type:        models.EarningTypeDisbursement,
+		AmountZMW:   -req.AmountZMW,
+		Label:       "Weekly Payout",
+		CreatedAt:   disbursedAt,
+		ReferenceID: disbursement.DisbursementID,
+	}
+	if err := h.earningsLedgerRepo.Append(r.Context(), mirror); err != nil {
+		h.logger.WithError(err).WithFields(logrus.Fields{
+			"de_id":           deID,
+			"disbursement_id": disbursement.DisbursementID,
+			"amount_zmw":      mirror.AmountZMW,
+			"created_at":      disbursedAt,
+		}).Error("disbursement recorded but failed to append earnings mirror entry")
 	}
 
 	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
