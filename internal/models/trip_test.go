@@ -92,6 +92,40 @@ func TestTrip_TaskByID_ReturnsPointerIntoSlice(t *testing.T) {
 	}
 }
 
+func TestTrip_ActualDeliveryMinutes(t *testing.T) {
+	trip := &Trip{
+		Tasks: []Task{
+			{TaskID: "task-pickup", Type: TaskTypePickup, CompletedAt: "2026-06-22T10:00:00+02:00"},
+			{TaskID: "task-drop", Type: TaskTypeDrop, CompletedAt: "2026-06-22T10:45:00+02:00"},
+		},
+	}
+
+	got, ok := trip.ActualDeliveryMinutes()
+	if !ok {
+		t.Fatal("ActualDeliveryMinutes() ok = false, want true")
+	}
+	if got != 45 {
+		t.Fatalf("ActualDeliveryMinutes() = %v, want 45", got)
+	}
+}
+
+func TestTrip_ActualDeliveryMinutes_MissingDropTimestamp(t *testing.T) {
+	trip := &Trip{
+		Tasks: []Task{
+			{TaskID: "task-pickup", Type: TaskTypePickup, CompletedAt: "2026-06-22T10:00:00+02:00"},
+			{TaskID: "task-drop", Type: TaskTypeDrop},
+		},
+	}
+
+	got, ok := trip.ActualDeliveryMinutes()
+	if ok {
+		t.Fatal("ActualDeliveryMinutes() ok = true, want false")
+	}
+	if got != 0 {
+		t.Fatalf("ActualDeliveryMinutes() = %v, want 0", got)
+	}
+}
+
 func TestIsValidTripTransition(t *testing.T) {
 	valid := []struct{ from, to TripStatus }{
 		{TripStatusCreated, TripStatusAssigned},

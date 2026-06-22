@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type TripStatus string
 type TaskType string
 type TaskStatus string
@@ -36,6 +38,8 @@ type Task struct {
 	TaskID        string     `json:"task_id" dynamodbav:"task_id"`
 	Type          TaskType   `json:"type" dynamodbav:"type"`
 	Status        TaskStatus `json:"status" dynamodbav:"status"`
+	CreatedAt     string     `json:"created_at,omitempty" dynamodbav:"created_at,omitempty"`
+	CompletedAt   string     `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
 	Phone         string     `json:"phone" dynamodbav:"phone"`
 	Address       string     `json:"address" dynamodbav:"address"`
 	Lat           float64    `json:"lat" dynamodbav:"lat"`
@@ -60,6 +64,12 @@ type Trip struct {
 	BasePayZMW        float64 `json:"base_pay_zmw" dynamodbav:"base_pay_zmw"`
 	BonusPayZMW       float64 `json:"bonus_pay_zmw" dynamodbav:"bonus_pay_zmw"`
 	TotalPayZMW       float64 `json:"total_pay_zmw" dynamodbav:"total_pay_zmw"`
+	SLAMinutes        float64 `json:"sla_minutes" dynamodbav:"sla_minutes"`
+	OnTime            bool    `json:"on_time" dynamodbav:"on_time"`
+	RateRuleID        string  `json:"rate_rule_id,omitempty" dynamodbav:"rate_rule_id,omitempty"`
+	RateRuleVersion   int     `json:"rate_rule_version,omitempty" dynamodbav:"rate_rule_version,omitempty"`
+	RateMultiplier    float64 `json:"rate_multiplier,omitempty" dynamodbav:"rate_multiplier,omitempty"`
+	RateFlatZMW       float64 `json:"rate_flat_zmw,omitempty" dynamodbav:"rate_flat_zmw,omitempty"`
 	DeliveryRankOfDay int     `json:"delivery_rank_of_day" dynamodbav:"delivery_rank_of_day"`
 
 	CustomerUserID string `json:"customer_user_id,omitempty" dynamodbav:"customer_user_id,omitempty"`
@@ -104,6 +114,20 @@ func (t *Trip) TaskByID(taskID string) *Task {
 		}
 	}
 	return nil
+}
+
+// ActualDeliveryMinutes returns actual delivery minutes and whether both timestamps exist.
+func (t *Trip) ActualDeliveryMinutes() (float64, bool) {
+	p, d := t.PickupTask(), t.DropTask()
+	if p == nil || d == nil || p.CompletedAt == "" || d.CompletedAt == "" {
+		return 0, false
+	}
+	ps, err1 := time.Parse(time.RFC3339, p.CompletedAt)
+	ds, err2 := time.Parse(time.RFC3339, d.CompletedAt)
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	return ds.Sub(ps).Minutes(), true
 }
 
 // IsValidTripTransition reports whether a trip may move from `from` to `to`.
