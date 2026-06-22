@@ -113,8 +113,6 @@ func (s *VoiceProvisionService) signAppLevelJWT() (string, error) {
 	now := time.Now().Unix()
 	claims := jwt.MapClaims{
 		"application_id": s.appID,
-		"sub":            "",
-		"acl":            "",
 		"iat":            now,
 		"exp":            now + 3600,
 		"jti":            uuid.New().String(),

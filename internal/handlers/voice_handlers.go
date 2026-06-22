@@ -152,7 +152,10 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, _ := h.callCounts.CountByTripDirection(r.Context(), trip.TripID, direction)
+	count, err := h.callCounts.CountByTripDirection(r.Context(), trip.TripID, direction)
+	if err != nil {
+		h.logger.WithError(err).Warn("voice: CountByTripDirection failed, cap check skipped")
+	}
 	if count >= models.CallCapPerDirection {
 		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("cap_exceeded"))
 		return
@@ -164,6 +167,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 // eventReq is the inbound payload Vonage POSTs to the event webhook.
 type eventReq struct {
 	UUID     string `json:"uuid"`
+	From     string `json:"from"`
 	Status   string `json:"status"`
 	Duration string `json:"duration"`
 	CustomData struct {
@@ -188,6 +192,23 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// FIX 3: guard missing identifiers before Upsert to avoid Vonage retry storms.
+	if req.UUID == "" || req.CustomData.TripID == "" {
+		h.logger.Warn("voice: EventWebhook: missing uuid or trip_id, skipping upsert")
+		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	// FIX 1: resolve direction server-side so the rate cap cannot be evaded by
+	// rotating custom_data.direction on the client.
+	direction := req.CustomData.Direction // fallback for unresolvable events
+	trip, tripErr := h.trips.GetByID(r.Context(), req.CustomData.TripID)
+	if tripErr == nil && trip != nil {
+		if _, dir, ok := service.ResolveCounterpart(trip, req.From); ok {
+			direction = dir
+		}
+	}
+
 	dur, err := strconv.Atoi(req.Duration)
 	if err != nil {
 		dur = 0
@@ -196,7 +217,7 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	rec := models.CallRecord{
 		TripID:      req.CustomData.TripID,
 		CallID:      req.UUID,
-		Direction:   req.CustomData.Direction,
+		Direction:   direction,
 		Status:      req.Status,
 		Answered:    req.Status == "answered" || req.Status == "completed",
 		DurationSec: dur,

@@ -229,3 +229,37 @@ func TestEventWebhookPersistsRecord(t *testing.T) {
 		t.Fatalf("upserts = %+v", store.upserts)
 	}
 }
+
+// TestEventWebhookStoresResolvedDirection verifies that the server derives the
+// call direction from the trip + From field, ignoring whatever the client sent
+// in custom_data.direction (FIX 1).
+func TestEventWebhookStoresResolvedDirection(t *testing.T) {
+	store := &fakeCallStore{}
+	trip := &models.Trip{
+		TripID:         "T1",
+		DEID:           "D1",
+		CustomerUserID: "U9",
+		Status:         models.TripStatusOutForDelivery,
+	}
+	h := newTestVoiceHandlers(t,
+		withSignatureSecret("sek"),
+		withCallStore(store),
+		withTrip(trip),
+	)
+	tok := signHS256(t, "sek")
+	// from is "de_D1" (rider sub); direction in custom_data is attacker-supplied garbage.
+	body := `{"uuid":"C3","from":"de_D1","status":"answered","duration":"0","custom_data":{"trip_id":"T1","direction":"GARBAGE"}}`
+	req := httptest.NewRequest("POST", "/webhooks/voice/event", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rr := httptest.NewRecorder()
+	h.EventWebhook(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if len(store.upserts) != 1 {
+		t.Fatalf("expected 1 upsert, got %d", len(store.upserts))
+	}
+	if got := store.upserts[0].Direction; got != "de_to_cust" {
+		t.Fatalf("Direction = %q, want %q (server-resolved)", got, "de_to_cust")
+	}
+}
