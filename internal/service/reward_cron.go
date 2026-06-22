@@ -158,7 +158,12 @@ func (c *RewardCron) runDailyWindow(ctx context.Context, day time.Time) {
 	day = day.In(loc)
 	window := day.Format("2006-01-02")
 	start, end := dayBounds(day)
-	startTS, endTS := start.Format(time.RFC3339), end.Format(time.RFC3339)
+	// Trips persist completed_at/cancelled_at as UTC RFC3339 ("...Z") in every
+	// write path (TripRepository.UpdateStatus / CompleteTripAndFreeDE /
+	// CancelByOrderID). The window BETWEEN filter compares raw strings, so the
+	// bounds must be emitted in the SAME UTC format or a ~2h offset skew would
+	// misattribute trips across the Zambia day boundary.
+	startTS, endTS := start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339)
 
 	specs := c.activeAccumulatorSpecs(ctx, "daily", end)
 	if len(specs) == 0 {
@@ -191,7 +196,8 @@ func (c *RewardCron) runWeeklyWindow(ctx context.Context, weekStart time.Time) {
 	window := isoWeekWindowKey(weekStart)
 	start, _ := dayBounds(weekStart)
 	_, end := dayBounds(weekEnd)
-	startTS, endTS := start.Format(time.RFC3339), end.Format(time.RFC3339)
+	// See runDailyWindow: bounds must match the stored UTC timestamp format.
+	startTS, endTS := start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339)
 
 	accSpecs := c.activeAccumulatorSpecs(ctx, "weekly", end)
 	rankSpecs := c.activeRankingSpecs(ctx, "weekly", end)

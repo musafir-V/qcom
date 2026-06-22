@@ -120,30 +120,39 @@ func (r *EarningsLedgerRepository) SumByDEAfter(ctx context.Context, deID, after
 
 // ExistsByReference reports whether a DE already has a ledger entry for a
 // specific earning type + reference window key.
+//
+// This is the idempotency guard for cron-emitted rewards. It must NOT use a
+// DynamoDB Query Limit together with a FilterExpression: DynamoDB applies Limit
+// BEFORE the filter, so a Limit:1 query inspects only the single lowest-SK item
+// in the EARN!{deID} partition and then filters — the reward row is almost never
+// that earliest item, so the match is missed and the reward is re-emitted on
+// every run. Instead this paginates the whole partition via LastEvaluatedKey
+// (mirroring SumByDEAfter above) and matches the reward type + reference in Go,
+// returning true as soon as any page yields a match.
 func (r *EarningsLedgerRepository) ExistsByReference(ctx context.Context, deID string, earningType models.EarningType, referenceID string) (bool, error) {
 	op := logging.Start(ctx, r.logger, "EarningsLedger.ExistsByReference", logrus.Fields{
 		"de_id": deID, "type": string(earningType), "reference_id": referenceID,
 	})
 	defer op.End()
 
-	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(r.tableName),
-		KeyConditionExpression: aws.String("PK = :pk"),
-		FilterExpression:       aws.String("#type = :type AND reference_id = :reference"),
-		ExpressionAttributeNames: map[string]string{
-			"#type": "type",
-		},
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk":        &types.AttributeValueMemberS{Value: "EARN!" + deID},
-			":type":      &types.AttributeValueMemberS{Value: string(earningType)},
-			":reference": &types.AttributeValueMemberS{Value: referenceID},
-		},
-		Limit: aws.Int32(1),
-	})
-	if err != nil {
-		return false, op.Fail(fmt.Errorf("failed to query ledger reference: %w", err))
+	var lastKey map[string]types.AttributeValue
+	for {
+		entries, nextKey, err := r.QueryByDE(ctx, deID, "", 50, lastKey)
+		if err != nil {
+			return false, op.Fail(err)
+		}
+		for _, e := range entries {
+			if e.Type == earningType && e.ReferenceID == referenceID {
+				op.With("exists", true)
+				return true, nil
+			}
+		}
+		if nextKey == nil {
+			break
+		}
+		lastKey = nextKey
 	}
-	exists := len(result.Items) > 0
-	op.With("exists", exists)
-	return exists, nil
+
+	op.With("exists", false)
+	return false, nil
 }

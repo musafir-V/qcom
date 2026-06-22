@@ -25,11 +25,24 @@ type stubRewardTripRepo struct {
 	err   error
 }
 
-func (s *stubRewardTripRepo) ListByDEWindow(_ context.Context, deID, _, _ string, _ int32, _ map[string]types.AttributeValue) ([]*models.Trip, map[string]types.AttributeValue, error) {
+// ListByDEWindow mirrors the production repository's BETWEEN semantics so the
+// tests actually exercise window membership: a trip is in-window if its
+// completed_at OR cancelled_at falls lexicographically within [start, end].
+func (s *stubRewardTripRepo) ListByDEWindow(_ context.Context, deID, start, end string, _ int32, _ map[string]types.AttributeValue) ([]*models.Trip, map[string]types.AttributeValue, error) {
 	if s.err != nil {
 		return nil, nil, s.err
 	}
-	return s.perDE[deID], nil, nil
+	var out []*models.Trip
+	for _, trip := range s.perDE[deID] {
+		if betweenStr(trip.CompletedAt, start, end) || betweenStr(trip.CancelledAt, start, end) {
+			out = append(out, trip)
+		}
+	}
+	return out, nil, nil
+}
+
+func betweenStr(ts, start, end string) bool {
+	return ts != "" && ts >= start && ts <= end
 }
 
 type stubRewardRuleRepo struct {
@@ -111,6 +124,84 @@ func TestRewardCron_RunDailyWindow_EmitsAndIsIdempotent(t *testing.T) {
 	if len(repo.app) != 1 {
 		t.Fatalf("second run should be idempotent; appended entries = %d, want 1", len(repo.app))
 	}
+}
+
+func TestRewardCron_RunDailyWindow_RespectsWindowBounds(t *testing.T) {
+	specBytes, err := json.Marshal(models.AccumulatorSpec{
+		Metric:        "on_time_trips",
+		Window:        "daily",
+		Threshold:     10,
+		RequireNoFail: true,
+		Reward: models.Reward{
+			Kind:      "cash",
+			AmountZMW: 25,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal spec: %v", err)
+	}
+	rule := &models.Rule{
+		ID:      "b1_daily_bonus",
+		Family:  models.FamilyAccumulator,
+		Enabled: true,
+		Version: 1,
+		Spec:    specBytes,
+	}
+	windowDay := time.Date(2026, 6, 22, 0, 0, 0, 0, mustLoadLusaka(t))
+
+	// Trips are stored in UTC (matching trip_repository.go). The Zambia day
+	// 2026-06-22 maps to the UTC window [2026-06-21T22:00:00Z, 2026-06-22T21:59:59Z].
+	insideTrips := func() []*models.Trip {
+		out := make([]*models.Trip, 0, 10)
+		for i := 0; i < 10; i++ {
+			out = append(out, completedTrip(true, "2026-06-22T12:00:00Z")) // mid Zambia day
+		}
+		return out
+	}
+
+	t.Run("all_inside_window_awards", func(t *testing.T) {
+		repo := &stubRewardLedgerRepo{exists: map[string]bool{}}
+		cron := newRewardCronWithDeps(
+			&stubRewardDERepo{des: []*models.DeliveryExecutive{{DEID: "de-1"}}},
+			&stubRewardTripRepo{perDE: map[string][]*models.Trip{"de-1": insideTrips()}},
+			&stubRewardRuleRepo{rules: []*models.Rule{rule}},
+			repo,
+			&stubRewardLockRepo{},
+			logrus.New(),
+		)
+		cron.runDailyWindow(context.Background(), windowDay)
+		if len(repo.app) != 1 {
+			t.Fatalf("appended entries = %d, want 1", len(repo.app))
+		}
+	})
+
+	t.Run("out_of_window_trips_excluded", func(t *testing.T) {
+		// 9 trips inside the window plus 5 on-time trips at 2026-06-22T22:30:00Z.
+		// In UTC that is 00:30 +02:00 on 2026-06-23 — the NEXT Zambia day — so
+		// they are past the 2026-06-22T21:59:59Z end bound and must be excluded.
+		// This is the discriminating case for the timezone fix: with the old
+		// Zambia-local bounds (...T23:59:59+02:00) these trips compared as
+		// in-window (string "22:30:00Z" < "23:59:59+02:00"), wrongly pushing the
+		// count to 14 and emitting a reward. With UTC bounds only 9 count, so the
+		// threshold of 10 is not met and nothing is emitted.
+		trips := insideTrips()[:9]
+		for i := 0; i < 5; i++ {
+			trips = append(trips, completedTrip(true, "2026-06-22T22:30:00Z"))
+		}
+		repo := &stubRewardLedgerRepo{exists: map[string]bool{}}
+		cron := newRewardCronWithDeps(
+			&stubRewardDERepo{des: []*models.DeliveryExecutive{{DEID: "de-1"}}},
+			&stubRewardTripRepo{perDE: map[string][]*models.Trip{"de-1": trips}},
+			&stubRewardRuleRepo{rules: []*models.Rule{rule}},
+			repo,
+			&stubRewardLockRepo{},
+			logrus.New(),
+		)
+		cron.runDailyWindow(context.Background(), windowDay)
+		if len(repo.app) != 0 {
+			t.Fatalf("appended entries = %d, want 0 (out-of-window trips must not count)", len(repo.app))
+		}
+	})
 }
 
 func TestRewardCron_RunWeeklyWindow_EmitsAccumulatorAndRanking(t *testing.T) {
