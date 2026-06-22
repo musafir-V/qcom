@@ -10,6 +10,7 @@ import (
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
+	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
@@ -142,6 +143,9 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 
 	// 6. Apply transition
 	task.Status = newStatus
+	if (task.Type == models.TaskTypePickup || task.Type == models.TaskTypeDrop) && newStatus == models.TaskStatusCompleted {
+		task.CompletedAt = timezone.Now().Format(time.RFC3339)
+	}
 
 	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
 		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, tripID, de.PhoneNumber, trip.Tasks, codAccrualAmount(trip)); err != nil {
