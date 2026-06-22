@@ -34,13 +34,22 @@ Callers must **not** pass `fcm_token` on the send API. Register tokens via the d
                                                        │                     │
 ┌──────────────────┐   POST /internal/v1/              │                     │
 │  order-service   │   notifications/send             │                     │
-│  (private VPC)   │ ─────────────────────────────────▶│                     │
+│  (product EC2,   │ ──▶ internal NLB (VPC-only) ────▶│                     │
+│   same VPC)      │     internal.bunzodelivery.com   │                     │
 └──────────────────┘                                   └─────────────────────┘
 
 qcom internal code (assignment cron, trip service) calls the same Send logic in-process — no HTTP loopback.
 ```
 
-**Network rule:** `/internal/v1/*` must **not** be exposed on the public ALB. Only services inside the VPC (e.g. order-service) should reach the internal send endpoint. No API key is required today — security is network isolation.
+**Production private URL (order-service → qcom):** `http://internal.bunzodelivery.com:8080`
+
+- Route53 private zone `internal.bunzodelivery.com` (resolves only inside the VPC)
+- Internal NLB `qcom-internal-nlb` → `qcom-internal-tg` → qcom ASG on `:8080`
+- SG: `product-ec2-sg` → `qcom-ec2-sg:8080`
+- Provision: `qcom/scripts/setup-qcom-internal-nlb.sh`
+- Enable on product EC2: `inventory/scripts/configure-qcom-notifications-env.sh`
+
+**Network rule:** Production order-service uses the internal NLB (`internal.bunzodelivery.com`). For **local testing only**, `/internal/*` may be forwarded on public `qcom-alb` via `scripts/enable-public-internal-alb.sh` (no auth on this endpoint — remove when not needed).
 
 ---
 
