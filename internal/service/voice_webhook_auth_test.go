@@ -20,4 +20,13 @@ func TestVerifyVonageSignature(t *testing.T) {
 	if VerifyVonageSignature("", secret) {
 		t.Fatal("empty header accepted")
 	}
+	// Test algorithm confusion: alg:none token must be rejected
+	noneTok, _ := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{"iat": time.Now().Unix()}).SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if VerifyVonageSignature("Bearer "+noneTok, secret) {
+		t.Fatal("alg:none token must be rejected")
+	}
+	// Test non-Bearer prefix: token without Bearer prefix must be rejected
+	if VerifyVonageSignature("Token "+signed, secret) {
+		t.Fatal("non-Bearer header must be rejected")
+	}
 }
