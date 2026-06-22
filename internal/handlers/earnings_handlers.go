@@ -12,10 +12,22 @@ import (
 )
 
 type EarningsHandlers struct {
-	earningsLedgerRepo *repository.EarningsLedgerRepository
-	disbursementRepo   *repository.DisbursementRepository
-	deRepo             *repository.DERepository
+	earningsLedgerRepo earningsSummaryLedgerQuerier
+	disbursementRepo   earningsDisbursementLister
+	deRepo             earningsDEReader
 	logger             *logrus.Logger
+}
+
+type earningsSummaryLedgerQuerier interface {
+	QueryByDE(ctx context.Context, deID, afterTimestamp string, pageSize int32, lastKey map[string]types.AttributeValue) ([]*models.EarningsLedger, map[string]types.AttributeValue, error)
+}
+
+type earningsDisbursementLister interface {
+	ListByDE(ctx context.Context, deID string) ([]*models.Disbursement, error)
+}
+
+type earningsDEReader interface {
+	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
 }
 
 func NewEarningsHandlers(
@@ -64,19 +76,18 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	outstandingZMW, err := h.earningsLedgerRepo.SumByDEAfter(r.Context(), deID, afterTimestamp)
+	liveOrderTotal, bonusTotal, outstandingZMW, err := h.computeBreakdown(r.Context(), deID, afterTimestamp)
 	if err != nil {
-		h.logger.WithError(err).Error("failed to sum earnings ledger")
+		h.logger.WithError(err).Error("failed to compute earnings breakdown")
 		h.respondWithError(w, http.StatusInternalServerError, "EARNINGS_SUM_FAILED", "Failed to compute balance")
 		return
 	}
-
-	liveOrderTotal, bonusTotal := h.computeBreakdown(r.Context(), deID, afterTimestamp)
 
 	type lineItem struct {
 		EarningID   string  `json:"earning_id"`
 		Type        string  `json:"type"`
 		AmountZMW   float64 `json:"amount_zmw"`
+		Label       string  `json:"label,omitempty"`
 		CreatedAt   string  `json:"created_at"`
 		ReferenceID string  `json:"reference_id"`
 	}
@@ -86,6 +97,7 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 			EarningID:   e.EarningID,
 			Type:        string(e.Type),
 			AmountZMW:   e.AmountZMW,
+			Label:       e.Label,
 			CreatedAt:   e.CreatedAt,
 			ReferenceID: e.ReferenceID,
 		})
@@ -149,19 +161,23 @@ func (h *EarningsHandlers) GetDisbursements(w http.ResponseWriter, r *http.Reque
 
 // computeBreakdown sums ledger entries by category (trip vs bonus) across all
 // pages since the last disbursement.
-func (h *EarningsHandlers) computeBreakdown(ctx context.Context, deID, afterTimestamp string) (float64, float64) {
-	var liveTotal, bonusTotal float64
+func (h *EarningsHandlers) computeBreakdown(ctx context.Context, deID, afterTimestamp string) (float64, float64, float64, error) {
+	var liveTotal, bonusTotal, outstandingTotal float64
 	var lastKey map[string]types.AttributeValue
 	for {
 		entries, nextKey, err := h.earningsLedgerRepo.QueryByDE(ctx, deID, afterTimestamp, 50, lastKey)
 		if err != nil {
-			break
+			return 0, 0, 0, err
 		}
 		for _, e := range entries {
 			if e.Type == models.EarningTypeTrip {
 				liveTotal += e.AmountZMW
-			} else {
+				outstandingTotal += e.AmountZMW
+				continue
+			}
+			if e.Type == models.EarningTypeB1DailyBonus {
 				bonusTotal += e.AmountZMW
+				outstandingTotal += e.AmountZMW
 			}
 		}
 		if nextKey == nil {
@@ -169,7 +185,7 @@ func (h *EarningsHandlers) computeBreakdown(ctx context.Context, deID, afterTime
 		}
 		lastKey = nextKey
 	}
-	return liveTotal, bonusTotal
+	return liveTotal, bonusTotal, outstandingTotal, nil
 }
 
 func (h *EarningsHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
