@@ -61,6 +61,7 @@ func main() {
 	deviceTokenRepo := repository.NewDeviceTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	uploadUseCaseRepo := repository.NewUploadUseCaseRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	voiceProvisionRepo := repository.NewVoiceProvisionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	callRecordRepo := repository.NewCallRecordRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -137,7 +138,7 @@ func main() {
 		cfg.VonageVoice.PrivateKeyB64,
 		logger,
 	)
-	voiceHandlers := handlers.NewVoiceHandlers(voiceTokenSvc, voiceProvisionSvc, logger)
+	voiceHandlers := handlers.NewVoiceHandlers(voiceTokenSvc, voiceProvisionSvc, tripRepo, callRecordRepo, logger)
 
 	disputeRepo := repository.NewDisputeRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	dispositionRepo := repository.NewDisputeDispositionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -278,6 +279,8 @@ func setupRouter(
 	webhooks := router.PathPrefix("/webhooks").Subrouter()
 	webhooks.HandleFunc("/outbound-whatsapp-message-status", webhookHandlers.OutboundWhatsAppMessageStatus).Methods("POST", "OPTIONS")
 	webhooks.HandleFunc("/inbound-whatsapp-message", webhookHandlers.InboundWhatsAppMessage).Methods("POST", "OPTIONS")
+	// Vonage answer webhook — no auth middleware; Vonage calls this directly.
+	webhooks.HandleFunc("/voice/answer", voiceHandlers.AnswerWebhook).Methods("POST", "OPTIONS")
 
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
+	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/sirupsen/logrus"
 )
@@ -15,20 +17,42 @@ type userEnsurer interface {
 	EnsureUser(ctx context.Context, sub string) error
 }
 
+// tripGetter abstracts TripRepository.GetByID so the handler is testable
+// without a real DynamoDB connection.
+type tripGetter interface {
+	GetByID(ctx context.Context, tripID string) (*models.Trip, error)
+}
+
+// callCounter abstracts CallRecordRepository.CountByTripDirection so the
+// handler is testable without a real DynamoDB connection.
+type callCounter interface {
+	CountByTripDirection(ctx context.Context, tripID, direction string) (int, error)
+}
+
 // VoiceHandlers handles VoIP-related HTTP endpoints.
 type VoiceHandlers struct {
-	tokenSvc *service.VoiceTokenService
-	ensurer  userEnsurer
-	logger   *logrus.Logger
+	tokenSvc   *service.VoiceTokenService
+	ensurer    userEnsurer
+	trips      tripGetter
+	callCounts callCounter
+	logger     *logrus.Logger
 }
 
 // NewVoiceHandlers constructs a VoiceHandlers.
 func NewVoiceHandlers(
 	tokenSvc *service.VoiceTokenService,
 	ensurer userEnsurer,
+	trips tripGetter,
+	callCounts callCounter,
 	logger *logrus.Logger,
 ) *VoiceHandlers {
-	return &VoiceHandlers{tokenSvc: tokenSvc, ensurer: ensurer, logger: logger}
+	return &VoiceHandlers{
+		tokenSvc:   tokenSvc,
+		ensurer:    ensurer,
+		trips:      trips,
+		callCounts: callCounts,
+		logger:     logger,
+	}
 }
 
 type voiceTokenResponse struct {
@@ -74,6 +98,54 @@ func (h *VoiceHandlers) PostToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.respondWithJSON(w, http.StatusOK, voiceTokenResponse{Token: token, User: sub, TTL: 3600})
+}
+
+// answerReq is the inbound payload Vonage POSTs to the answer webhook.
+type answerReq struct {
+	From       string `json:"from"`
+	CustomData struct {
+		TripID    string `json:"trip_id"`
+		Direction string `json:"direction"`
+	} `json:"custom_data"`
+}
+
+// AnswerWebhook handles POST /webhooks/voice/answer.
+// Vonage calls this when an SDK user places an app-to-app call.
+// It authorizes by Trip and returns an NCCO. Always responds HTTP 200
+// (Vonage requires a valid NCCO even on reject).
+func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
+	var req answerReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CustomData.TripID == "" {
+		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
+		return
+	}
+
+	trip, err := h.trips.GetByID(r.Context(), req.CustomData.TripID)
+	if err != nil || trip == nil {
+		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_found"))
+		return
+	}
+
+	if ok, _ := service.CanCall(trip, time.Now()); !ok {
+		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_callable"))
+		return
+	}
+
+	// Resolve the counterpart from the authenticated caller (From field).
+	// Use this resolved direction — do NOT trust client-supplied custom_data.direction.
+	toUser, direction, ok := service.ResolveCounterpart(trip, req.From)
+	if !ok {
+		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("unknown_caller"))
+		return
+	}
+
+	count, _ := h.callCounts.CountByTripDirection(r.Context(), trip.TripID, direction)
+	if count >= models.CallCapPerDirection {
+		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("cap_exceeded"))
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, service.ConnectAppNCCO(toUser))
 }
 
 func (h *VoiceHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
