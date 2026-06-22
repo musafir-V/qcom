@@ -117,3 +117,33 @@ func (r *EarningsLedgerRepository) SumByDEAfter(ctx context.Context, deID, after
 	op.With("total_zmw", total)
 	return total, nil
 }
+
+// ExistsByReference reports whether a DE already has a ledger entry for a
+// specific earning type + reference window key.
+func (r *EarningsLedgerRepository) ExistsByReference(ctx context.Context, deID string, earningType models.EarningType, referenceID string) (bool, error) {
+	op := logging.Start(ctx, r.logger, "EarningsLedger.ExistsByReference", logrus.Fields{
+		"de_id": deID, "type": string(earningType), "reference_id": referenceID,
+	})
+	defer op.End()
+
+	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		KeyConditionExpression: aws.String("PK = :pk"),
+		FilterExpression:       aws.String("#type = :type AND reference_id = :reference"),
+		ExpressionAttributeNames: map[string]string{
+			"#type": "type",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk":        &types.AttributeValueMemberS{Value: "EARN!" + deID},
+			":type":      &types.AttributeValueMemberS{Value: string(earningType)},
+			":reference": &types.AttributeValueMemberS{Value: referenceID},
+		},
+		Limit: aws.Int32(1),
+	})
+	if err != nil {
+		return false, op.Fail(fmt.Errorf("failed to query ledger reference: %w", err))
+	}
+	exists := len(result.Items) > 0
+	op.With("exists", exists)
+	return exists, nil
+}

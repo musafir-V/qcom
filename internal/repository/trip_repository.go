@@ -165,9 +165,9 @@ func (r *TripRepository) Assign(
 						"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 					},
-					UpdateExpression:         aws.String(tripUpdateExpr),
-					ConditionExpression:      aws.String("attribute_not_exists(de_id)"),
-					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					UpdateExpression:          aws.String(tripUpdateExpr),
+					ConditionExpression:       aws.String("attribute_not_exists(de_id)"),
+					ExpressionAttributeNames:  map[string]string{"#status": "status"},
 					ExpressionAttributeValues: tripExprValues,
 				},
 			},
@@ -287,7 +287,7 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 						"SET #status = :free, updated_at = :now, in_hand_cash_zmw = if_not_exists(in_hand_cash_zmw, :zero) + :cod " +
 							"REMOVE current_order_id, current_trip_id, current_store_id, duty_index_key",
 					),
-					ConditionExpression: aws.String("#status = :busy AND current_trip_id = :tid"),
+					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
 					ExpressionAttributeNames: map[string]string{"#status": "status"},
 					ExpressionAttributeValues: map[string]types.AttributeValue{
 						":free": &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
@@ -371,7 +371,7 @@ func (r *TripRepository) UpdatePayout(
 			":on_time": &types.AttributeValueMemberBOOL{
 				Value: onTime,
 			},
-			":now":   &types.AttributeValueMemberS{Value: now},
+			":now": &types.AttributeValueMemberS{Value: now},
 		},
 	})
 	if err != nil {
@@ -417,6 +417,56 @@ func (r *TripRepository) ListByDEAfter(ctx context.Context, deID, afterTimestamp
 		var trip models.Trip
 		if err := attributevalue.UnmarshalMap(item, &trip); err != nil {
 			op.Logger().WithError(err).Warn("failed to unmarshal trip from DETripsIndex; skipping")
+			continue
+		}
+		trips = append(trips, &trip)
+	}
+
+	op.With("count", len(trips))
+	return trips, result.LastEvaluatedKey, nil
+}
+
+// ListByDEWindow returns trips assigned to a DE that were either completed or
+// cancelled inside [startTimestamp, endTimestamp] (inclusive). The method uses
+// a filtered table scan to include cancelled trips (which may not have
+// completed_at and therefore cannot be fetched via DETripsIndex).
+func (r *TripRepository) ListByDEWindow(
+	ctx context.Context,
+	deID, startTimestamp, endTimestamp string,
+	pageSize int32,
+	lastKey map[string]types.AttributeValue,
+) ([]*models.Trip, map[string]types.AttributeValue, error) {
+	op := logging.Start(ctx, r.logger, "TripRepository.ListByDEWindow", logrus.Fields{
+		"de_id": deID, "start": startTimestamp, "end": endTimestamp,
+	})
+	defer op.End()
+
+	input := &dynamodb.ScanInput{
+		TableName: aws.String(r.tableName),
+		FilterExpression: aws.String(
+			"de_id = :de AND ((completed_at BETWEEN :start AND :end) OR (cancelled_at BETWEEN :start AND :end))",
+		),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":de":    &types.AttributeValueMemberS{Value: deID},
+			":start": &types.AttributeValueMemberS{Value: startTimestamp},
+			":end":   &types.AttributeValueMemberS{Value: endTimestamp},
+		},
+		ExclusiveStartKey: lastKey,
+	}
+	if pageSize > 0 {
+		input.Limit = aws.Int32(pageSize)
+	}
+
+	result, err := r.client.Scan(ctx, input)
+	if err != nil {
+		return nil, nil, op.Fail(fmt.Errorf("failed to scan trips by DE window: %w", err))
+	}
+
+	var trips []*models.Trip
+	for _, item := range result.Items {
+		var trip models.Trip
+		if err := attributevalue.UnmarshalMap(item, &trip); err != nil {
+			op.Logger().WithError(err).Warn("failed to unmarshal trip from DE window scan; skipping")
 			continue
 		}
 		trips = append(trips, &trip)
