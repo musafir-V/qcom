@@ -75,12 +75,15 @@ func (s *PayoutService) OnTripCompleted(ctx context.Context, trip *models.Trip, 
 		return
 	}
 
-	basePayZMW := money.RoundUpZMW(trip.BasePayZMW)
-	bonusPayZMW := computeTierBonus(newDailyCount, cfg)
-	totalPayZMW := basePayZMW + bonusPayZMW
+	payout := computeCompletionPayout(trip, cfg)
+	trip.DistanceKM = payout.DistanceKM
+	trip.BasePayZMW = payout.BasePayZMW
+	trip.BonusPayZMW = payout.BonusPayZMW
+	trip.TotalPayZMW = payout.TotalPayZMW
+	trip.OnTime = payout.OnTime
 
 	if err := s.tripRepo.UpdatePayout(ctx, trip.TripID,
-		trip.DistanceKM, basePayZMW, bonusPayZMW, totalPayZMW, newDailyCount); err != nil {
+		trip.DistanceKM, trip.BasePayZMW, trip.BonusPayZMW, trip.TotalPayZMW, newDailyCount, trip.OnTime); err != nil {
 		s.logger.WithError(err).Error("payout: failed to update trip payout fields")
 	}
 
@@ -89,7 +92,7 @@ func (s *PayoutService) OnTripCompleted(ctx context.Context, trip *models.Trip, 
 		DEID:        de.DEID,
 		EarningID:   uuid.New().String(),
 		Type:        models.EarningTypeTrip,
-		AmountZMW:   totalPayZMW,
+		AmountZMW:   trip.TotalPayZMW,
 		CreatedAt:   now,
 		ReferenceID: trip.TripID,
 	}
@@ -141,17 +144,34 @@ func (s *PayoutService) writeReferralBonusEntries(ctx context.Context, referredD
 }
 
 func computeBasePay(distanceKM float64, cfg *models.PayoutConfig) float64 {
-	return money.RoundUpZMW(cfg.RatePerKmZMW * distanceKM)
+	return cfg.RatePerKmZMW * distanceKM
 }
 
-// computeTierBonus returns per-delivery bonus based on 1-indexed daily delivery rank.
-func computeTierBonus(dailyRank int, cfg *models.PayoutConfig) float64 {
-	switch {
-	case dailyRank > cfg.Tier2Threshold:
-		return money.RoundUpZMW(cfg.Tier2BonusZMW)
-	case dailyRank > cfg.Tier1Threshold:
-		return money.RoundUpZMW(cfg.Tier1BonusZMW)
-	default:
-		return 0
+type completionPayout struct {
+	DistanceKM  float64
+	BasePayZMW  float64
+	BonusPayZMW float64
+	TotalPayZMW float64
+	OnTime      bool
+}
+
+func computeCompletionPayout(trip *models.Trip, cfg *models.PayoutConfig) completionPayout {
+	distanceKM := trip.DistanceKM // Fallback to estimated distance; actual distance is not currently tracked.
+	basePayZMW := money.Round2ZMW(computeBasePay(distanceKM, cfg))
+	totalPayZMW := ApplyRate(basePayZMW, RateDecision{
+		Multiplier: trip.RateMultiplier,
+		FlatZMW:    trip.RateFlatZMW,
+	})
+	bonusPayZMW := money.Round2ZMW(totalPayZMW - basePayZMW)
+
+	actualMinutes, ok := trip.ActualDeliveryMinutes()
+	onTime := ok && actualMinutes < trip.SLAMinutes
+
+	return completionPayout{
+		DistanceKM:  distanceKM,
+		BasePayZMW:  basePayZMW,
+		BonusPayZMW: bonusPayZMW,
+		TotalPayZMW: totalPayZMW,
+		OnTime:      onTime,
 	}
 }

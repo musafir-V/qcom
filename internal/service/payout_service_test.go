@@ -2,6 +2,7 @@ package service
 
 import (
 	"testing"
+	"time"
 
 	"github.com/qcom/qcom/internal/models"
 )
@@ -20,64 +21,95 @@ func TestComputeBasePay_ZeroDistance(t *testing.T) {
 	}
 }
 
-func TestComputeTierBonus_BelowTier1(t *testing.T) {
-	cfg := &models.PayoutConfig{Tier1Threshold: 10, Tier1BonusZMW: 10, Tier2Threshold: 15, Tier2BonusZMW: 20}
-	if bonus := computeTierBonus(5, cfg); bonus != 0 {
-		t.Fatalf("expected 0 bonus for delivery 5, got %.2f", bonus)
-	}
-}
-
-func TestComputeTierBonus_AtTier1(t *testing.T) {
-	cfg := &models.PayoutConfig{Tier1Threshold: 10, Tier1BonusZMW: 10, Tier2Threshold: 15, Tier2BonusZMW: 20}
-	if bonus := computeTierBonus(11, cfg); bonus != 10 {
-		t.Fatalf("expected 10 ZMW tier1 bonus at delivery 11, got %.2f", bonus)
-	}
-}
-
-func TestComputeTierBonus_AtTier2(t *testing.T) {
-	cfg := &models.PayoutConfig{Tier1Threshold: 10, Tier1BonusZMW: 10, Tier2Threshold: 15, Tier2BonusZMW: 20}
-	if bonus := computeTierBonus(16, cfg); bonus != 20 {
-		t.Fatalf("expected 20 ZMW tier2 bonus at delivery 16, got %.2f", bonus)
-	}
-}
-
-func TestComputeTierBonus_ExactTier1Boundary(t *testing.T) {
-	cfg := &models.PayoutConfig{Tier1Threshold: 10, Tier1BonusZMW: 10, Tier2Threshold: 15, Tier2BonusZMW: 20}
-	if computeTierBonus(10, cfg) != 0 {
-		t.Fatal("delivery 10 should have no bonus (threshold is >10)")
-	}
-	if computeTierBonus(11, cfg) != 10 {
-		t.Fatal("delivery 11 should earn tier1 bonus")
-	}
-}
-
-func TestComputeTierBonus_ExactTier2Boundary(t *testing.T) {
-	cfg := &models.PayoutConfig{Tier1Threshold: 10, Tier1BonusZMW: 10, Tier2Threshold: 15, Tier2BonusZMW: 20}
-	if computeTierBonus(15, cfg) != 10 {
-		t.Fatal("delivery 15 should earn tier1 bonus (tier2 threshold is >15)")
-	}
-	if computeTierBonus(16, cfg) != 20 {
-		t.Fatal("delivery 16 should earn tier2 bonus")
-	}
-}
-
 func TestComputeBasePay_FractionalDistance(t *testing.T) {
 	cfg := &models.PayoutConfig{RatePerKmZMW: 5.0}
-	if pay := computeBasePay(2.5, cfg); pay != 13 {
-		t.Fatalf("expected 13 ZMW (rounded up) for 2.5km at 5/km, got %.2f", pay)
+	if pay := computeBasePay(2.5, cfg); pay != 12.5 {
+		t.Fatalf("expected 12.5 ZMW for 2.5km at 5/km, got %.2f", pay)
 	}
 }
 
 func TestComputeBasePay_FractionalPayout(t *testing.T) {
 	cfg := &models.PayoutConfig{RatePerKmZMW: 5.0}
-	if pay := computeBasePay(10.915, cfg); pay != 55 {
-		t.Fatalf("expected 55 ZMW (rounded up) for 10.915km at 5/km, got %.2f", pay)
+	if pay := computeBasePay(10.915, cfg); pay < 54.5749 || pay > 54.5751 {
+		t.Fatalf("expected 54.575 ZMW for 10.915km at 5/km, got %.6f", pay)
 	}
 }
 
-func TestComputeTierBonus_ZeroThresholds(t *testing.T) {
-	cfg := &models.PayoutConfig{}
-	if bonus := computeTierBonus(5, cfg); bonus != 0 {
-		t.Fatalf("expected 0 bonus with zero config, got %.2f", bonus)
+func TestComputeCompletionPayout_AppliesFrozenRateAndRounds(t *testing.T) {
+	trip := &models.Trip{
+		DistanceKM:     5.2,
+		RateMultiplier: 1.2,
+		RateFlatZMW:    0,
+		SLAMinutes:     30,
+		Tasks: []models.Task{
+			{Type: models.TaskTypePickup, CompletedAt: "2026-06-22T10:00:00+02:00"},
+			{Type: models.TaskTypeDrop, CompletedAt: "2026-06-22T10:20:00+02:00"},
+		},
+	}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0}
+
+	got := computeCompletionPayout(trip, cfg)
+	if got.BasePayZMW != 10.4 {
+		t.Fatalf("expected base 10.40, got %.2f", got.BasePayZMW)
+	}
+	if got.TotalPayZMW != 12.48 {
+		t.Fatalf("expected total 12.48, got %.2f", got.TotalPayZMW)
+	}
+	if got.BonusPayZMW != 2.08 {
+		t.Fatalf("expected surge bonus 2.08, got %.2f", got.BonusPayZMW)
+	}
+	if !got.OnTime {
+		t.Fatal("expected trip to be on-time")
+	}
+}
+
+func TestComputeCompletionPayout_DefaultMultiplierWhenFrozenZero(t *testing.T) {
+	trip := &models.Trip{
+		DistanceKM:     5.2,
+		RateMultiplier: 0, // legacy/default persisted value
+		RateFlatZMW:    0,
+		SLAMinutes:     30,
+	}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0}
+
+	got := computeCompletionPayout(trip, cfg)
+	if got.TotalPayZMW != got.BasePayZMW {
+		t.Fatalf("expected no surge when multiplier is zero/default, base=%.2f total=%.2f", got.BasePayZMW, got.TotalPayZMW)
+	}
+}
+
+func TestComputeCompletionPayout_OnTimeFalseWhenLate(t *testing.T) {
+	trip := &models.Trip{
+		DistanceKM:     5.0,
+		RateMultiplier: 1.0,
+		SLAMinutes:     15,
+		Tasks: []models.Task{
+			{Type: models.TaskTypePickup, CompletedAt: "2026-06-22T10:00:00+02:00"},
+			{Type: models.TaskTypeDrop, CompletedAt: "2026-06-22T10:20:00+02:00"},
+		},
+	}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0}
+
+	got := computeCompletionPayout(trip, cfg)
+	if got.OnTime {
+		t.Fatal("expected trip to be late")
+	}
+}
+
+func TestComputeCompletionPayout_OnTimeFalseWhenActualDurationUnavailable(t *testing.T) {
+	trip := &models.Trip{
+		DistanceKM:     5.0,
+		RateMultiplier: 1.0,
+		SLAMinutes:     15,
+		Tasks: []models.Task{
+			{Type: models.TaskTypePickup, CompletedAt: ""},
+			{Type: models.TaskTypeDrop, CompletedAt: time.Now().Format(time.RFC3339)},
+		},
+	}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0}
+
+	got := computeCompletionPayout(trip, cfg)
+	if got.OnTime {
+		t.Fatal("expected on_time=false when actual delivery duration is unavailable")
 	}
 }

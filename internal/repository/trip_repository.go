@@ -344,7 +344,13 @@ func (r *TripRepository) UpdateTasks(ctx context.Context, tripID string, tasks [
 
 // UpdatePayout stamps base_pay_zmw and distance_km at assignment time,
 // and bonus_pay_zmw + total_pay_zmw + delivery_rank_of_day at completion time.
-func (r *TripRepository) UpdatePayout(ctx context.Context, tripID string, distanceKM, basePayZMW, bonusPayZMW, totalPayZMW float64, rankOfDay int) error {
+func (r *TripRepository) UpdatePayout(
+	ctx context.Context,
+	tripID string,
+	distanceKM, basePayZMW, bonusPayZMW, totalPayZMW float64,
+	rankOfDay int,
+	onTime bool,
+) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.UpdatePayout", logrus.Fields{"trip_id": tripID})
 	defer op.End()
 
@@ -355,13 +361,16 @@ func (r *TripRepository) UpdatePayout(ctx context.Context, tripID string, distan
 			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 		},
-		UpdateExpression: aws.String("SET distance_km = :dist, base_pay_zmw = :base, bonus_pay_zmw = :bonus, total_pay_zmw = :total, delivery_rank_of_day = :rank, updated_at = :now"),
+		UpdateExpression: aws.String("SET distance_km = :dist, base_pay_zmw = :base, bonus_pay_zmw = :bonus, total_pay_zmw = :total, delivery_rank_of_day = :rank, on_time = :on_time, updated_at = :now"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":dist":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.4f", distanceKM)},
-			":base":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%.0f", basePayZMW)},
-			":bonus": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.0f", bonusPayZMW)},
-			":total": &types.AttributeValueMemberN{Value: fmt.Sprintf("%.0f", totalPayZMW)},
+			":base":  &types.AttributeValueMemberN{Value: strconv.FormatFloat(basePayZMW, 'f', 2, 64)},
+			":bonus": &types.AttributeValueMemberN{Value: strconv.FormatFloat(bonusPayZMW, 'f', 2, 64)},
+			":total": &types.AttributeValueMemberN{Value: strconv.FormatFloat(totalPayZMW, 'f', 2, 64)},
 			":rank":  &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", rankOfDay)},
+			":on_time": &types.AttributeValueMemberBOOL{
+				Value: onTime,
+			},
 			":now":   &types.AttributeValueMemberS{Value: now},
 		},
 	})
