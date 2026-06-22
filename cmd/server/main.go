@@ -91,7 +91,7 @@ func main() {
 	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, logger)
 	adminService := service.NewAdminService(tripRepo, deRepo, logger)
-	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, notificationService, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, nil, notificationService, logger)
 	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
 	s3Client, err := initS3(cfg, logger)

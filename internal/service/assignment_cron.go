@@ -39,6 +39,7 @@ type AssignmentCron struct {
 	darkstoreRepo        *repository.DarkstoreRepository
 	javaClient           *JavaOrderClient
 	distanceService      *DistanceService
+	fareEngine           *FareEngine
 	notifier             NotificationService
 	logger               *logrus.Logger
 
@@ -56,6 +57,7 @@ func NewAssignmentCron(
 	darkstoreRepo *repository.DarkstoreRepository,
 	javaClient *JavaOrderClient,
 	distanceService *DistanceService,
+	fareEngine *FareEngine,
 	notifier NotificationService,
 	logger *logrus.Logger,
 ) *AssignmentCron {
@@ -69,6 +71,7 @@ func NewAssignmentCron(
 		darkstoreRepo:        darkstoreRepo,
 		javaClient:           javaClient,
 		distanceService:      distanceService,
+		fareEngine:           fareEngine,
 		notifier:             notifier,
 		logger:               logger,
 		stopCh:               make(chan struct{}),
@@ -289,8 +292,29 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 			if usedDE[de.DEID] || trip.HasRejected(de.DEID) || de.CashExceeds(cashLimit) {
 				continue
 			}
-			deadline := now.Add(time.Duration(autoRejectSecs) * time.Second).Format(time.RFC3339)
-			if err := c.tripRepo.Assign(ctx, trip.TripID, trip.OrderID, de.DEID, de.PhoneNumber, now.Format(time.RFC3339), deadline); err != nil {
+			assignedAt := now
+			deadline := assignedAt.Add(time.Duration(autoRejectSecs) * time.Second).Format(time.RFC3339)
+			stampAssignmentDecision(trip, cfg, assignedAt, c.fareEngine)
+			trip.AssignedAt = assignedAt.Format(time.RFC3339)
+			trip.AcceptDeadline = deadline
+			trip.DEID = de.DEID
+			trip.DEPhone = de.PhoneNumber
+			trip.Status = models.TripStatusAssigned
+
+			if err := c.tripRepo.Assign(
+				ctx,
+				trip.TripID,
+				trip.OrderID,
+				de.DEID,
+				de.PhoneNumber,
+				trip.AssignedAt,
+				deadline,
+				trip.SLAMinutes,
+				trip.RateRuleID,
+				trip.RateRuleVersion,
+				trip.RateMultiplier,
+				trip.RateFlatZMW,
+			); err != nil {
 				c.logger.WithError(err).WithFields(logrus.Fields{
 					"trip_id": trip.TripID, "de_id": de.DEID,
 				}).Warn("assignment cron: assign conflict — trip or DE taken, trying next DE")
@@ -322,6 +346,24 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 			break
 		}
 	}
+}
+
+func stampAssignmentDecision(trip *models.Trip, cfg *models.PayoutConfig, assignedAt time.Time, fareEngine *FareEngine) {
+	if trip == nil || cfg == nil {
+		return
+	}
+
+	basePay := computeBasePay(trip.DistanceKM, cfg)
+	decision := RateDecision{Multiplier: 1, FlatZMW: 0}
+	if fareEngine != nil {
+		decision = fareEngine.ResolveRate(assignedAt, basePay)
+	}
+
+	trip.SLAMinutes = trip.DistanceKM * cfg.EffectiveMinutesPerKm()
+	trip.RateRuleID = decision.RuleID
+	trip.RateRuleVersion = decision.Version
+	trip.RateMultiplier = decision.Multiplier
+	trip.RateFlatZMW = decision.FlatZMW
 }
 
 func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *models.PayoutConfig) (*models.Trip, error) {

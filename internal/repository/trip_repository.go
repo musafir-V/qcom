@@ -118,13 +118,43 @@ func (r *TripRepository) GetByOrderID(ctx context.Context, orderID string) (*mod
 // Assign atomically sets de_id and status=assigned on the trip, and sets
 // status=busy + current_order_id on the DE — in a single DynamoDB transaction.
 // Conditions: trip must have no de_id yet; DE must have status=eligible.
-func (r *TripRepository) Assign(ctx context.Context, tripID, orderID, deID, dePhone, assignedAt, acceptDeadline string) error {
+func (r *TripRepository) Assign(
+	ctx context.Context,
+	tripID, orderID, deID, dePhone, assignedAt, acceptDeadline string,
+	slaMinutes float64,
+	rateRuleID string,
+	rateRuleVersion int,
+	rateMultiplier, rateFlatZMW float64,
+) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.Assign", logrus.Fields{
 		"trip_id": tripID, "de_id": deID,
 	})
 	defer op.End()
 
 	now := time.Now().UTC().Format(time.RFC3339)
+
+	tripUpdateExpr := "SET #status = :assigned, de_id = :de_id, de_phone = :de_phone, assigned_at = :at, accept_deadline = :deadline, sla_minutes = :sla, rate_multiplier = :mult, rate_flat_zmw = :flat, updated_at = :now"
+	if rateRuleID != "" {
+		tripUpdateExpr += ", rate_rule_id = :rule_id, rate_rule_version = :rule_version"
+	} else {
+		tripUpdateExpr += " REMOVE rate_rule_id, rate_rule_version"
+	}
+
+	tripExprValues := map[string]types.AttributeValue{
+		":assigned": &types.AttributeValueMemberS{Value: string(models.TripStatusAssigned)},
+		":de_id":    &types.AttributeValueMemberS{Value: deID},
+		":de_phone": &types.AttributeValueMemberS{Value: dePhone},
+		":at":       &types.AttributeValueMemberS{Value: assignedAt},
+		":deadline": &types.AttributeValueMemberS{Value: acceptDeadline},
+		":sla":      &types.AttributeValueMemberN{Value: strconv.FormatFloat(slaMinutes, 'f', 4, 64)},
+		":mult":     &types.AttributeValueMemberN{Value: strconv.FormatFloat(rateMultiplier, 'f', 4, 64)},
+		":flat":     &types.AttributeValueMemberN{Value: strconv.FormatFloat(rateFlatZMW, 'f', 2, 64)},
+		":now":      &types.AttributeValueMemberS{Value: now},
+	}
+	if rateRuleID != "" {
+		tripExprValues[":rule_id"] = &types.AttributeValueMemberS{Value: rateRuleID}
+		tripExprValues[":rule_version"] = &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", rateRuleVersion)}
+	}
 
 	_, err := r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
@@ -135,17 +165,10 @@ func (r *TripRepository) Assign(ctx context.Context, tripID, orderID, deID, dePh
 						"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 					},
-					UpdateExpression:         aws.String("SET #status = :assigned, de_id = :de_id, de_phone = :de_phone, assigned_at = :at, accept_deadline = :deadline, updated_at = :now"),
+					UpdateExpression:         aws.String(tripUpdateExpr),
 					ConditionExpression:      aws.String("attribute_not_exists(de_id)"),
 					ExpressionAttributeNames: map[string]string{"#status": "status"},
-					ExpressionAttributeValues: map[string]types.AttributeValue{
-						":assigned": &types.AttributeValueMemberS{Value: string(models.TripStatusAssigned)},
-						":de_id":    &types.AttributeValueMemberS{Value: deID},
-						":de_phone": &types.AttributeValueMemberS{Value: dePhone},
-						":at":       &types.AttributeValueMemberS{Value: assignedAt},
-						":deadline": &types.AttributeValueMemberS{Value: acceptDeadline},
-						":now":      &types.AttributeValueMemberS{Value: now},
-					},
+					ExpressionAttributeValues: tripExprValues,
 				},
 			},
 			{

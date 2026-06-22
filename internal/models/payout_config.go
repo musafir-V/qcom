@@ -8,6 +8,7 @@ type PayoutConfig struct {
 
 	// Distance-based pay (populated by Plan B)
 	RatePerKmZMW             float64 `json:"rate_per_km_zmw" dynamodbav:"rate_per_km_zmw"`
+	MinutesPerKm             float64 `json:"minutes_per_km" dynamodbav:"minutes_per_km"`
 	Tier1Threshold           int     `json:"tier1_threshold" dynamodbav:"tier1_threshold"`
 	Tier1BonusZMW            float64 `json:"tier1_bonus_zmw" dynamodbav:"tier1_bonus_zmw"`
 	Tier2Threshold           int     `json:"tier2_threshold" dynamodbav:"tier2_threshold"`
@@ -24,5 +25,14 @@ type PayoutConfig struct {
 	WeeklyW3BonusZMW    float64 `json:"weekly_w3_bonus_zmw" dynamodbav:"weekly_w3_bonus_zmw"`
 }
 
+const DefaultMinutesPerKm = 4.0
+
 func (p *PayoutConfig) GetPK() string { return "CONFIG" }
 func (p *PayoutConfig) GetSK() string { return "PAYOUT_V1" }
+
+func (p *PayoutConfig) EffectiveMinutesPerKm() float64 {
+	if p.MinutesPerKm <= 0 {
+		return DefaultMinutesPerKm
+	}
+	return p.MinutesPerKm
+}

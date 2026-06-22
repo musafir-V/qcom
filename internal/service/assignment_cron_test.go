@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"strconv"
 	"testing"
 	"time"
@@ -195,5 +196,51 @@ func TestBuildTripCarriesCustomerUserID(t *testing.T) {
 	trip := buildTripFromOrder(order, "trip-1", "pick-1", "drop-1", "ORD1", "221", 3.5, 12.0, ds)
 	if trip.CustomerUserID != "U9" {
 		t.Fatalf("CustomerUserID = %q, want U9", trip.CustomerUserID)
+	}
+}
+
+func TestStampAssignmentDecision_DefaultDecisionAndSLA(t *testing.T) {
+	trip := &models.Trip{DistanceKM: 5.0}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0, MinutesPerKm: 4.0}
+	assignedAt := time.Date(2026, 6, 22, 10, 0, 0, 0, mustLoadLusaka(t))
+
+	stampAssignmentDecision(trip, cfg, assignedAt, nil)
+
+	if trip.SLAMinutes != 20 {
+		t.Fatalf("expected SLA 20, got %.2f", trip.SLAMinutes)
+	}
+	if trip.RateMultiplier != 1 || trip.RateFlatZMW != 0 {
+		t.Fatalf("expected default decision, got multiplier=%.2f flat=%.2f", trip.RateMultiplier, trip.RateFlatZMW)
+	}
+	if trip.RateRuleID != "" || trip.RateRuleVersion != 0 {
+		t.Fatalf("expected no winning rule metadata, got id=%q version=%d", trip.RateRuleID, trip.RateRuleVersion)
+	}
+}
+
+func TestStampAssignmentDecision_ResolvesRuleAtAssignmentTime(t *testing.T) {
+	loc := mustLoadLusaka(t)
+	assignedAt := time.Date(2026, 6, 22, 18, 0, 0, 0, loc)
+	spec, err := json.Marshal(models.RateModifierSpec{
+		DaysOfWeek: []int{int(time.Monday)},
+		StartTime:  "17:00",
+		EndTime:    "22:00",
+		Multiplier: 1.3,
+	})
+	if err != nil {
+		t.Fatalf("marshal spec: %v", err)
+	}
+	engine := newTestFareEngine(t, []*models.Rule{
+		{ID: "evening-surge", Family: models.FamilyRateModifier, Enabled: true, Priority: 1, Version: 3, Spec: spec},
+	})
+
+	trip := &models.Trip{DistanceKM: 5.0}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0, MinutesPerKm: 4.0}
+	stampAssignmentDecision(trip, cfg, assignedAt, engine)
+
+	if trip.RateRuleID != "evening-surge" || trip.RateRuleVersion != 3 {
+		t.Fatalf("unexpected winner metadata: id=%q version=%d", trip.RateRuleID, trip.RateRuleVersion)
+	}
+	if trip.RateMultiplier != 1.3 || trip.RateFlatZMW != 0 {
+		t.Fatalf("unexpected rate decision: multiplier=%.2f flat=%.2f", trip.RateMultiplier, trip.RateFlatZMW)
 	}
 }
