@@ -63,6 +63,27 @@ func TestComputeCompletionPayout_AppliesFrozenRateAndRounds(t *testing.T) {
 	}
 }
 
+func TestComputeCompletionPayout_RoundsOnlyFinalTotal(t *testing.T) {
+	trip := &models.Trip{
+		DistanceKM:     1.0, // raw base = 10.005 @ 10.005/km
+		RateMultiplier: 1.5,
+		RateFlatZMW:    0,
+		SLAMinutes:     30,
+	}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 10.005}
+
+	got := computeCompletionPayout(trip, cfg)
+	if got.BasePayZMW != 10.01 {
+		t.Fatalf("expected display base 10.01, got %.2f", got.BasePayZMW)
+	}
+	if got.TotalPayZMW != 15.01 {
+		t.Fatalf("expected single-rounded total 15.01, got %.2f", got.TotalPayZMW)
+	}
+	if got.BonusPayZMW != 5.00 {
+		t.Fatalf("expected bonus 5.00 after single rounding, got %.2f", got.BonusPayZMW)
+	}
+}
+
 func TestComputeCompletionPayout_DefaultMultiplierWhenFrozenZero(t *testing.T) {
 	trip := &models.Trip{
 		DistanceKM:     5.2,

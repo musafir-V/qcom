@@ -47,6 +47,7 @@ func TestGetEarningsSummary_IncludesLabelsAndExcludesNonCashFromOutstanding(t *t
 		entries: []*models.EarningsLedger{
 			{EarningID: "e-trip", DEID: "de-1", Type: models.EarningTypeTrip, AmountZMW: 100, CreatedAt: "2026-06-22T08:00:00+02:00", ReferenceID: "trip-1"},
 			{EarningID: "e-b1", DEID: "de-1", Type: models.EarningTypeB1DailyBonus, AmountZMW: 30, CreatedAt: "2026-06-22T09:00:00+02:00", ReferenceID: "2026-06-22"},
+			{EarningID: "e-ref", DEID: "de-1", Type: models.EarningTypeReferralBonus, AmountZMW: 25, CreatedAt: "2026-06-22T09:30:00+02:00", ReferenceID: "de-ref"},
 			{EarningID: "e-kind", DEID: "de-1", Type: models.EarningTypeMealieBag, AmountZMW: 0, Label: "Mealie Bag", CreatedAt: "2026-06-22T10:00:00+02:00", ReferenceID: "2026-W25"},
 			{EarningID: "e-disb", DEID: "de-1", Type: models.EarningTypeDisbursement, AmountZMW: -50, Label: "Weekly Payout", CreatedAt: "2026-06-22T11:00:00+02:00", ReferenceID: "disb-1"},
 		},
@@ -82,18 +83,18 @@ func TestGetEarningsSummary_IncludesLabelsAndExcludesNonCashFromOutstanding(t *t
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if body.OutstandingBalanceZMW != 130 {
-		t.Fatalf("outstanding_balance_zmw = %v, want 130", body.OutstandingBalanceZMW)
+	if body.OutstandingBalanceZMW != 155 {
+		t.Fatalf("outstanding_balance_zmw = %v, want 155", body.OutstandingBalanceZMW)
 	}
 	if body.LiveOrderTotalZMW != 100 {
 		t.Fatalf("live_order_total_zmw = %v, want 100", body.LiveOrderTotalZMW)
 	}
-	if body.BonusTotalZMW != 30 {
-		t.Fatalf("bonus_total_zmw = %v, want 30", body.BonusTotalZMW)
+	if body.BonusTotalZMW != 55 {
+		t.Fatalf("bonus_total_zmw = %v, want 55", body.BonusTotalZMW)
 	}
 
-	if len(body.LineItems) != 4 {
-		t.Fatalf("line_items length = %d, want 4", len(body.LineItems))
+	if len(body.LineItems) != 5 {
+		t.Fatalf("line_items length = %d, want 5", len(body.LineItems))
 	}
 
 	labelsByType := map[string]string{}

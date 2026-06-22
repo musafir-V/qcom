@@ -53,7 +53,6 @@ func main() {
 	assignmentConfigRepo := repository.NewAssignmentConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
-	weeklySummaryRepo := repository.NewWeeklySummaryRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	disbursementRepo := repository.NewDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	vonageJWTRepo := repository.NewVonageJWTRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -98,7 +97,6 @@ func main() {
 	fareEngine := service.NewFareEngine(ruleCache)
 	rewardCron := service.NewRewardCron(deRepo, tripRepo, ruleRepo, earningsLedgerRepo, cronLockRepo, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, fareEngine, notificationService, logger)
-	weeklyBonusCron := service.NewWeeklyBonusCron(deRepo, tripRepo, weeklySummaryRepo, earningsLedgerRepo, payoutConfigRepo, cronLockRepo, logger)
 
 	if err := service.SeedDefaults(appCtx, ruleRepo); err != nil {
 		logger.WithError(err).Fatal("Failed to seed default rules")
@@ -179,7 +177,6 @@ func main() {
 	}()
 
 	assignmentCron.Start()
-	weeklyBonusCron.Start()
 	rewardCron.Start(appCtx)
 
 	quit := make(chan os.Signal, 1)
@@ -193,9 +190,6 @@ func main() {
 
 	logger.Info("Stopping assignment cron...")
 	assignmentCron.Stop()
-
-	logger.Info("Stopping weekly bonus cron...")
-	weeklyBonusCron.Stop()
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.WithError(err).Fatal("Server forced to shutdown")

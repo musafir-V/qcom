@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/logging"
-	"github.com/qcom/qcom/internal/money"
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
@@ -112,19 +112,6 @@ func (s *PayoutService) OnTripCompleted(ctx context.Context, trip *models.Trip, 
 	}
 }
 
-// WriteWeeklyBonusEntry writes a weekly consistency bonus ledger entry (used by the weekly cron in B3).
-func (s *PayoutService) WriteWeeklyBonusEntry(ctx context.Context, deID, weekStartDate string, bonusZMW float64) error {
-	entry := &models.EarningsLedger{
-		DEID:        deID,
-		EarningID:   uuid.New().String(),
-		Type:        models.EarningTypeWeeklyBonus,
-		AmountZMW:   money.RoundUpZMW(bonusZMW),
-		CreatedAt:   timezone.Now().Format(time.RFC3339),
-		ReferenceID: weekStartDate,
-	}
-	return s.earningsLedgerRepo.Append(context.Background(), entry)
-}
-
 func (s *PayoutService) writeReferralBonusEntries(ctx context.Context, referredDEID, referrerDEID string, bonusZMW float64, now string) {
 	amount := money.RoundUpZMW(bonusZMW)
 	for _, deID := range []string{referredDEID, referrerDEID} {
@@ -157,11 +144,12 @@ type completionPayout struct {
 
 func computeCompletionPayout(trip *models.Trip, cfg *models.PayoutConfig) completionPayout {
 	distanceKM := trip.DistanceKM // Fallback to estimated distance; actual distance is not currently tracked.
-	basePayZMW := money.Round2ZMW(computeBasePay(distanceKM, cfg))
-	totalPayZMW := ApplyRate(basePayZMW, RateDecision{
+	rawBasePayZMW := computeBasePay(distanceKM, cfg)
+	totalPayZMW := ApplyRate(rawBasePayZMW, RateDecision{
 		Multiplier: trip.RateMultiplier,
 		FlatZMW:    trip.RateFlatZMW,
 	})
+	basePayZMW := money.Round2ZMW(rawBasePayZMW)
 	bonusPayZMW := money.Round2ZMW(totalPayZMW - basePayZMW)
 
 	actualMinutes, ok := trip.ActualDeliveryMinutes()

@@ -16,12 +16,16 @@ type DEService struct {
 	deRepo             *repository.DERepository
 	qrService          *QRService
 	referralService    *ReferralService
-	earningsLedgerRepo *repository.EarningsLedgerRepository
+	earningsLedgerRepo deEarningsLedgerReader
 	cashConfigRepo     *repository.CashConfigRepository
 	logger             *logrus.Logger
 }
 
-func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo *repository.EarningsLedgerRepository, cashConfigRepo *repository.CashConfigRepository, logger *logrus.Logger) *DEService {
+type deEarningsLedgerReader interface {
+	SumPositiveCashByDEAfter(ctx context.Context, deID, afterTimestamp string) (float64, error)
+}
+
+func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo deEarningsLedgerReader, cashConfigRepo *repository.CashConfigRepository, logger *logrus.Logger) *DEService {
 	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, earningsLedgerRepo: earningsLedgerRepo, cashConfigRepo: cashConfigRepo, logger: logger}
 }
 
@@ -86,7 +90,7 @@ func (s *DEService) GetDE(ctx context.Context, phone string) (*models.DeliveryEx
 // GetTodayEarnings returns the sum of the DE's earnings ledger entries since
 // midnight Zambia time.
 func (s *DEService) GetTodayEarnings(ctx context.Context, deID string) (float64, error) {
-	return s.earningsLedgerRepo.SumByDEAfter(ctx, deID, timezone.StartOfDayString())
+	return s.earningsLedgerRepo.SumPositiveCashByDEAfter(ctx, deID, timezone.StartOfDayString())
 }
 
 // StartDuty validates the QR code and transitions the DE to eligible status.
@@ -160,4 +164,3 @@ func (s *DEService) EndDuty(ctx context.Context, dePhone string) error {
 	}
 	return nil
 }
-

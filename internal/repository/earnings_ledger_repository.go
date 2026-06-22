@@ -118,6 +118,34 @@ func (r *EarningsLedgerRepository) SumByDEAfter(ctx context.Context, deID, after
 	return total, nil
 }
 
+// SumPositiveCashByDEAfter sums payable cash entries for a DE after a given timestamp.
+func (r *EarningsLedgerRepository) SumPositiveCashByDEAfter(ctx context.Context, deID, afterTimestamp string) (float64, error) {
+	op := logging.Start(ctx, r.logger, "EarningsLedger.SumPositiveCashByDEAfter", logrus.Fields{"de_id": deID})
+	defer op.End()
+
+	var total float64
+	var lastKey map[string]types.AttributeValue
+
+	for {
+		entries, nextKey, err := r.QueryByDE(ctx, deID, afterTimestamp, 50, lastKey)
+		if err != nil {
+			return 0, op.Fail(err)
+		}
+		for _, e := range entries {
+			if models.IsPositiveCashEarning(e) {
+				total += e.AmountZMW
+			}
+		}
+		if nextKey == nil {
+			break
+		}
+		lastKey = nextKey
+	}
+
+	op.With("total_zmw", total)
+	return total, nil
+}
+
 // ExistsByReference reports whether a DE already has a ledger entry for a
 // specific earning type + reference window key.
 //

@@ -170,14 +170,14 @@ func (h *EarningsHandlers) computeBreakdown(ctx context.Context, deID, afterTime
 			return 0, 0, 0, err
 		}
 		for _, e := range entries {
-			if e.Type == models.EarningTypeTrip {
-				liveTotal += e.AmountZMW
-				outstandingTotal += e.AmountZMW
+			if !models.IsPositiveCashEarning(e) {
 				continue
 			}
-			if e.Type == models.EarningTypeB1DailyBonus {
+			outstandingTotal += e.AmountZMW
+			if e.Type == models.EarningTypeTrip {
+				liveTotal += e.AmountZMW
+			} else {
 				bonusTotal += e.AmountZMW
-				outstandingTotal += e.AmountZMW
 			}
 		}
 		if nextKey == nil {
