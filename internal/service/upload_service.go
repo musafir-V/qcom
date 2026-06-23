@@ -106,11 +106,11 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, useCase, entit
 	fileID := uuid.New().String()
 	objectKey := fmt.Sprintf("%s/%s/%s%s", entry.KeyPrefix, entityID, fileID, ext)
 
+	// Do not bind ContentType / ContentLength into the signature — mobile and browser
+	// clients cannot always reproduce the exact signed headers on PUT.
 	presignResult, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
-		Bucket:        aws.String(entry.Bucket),
-		Key:           aws.String(objectKey),
-		ContentType:   aws.String(fileType),
-		ContentLength: aws.Int64(fileSize),
+		Bucket: aws.String(entry.Bucket),
+		Key:    aws.String(objectKey),
 	}, s3.WithPresignExpires(s.presignExpiry))
 	if err != nil {
 		return nil, op.Fail(fmt.Errorf("failed to generate presigned URL: %w", err))
@@ -128,6 +128,11 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, useCase, entit
 // GeneratePresignedPutURL presigns a PUT to an explicit bucket/key, bypassing the
 // use-case registry. Used by admin tooling (e.g. driver onboarding) where the target
 // entity does not exist yet. Authorization is the caller's responsibility (admin key).
+//
+// contentType and fileSize are validated by the caller but are intentionally NOT
+// bound into the S3 signature. Browser fetch() cannot always reproduce the exact
+// signed Content-Length / Content-Type headers (empty file.type, forbidden
+// Content-Length override), which causes SignatureDoesNotMatch on PUT.
 func (s *UploadService) GeneratePresignedPutURL(ctx context.Context, bucket, objectKey, contentType string, fileSize int64) (*PresignedUploadResult, error) {
 	op := logging.Start(ctx, s.logger, "GeneratePresignedPutURL", logrus.Fields{"bucket": bucket, "object_key": objectKey})
 	defer op.End()
@@ -137,12 +142,8 @@ func (s *UploadService) GeneratePresignedPutURL(ctx context.Context, bucket, obj
 	}
 
 	input := &s3.PutObjectInput{
-		Bucket:      aws.String(bucket),
-		Key:         aws.String(objectKey),
-		ContentType: aws.String(contentType),
-	}
-	if fileSize > 0 {
-		input.ContentLength = aws.Int64(fileSize)
+		Bucket: aws.String(bucket),
+		Key:    aws.String(objectKey),
 	}
 
 	presignResult, err := s.presignClient.PresignPutObject(ctx, input, s3.WithPresignExpires(s.presignExpiry))
