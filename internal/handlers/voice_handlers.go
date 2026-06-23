@@ -3,7 +3,9 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -127,19 +129,83 @@ type answerReq struct {
 // It authorizes by Trip and returns an NCCO. Always responds HTTP 200
 // (Vonage requires a valid NCCO even on reject).
 func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
-	var req answerReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CustomData.OrderID == "" {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.logger.WithError(err).Warn("voice: AnswerWebhook: read body failed")
 		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
 		return
 	}
 
+	// Log the exact Vonage payload first — before any validation — so we can see
+	// what custom_data keys/values arrived (order_id vs trip_id, etc.).
+	h.logger.WithFields(logrus.Fields{
+		"webhook":      "answer",
+		"content_type": r.Header.Get("Content-Type"),
+		"raw_body":     string(body),
+	}).Info("voice: AnswerWebhook: inbound payload")
+
+	var req answerReq
+	decodeErr := json.Unmarshal(body, &req)
+	customDataKeys, customDataRaw := voiceCustomDataDebug(body)
+
+	if decodeErr != nil {
+		h.logger.WithError(decodeErr).WithFields(logrus.Fields{
+			"webhook":          "answer",
+			"outcome":          "reject",
+			"reason":           "decode_failed",
+			"custom_data_keys": customDataKeys,
+			"custom_data_raw":  customDataRaw,
+		}).Warn("voice: AnswerWebhook: invalid JSON body")
+		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
+		return
+	}
+
+	if req.CustomData.OrderID == "" {
+		h.logger.WithFields(logrus.Fields{
+			"webhook":          "answer",
+			"outcome":          "reject",
+			"reason":           "missing_order_id",
+			"from":             req.From,
+			"client_direction": req.CustomData.Direction,
+			"custom_data_keys": customDataKeys,
+			"custom_data_raw":  customDataRaw,
+		}).Warn("voice: AnswerWebhook: custom_data.order_id empty")
+		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
+		return
+	}
+
+	h.logger.WithFields(logrus.Fields{
+		"webhook":          "answer",
+		"from":             req.From,
+		"order_id":         req.CustomData.OrderID,
+		"client_direction": req.CustomData.Direction,
+		"custom_data_keys": customDataKeys,
+	}).Info("voice: AnswerWebhook: received")
+
 	trip, err := h.trips.GetByOrderID(r.Context(), req.CustomData.OrderID)
 	if err != nil || trip == nil {
+		h.logger.WithError(err).WithFields(logrus.Fields{
+			"webhook":  "answer",
+			"outcome":  "reject",
+			"reason":   "trip_not_found",
+			"from":     req.From,
+			"order_id": req.CustomData.OrderID,
+		}).Warn("voice: AnswerWebhook: trip lookup failed")
 		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_found"))
 		return
 	}
 
-	if ok, _ := service.CanCall(trip, time.Now()); !ok {
+	if ok, reason := service.CanCall(trip, time.Now()); !ok {
+		h.logger.WithFields(logrus.Fields{
+			"webhook":  "answer",
+			"outcome":  "reject",
+			"reason":   "trip_not_callable",
+			"detail":   reason,
+			"from":     req.From,
+			"order_id": req.CustomData.OrderID,
+			"trip_id":  trip.TripID,
+			"status":   trip.Status,
+		}).Warn("voice: AnswerWebhook: trip not callable")
 		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_callable"))
 		return
 	}
@@ -148,6 +214,16 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 	// Use this resolved direction — do NOT trust client-supplied custom_data.direction.
 	toUser, direction, ok := service.ResolveCounterpart(trip, req.From)
 	if !ok {
+		h.logger.WithFields(logrus.Fields{
+			"webhook":  "answer",
+			"outcome":  "reject",
+			"reason":   "unknown_caller",
+			"from":     req.From,
+			"order_id": req.CustomData.OrderID,
+			"trip_id":  trip.TripID,
+			"de_id":    trip.DEID,
+			"customer": trip.CustomerUserID,
+		}).Warn("voice: AnswerWebhook: caller does not match trip")
 		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("unknown_caller"))
 		return
 	}
@@ -157,10 +233,29 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 		h.logger.WithError(err).Warn("voice: CountByTripDirection failed, cap check skipped")
 	}
 	if count >= models.CallCapPerDirection {
+		h.logger.WithFields(logrus.Fields{
+			"webhook":   "answer",
+			"outcome":   "reject",
+			"reason":    "cap_exceeded",
+			"from":      req.From,
+			"order_id":  req.CustomData.OrderID,
+			"trip_id":   trip.TripID,
+			"direction": direction,
+			"count":     count,
+		}).Warn("voice: AnswerWebhook: per-direction call cap reached")
 		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("cap_exceeded"))
 		return
 	}
 
+	h.logger.WithFields(logrus.Fields{
+		"webhook":   "answer",
+		"outcome":   "connect",
+		"from":      req.From,
+		"to":        toUser,
+		"order_id":  req.CustomData.OrderID,
+		"trip_id":   trip.TripID,
+		"direction": direction,
+	}).Info("voice: AnswerWebhook: connecting call")
 	h.respondWithJSON(w, http.StatusOK, service.ConnectAppNCCO(toUser))
 }
 
@@ -182,19 +277,57 @@ type eventReq struct {
 // (idempotent: keyed on CALL!<uuid>).
 func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	if !service.VerifyVonageSignature(r.Header.Get("Authorization"), h.secret) {
+		h.logger.WithFields(logrus.Fields{
+			"webhook":    "event",
+			"outcome":    "reject",
+			"reason":     "invalid_signature",
+			"has_auth":   r.Header.Get("Authorization") != "",
+		}).Warn("voice: EventWebhook: signature verification failed")
 		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid signature")
 		return
 	}
 
-	var req eventReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.logger.WithError(err).Warn("voice: EventWebhook: read body failed")
 		h.respondWithError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body")
 		return
 	}
 
+	var req eventReq
+	if err := json.Unmarshal(body, &req); err != nil {
+		h.logger.WithError(err).WithField("body_preview", truncateForLog(string(body), 512)).
+			Warn("voice: EventWebhook: decode failed")
+		h.respondWithError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body")
+		return
+	}
+
+	customDataKeys, customDataRaw := voiceCustomDataDebug(body)
+
 	// FIX 3: guard missing identifiers before Upsert to avoid Vonage retry storms.
 	if req.UUID == "" || req.CustomData.OrderID == "" {
-		h.logger.Warn("voice: EventWebhook: missing uuid or order_id, skipping upsert")
+		reason := "missing_identifiers"
+		switch {
+		case req.UUID == "" && req.CustomData.OrderID == "":
+			reason = "missing_uuid_and_order_id"
+		case req.UUID == "":
+			reason = "missing_uuid"
+		case req.CustomData.OrderID == "":
+			reason = "missing_order_id"
+		}
+		h.logger.WithFields(logrus.Fields{
+			"webhook":          "event",
+			"outcome":          "skip",
+			"reason":           reason,
+			"uuid":             req.UUID,
+			"order_id":         req.CustomData.OrderID,
+			"from":             req.From,
+			"status":           req.Status,
+			"client_direction": req.CustomData.Direction,
+			"custom_data_keys": customDataKeys,
+			"custom_data_raw":  customDataRaw,
+			"body_preview":     truncateForLog(string(body), 512),
+		}).Warn("voice: EventWebhook: skipping upsert")
 		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
@@ -234,7 +367,47 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.logger.WithFields(logrus.Fields{
+		"webhook":   "event",
+		"outcome":   "upserted",
+		"uuid":      req.UUID,
+		"order_id":  req.CustomData.OrderID,
+		"trip_id":   trip.TripID,
+		"from":      req.From,
+		"status":    req.Status,
+		"direction": direction,
+		"duration":  dur,
+	}).Info("voice: EventWebhook: call record saved")
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// voiceCustomDataDebug extracts custom_data key names and a truncated raw JSON
+// blob so we can see whether Vonage forwarded order_id vs legacy trip_id, etc.
+func voiceCustomDataDebug(body []byte) (keys []string, raw string) {
+	var partial struct {
+		CustomData json.RawMessage `json:"custom_data"`
+	}
+	if err := json.Unmarshal(body, &partial); err != nil || len(partial.CustomData) == 0 {
+		return nil, ""
+	}
+	raw = truncateForLog(string(partial.CustomData), 256)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(partial.CustomData, &fields); err != nil {
+		return nil, raw
+	}
+	keys = make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys, raw
+}
+
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 func (h *VoiceHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
