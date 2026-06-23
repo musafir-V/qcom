@@ -141,33 +141,82 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 		}
 	}
 
-	// 6. Apply transition
+	return s.applyTaskCompletion(ctx, trip, task, de, newStatus, otp)
+}
+
+// AdminCompleteTask marks pickup or drop done for a driver's current trip.
+// Pickup skips bill QR verification; drop still requires the customer OTP.
+func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string, taskType models.TaskType, otp string) error {
+	op := logging.Start(ctx, s.logger, "TripService.AdminCompleteTask", logrus.Fields{
+		"phone": driverPhone, "task_type": string(taskType),
+	})
+	defer op.End()
+
+	de, err := s.deRepo.GetByPhone(ctx, driverPhone)
+	if err != nil {
+		return op.Fail(err)
+	}
+	if de == nil {
+		return op.Outcome("not_found", fmt.Errorf("DE not found"))
+	}
+
+	trip, err := s.GetCurrentTrip(ctx, driverPhone)
+	if err != nil {
+		return op.Fail(err)
+	}
+	if trip == nil {
+		return op.Outcome("not_found", fmt.Errorf("%w: no active trip", ErrTripNotFound))
+	}
+
+	var task *models.Task
+	switch taskType {
+	case models.TaskTypePickup:
+		task = trip.PickupTask()
+	case models.TaskTypeDrop:
+		task = trip.DropTask()
+	default:
+		return op.Outcome("not_found", fmt.Errorf("%w: unsupported task type", ErrTaskNotFound))
+	}
+	if task == nil {
+		return op.Outcome("not_found", fmt.Errorf("%w: %s task missing", ErrTaskNotFound, taskType))
+	}
+
+	if err := validateTaskTransition(*task, models.TaskStatusCompleted); err != nil {
+		return op.Outcome("invalid_transition", err)
+	}
+	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
+		return op.Outcome("prerequisite_incomplete", err)
+	}
+	if task.Type == models.TaskTypeDrop {
+		if err := validateDropOTP(*task, otp); err != nil {
+			return op.Outcome("invalid_otp", err)
+		}
+	}
+
+	return s.applyTaskCompletion(ctx, trip, task, de, models.TaskStatusCompleted, otp)
+}
+
+func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip, task *models.Task, de *models.DeliveryExecutive, newStatus models.TaskStatus, otp string) error {
 	task.Status = newStatus
 	if (task.Type == models.TaskTypePickup || task.Type == models.TaskTypeDrop) && newStatus == models.TaskStatusCompleted {
 		task.CompletedAt = timezone.Now().Format(time.RFC3339)
 	}
 
 	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
-		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, tripID, de.PhoneNumber, trip.Tasks, codAccrualAmount(trip)); err != nil {
-			return op.Fail(err)
+		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, trip.TripID, de.PhoneNumber, trip.Tasks, codAccrualAmount(trip)); err != nil {
+			return err
 		}
 		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
 		s.notifyCustomerOrderDelivered(trip.OrderID)
-		// Synchronous: the payout ledger entry (this trip's earning) must be
-		// written before we respond, so the driver app can immediately fetch the
-		// trip earning for the success screen. recordTripPayout is best-effort
-		// (errors are logged, never returned), so it can't fail the completion.
 		s.recordTripPayout(trip, de)
 		return nil
 	}
 
-	if err := s.tripRepo.UpdateTasks(ctx, tripID, trip.Tasks); err != nil {
-		return op.Fail(err)
+	if err := s.tripRepo.UpdateTasks(ctx, trip.TripID, trip.Tasks); err != nil {
+		return err
 	}
 
-	// 7. Mirror trip status and trigger Java sync (pickup completion)
 	s.onTaskCompleted(ctx, trip, task, de)
-
 	return nil
 }
 

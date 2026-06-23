@@ -24,6 +24,7 @@ import (
 type AdminDriverHandlers struct {
 	deService        *service.DEService
 	deRepo           *repository.DERepository
+	tripService      *service.TripService
 	payoutConfigRepo *repository.PayoutConfigRepository
 	cashConfigRepo   *repository.CashConfigRepository
 	cashLedgerRepo   *repository.CashDepositLedgerRepository
@@ -37,6 +38,7 @@ type AdminDriverHandlers struct {
 func NewAdminDriverHandlers(
 	deService *service.DEService,
 	deRepo *repository.DERepository,
+	tripService *service.TripService,
 	payoutConfigRepo *repository.PayoutConfigRepository,
 	cashConfigRepo *repository.CashConfigRepository,
 	cashLedgerRepo *repository.CashDepositLedgerRepository,
@@ -49,6 +51,7 @@ func NewAdminDriverHandlers(
 	return &AdminDriverHandlers{
 		deService:        deService,
 		deRepo:           deRepo,
+		tripService:      tripService,
 		payoutConfigRepo: payoutConfigRepo,
 		cashConfigRepo:   cashConfigRepo,
 		cashLedgerRepo:   cashLedgerRepo,
@@ -156,6 +159,82 @@ func (h *AdminDriverHandlers) docViewURL(ctx context.Context, stored string) str
 		return ""
 	}
 	return url
+}
+
+// GET /api/v1/admin/drivers/{phone}/trip
+// Returns the driver's current active trip with task/item details (OTP redacted).
+func (h *AdminDriverHandlers) GetDriverTrip(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	trip, err := h.tripService.GetCurrentTrip(r.Context(), phone)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to fetch driver trip")
+		h.respondWithError(w, http.StatusInternalServerError, "TRIP_FETCH_FAILED", "Failed to fetch trip")
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"trip": redactTripForAdmin(trip),
+	})
+}
+
+// POST /api/v1/admin/drivers/{phone}/trip/pickup/complete
+// Marks pickup done without bill QR verification.
+func (h *AdminDriverHandlers) AdminCompletePickup(w http.ResponseWriter, r *http.Request) {
+	h.adminCompleteTask(w, r, models.TaskTypePickup, "")
+}
+
+// POST /api/v1/admin/drivers/{phone}/trip/drop/complete
+// Body: { "otp": "1234" }
+func (h *AdminDriverHandlers) AdminCompleteDrop(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OTP string `json:"otp"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	h.adminCompleteTask(w, r, models.TaskTypeDrop, req.OTP)
+}
+
+func (h *AdminDriverHandlers) adminCompleteTask(w http.ResponseWriter, r *http.Request, taskType models.TaskType, otp string) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	err := h.tripService.AdminCompleteTask(r.Context(), phone, taskType, otp)
+	if err != nil {
+		status, code := classifyTaskUpdateError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("admin: failed to complete trip task")
+			h.respondWithError(w, status, code, "Failed to complete trip task")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+func redactTripForAdmin(trip *models.Trip) *models.Trip {
+	if trip == nil {
+		return nil
+	}
+	copy := *trip
+	tasks := make([]models.Task, len(trip.Tasks))
+	for i, task := range trip.Tasks {
+		tasks[i] = task
+		tasks[i].OTP = ""
+	}
+	copy.Tasks = tasks
+	return &copy
 }
 
 // GET /api/v1/admin/drivers/{phone}/earnings

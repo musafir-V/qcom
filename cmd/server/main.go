@@ -152,6 +152,7 @@ func main() {
 	adminDriverHandlers := handlers.NewAdminDriverHandlers(
 		deService,
 		deRepo,
+		tripService,
 		payoutConfigRepo,
 		cashConfigRepo,
 		cashDepositLedgerRepo,
@@ -373,6 +374,9 @@ func setupRouter(
 	admin.HandleFunc("/drivers/{phone}/disbursements", adminDriverHandlers.GetDriverDisbursements).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/referrals", adminDriverHandlers.GetDriverReferrals).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/cash-ledger", adminDriverHandlers.GetDriverCashLedger).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/trip/pickup/complete", adminDriverHandlers.AdminCompletePickup).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/trip/drop/complete", adminDriverHandlers.AdminCompleteDrop).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/trip", adminDriverHandlers.GetDriverTrip).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}", adminDriverHandlers.GetDriver).Methods("GET", "OPTIONS")
 
 	// Ops cash-deposit + disbursement recording (now gated under /admin).
