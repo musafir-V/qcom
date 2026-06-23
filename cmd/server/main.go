@@ -62,6 +62,7 @@ func main() {
 	uploadUseCaseRepo := repository.NewUploadUseCaseRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	voiceProvisionRepo := repository.NewVoiceProvisionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	callRecordRepo := repository.NewCallRecordRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	voiceCallContextRepo := repository.NewVoiceCallContextRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	ruleRepo := repository.NewRuleRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	adminUserRepo := repository.NewAdminUserRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
@@ -173,7 +174,7 @@ func main() {
 		cfg.VonageVoice.PrivateKeyB64,
 		logger,
 	)
-	voiceHandlers := handlers.NewVoiceHandlers(voiceTokenSvc, voiceProvisionSvc, tripRepo, callRecordRepo, callRecordRepo, cfg.VonageVoice.SignatureSecret, logger)
+	voiceHandlers := handlers.NewVoiceHandlers(voiceTokenSvc, voiceProvisionSvc, tripRepo, callRecordRepo, callRecordRepo, voiceCallContextRepo, cfg.VonageVoice.SignatureSecret, logger)
 
 	disputeRepo := repository.NewDisputeRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	dispositionRepo := repository.NewDisputeDispositionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)

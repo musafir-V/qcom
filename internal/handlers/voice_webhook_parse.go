@@ -12,11 +12,13 @@ type voiceCustomData struct {
 }
 
 type voiceWebhookPayload struct {
-	UUID       string
-	From       string
-	Status     string
-	Duration   string
-	CustomData voiceCustomData
+	UUID               string
+	ConversationUUID   string
+	From               string
+	To                 string
+	Status             string
+	Duration           string
+	CustomData         voiceCustomData
 }
 
 // parseVoiceWebhookBody normalizes Vonage Voice webhook payloads.
@@ -24,13 +26,14 @@ type voiceWebhookPayload struct {
 // instead of from on the answer webhook.
 func parseVoiceWebhookBody(body []byte) (voiceWebhookPayload, error) {
 	var raw struct {
-		UUID       string          `json:"uuid"`
-		From       string          `json:"from"`
-		FromUser   string          `json:"from_user"`
-		To         string          `json:"to"`
-		Status     string          `json:"status"`
-		Duration   string          `json:"duration"`
-		CustomData json.RawMessage `json:"custom_data"`
+		UUID             string          `json:"uuid"`
+		ConversationUUID string          `json:"conversation_uuid"`
+		From             string          `json:"from"`
+		FromUser         string          `json:"from_user"`
+		To               string          `json:"to"`
+		Status           string          `json:"status"`
+		Duration         string          `json:"duration"`
+		CustomData       json.RawMessage `json:"custom_data"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return voiceWebhookPayload{}, err
@@ -42,11 +45,13 @@ func parseVoiceWebhookBody(body []byte) (voiceWebhookPayload, error) {
 	}
 
 	return voiceWebhookPayload{
-		UUID:       strings.TrimSpace(raw.UUID),
-		From:       voiceCallerSub(raw.From, raw.FromUser, raw.To),
-		Status:     strings.TrimSpace(raw.Status),
-		Duration:   strings.TrimSpace(raw.Duration),
-		CustomData: cd,
+		UUID:             strings.TrimSpace(raw.UUID),
+		ConversationUUID: strings.TrimSpace(raw.ConversationUUID),
+		From:             voiceCallerSub(raw.From, raw.FromUser, raw.To),
+		To:               strings.TrimSpace(raw.To),
+		Status:           strings.TrimSpace(raw.Status),
+		Duration:         strings.TrimSpace(raw.Duration),
+		CustomData:       cd,
 	}, nil
 }
 

@@ -38,6 +38,13 @@ type callRecorder interface {
 	Upsert(ctx context.Context, rec *models.CallRecord) error
 }
 
+// callContextStore persists answer-webhook metadata so event webhooks can
+// resolve order_id when Vonage omits custom_data on lifecycle events.
+type callContextStore interface {
+	PutCallContext(ctx context.Context, callUUID, conversationUUID, orderID, tripID, direction, caller string) error
+	GetCallContext(ctx context.Context, conversationUUID, callUUID string) (orderID, tripID, direction, caller string, found bool)
+}
+
 // VoiceHandlers handles VoIP-related HTTP endpoints.
 type VoiceHandlers struct {
 	tokenSvc   *service.VoiceTokenService
@@ -45,6 +52,7 @@ type VoiceHandlers struct {
 	trips      tripGetter
 	callCounts callCounter
 	recorder   callRecorder
+	callCtx    callContextStore
 	secret     string
 	logger     *logrus.Logger
 }
@@ -56,6 +64,7 @@ func NewVoiceHandlers(
 	trips tripGetter,
 	callCounts callCounter,
 	recorder callRecorder,
+	callCtx callContextStore,
 	signatureSecret string,
 	logger *logrus.Logger,
 ) *VoiceHandlers {
@@ -65,6 +74,7 @@ func NewVoiceHandlers(
 		trips:      trips,
 		callCounts: callCounts,
 		recorder:   recorder,
+		callCtx:    callCtx,
 		secret:     signatureSecret,
 		logger:     logger,
 	}
@@ -246,6 +256,26 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 		"trip_id":   trip.TripID,
 		"direction": direction,
 	}).Info("voice: AnswerWebhook: connecting call")
+
+	if h.callCtx != nil {
+		if err := h.callCtx.PutCallContext(
+			r.Context(),
+			req.UUID,
+			req.ConversationUUID,
+			req.CustomData.OrderID,
+			trip.TripID,
+			direction,
+			req.From,
+		); err != nil {
+			h.logger.WithError(err).WithFields(logrus.Fields{
+				"webhook":           "answer",
+				"uuid":                req.UUID,
+				"conversation_uuid":   req.ConversationUUID,
+				"order_id":            req.CustomData.OrderID,
+			}).Warn("voice: AnswerWebhook: failed to cache call context")
+		}
+	}
+
 	h.respondWithJSON(w, http.StatusOK, service.ConnectAppNCCO(toUser))
 }
 
@@ -282,29 +312,50 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 
 	customDataKeys, customDataRaw := voiceCustomDataDebug(body)
 
-	// FIX 3: guard missing identifiers before Upsert to avoid Vonage retry storms.
-	if req.UUID == "" || req.CustomData.OrderID == "" {
+	orderID := req.CustomData.OrderID
+	direction := req.CustomData.Direction
+	caller := req.From
+	contextSource := ""
+	if orderID == "" && h.callCtx != nil {
+		if oid, _, dir, callerSub, ok := h.callCtx.GetCallContext(r.Context(), req.ConversationUUID, req.UUID); ok {
+			orderID = oid
+			contextSource = "cache"
+			if direction == "" {
+				direction = dir
+			}
+			if caller == "" {
+				caller = callerSub
+			}
+		}
+	}
+	req.CustomData.OrderID = orderID
+	req.CustomData.Direction = direction
+	req.From = caller
+
+	// Guard missing identifiers before Upsert to avoid Vonage retry storms.
+	if req.UUID == "" || orderID == "" {
 		reason := "missing_identifiers"
 		switch {
-		case req.UUID == "" && req.CustomData.OrderID == "":
+		case req.UUID == "" && orderID == "":
 			reason = "missing_uuid_and_order_id"
 		case req.UUID == "":
 			reason = "missing_uuid"
-		case req.CustomData.OrderID == "":
+		case orderID == "":
 			reason = "missing_order_id"
 		}
 		h.logger.WithFields(logrus.Fields{
-			"webhook":          "event",
-			"outcome":          "skip",
-			"reason":           reason,
-			"uuid":             req.UUID,
-			"order_id":         req.CustomData.OrderID,
-			"from":             req.From,
-			"status":           req.Status,
-			"client_direction": req.CustomData.Direction,
-			"custom_data_keys": customDataKeys,
-			"custom_data_raw":  customDataRaw,
-			"body_preview":     truncateForLog(string(body), 512),
+			"webhook":            "event",
+			"outcome":            "skip",
+			"reason":             reason,
+			"uuid":               req.UUID,
+			"conversation_uuid":  req.ConversationUUID,
+			"order_id":           orderID,
+			"from":               req.From,
+			"status":             req.Status,
+			"client_direction":   req.CustomData.Direction,
+			"custom_data_keys":   customDataKeys,
+			"custom_data_raw":    customDataRaw,
+			"body_preview":       truncateForLog(string(body), 512),
 		}).Warn("voice: EventWebhook: skipping upsert")
 		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
@@ -313,15 +364,14 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	// Resolve the trip by order_id to get the canonical TripID (DDB key) and
 	// FIX 1: derive direction server-side so the rate cap cannot be evaded by
 	// rotating custom_data.direction on the client.
-	trip, tripErr := h.trips.GetByOrderID(r.Context(), req.CustomData.OrderID)
+	trip, tripErr := h.trips.GetByOrderID(r.Context(), orderID)
 	if tripErr != nil || trip == nil {
 		h.logger.WithError(tripErr).Warn("voice: EventWebhook: trip not found by order_id, skipping upsert")
 		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 
-	direction := req.CustomData.Direction // fallback for unresolvable events
-	if _, dir, ok := service.ResolveCounterpart(trip, req.From); ok {
+	if _, dir, ok := service.ResolveCounterpart(trip, caller); ok {
 		direction = dir
 	}
 
@@ -346,15 +396,17 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.WithFields(logrus.Fields{
-		"webhook":   "event",
-		"outcome":   "upserted",
-		"uuid":      req.UUID,
-		"order_id":  req.CustomData.OrderID,
-		"trip_id":   trip.TripID,
-		"from":      req.From,
-		"status":    req.Status,
-		"direction": direction,
-		"duration":  dur,
+		"webhook":           "event",
+		"outcome":           "upserted",
+		"uuid":              req.UUID,
+		"conversation_uuid": req.ConversationUUID,
+		"order_id":          orderID,
+		"context_source":    contextSource,
+		"trip_id":           trip.TripID,
+		"from":              caller,
+		"status":            req.Status,
+		"direction":         direction,
+		"duration":          dur,
 	}).Info("voice: EventWebhook: call record saved")
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

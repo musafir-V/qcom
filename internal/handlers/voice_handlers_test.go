@@ -68,6 +68,43 @@ func (f *fakeCallStore) Upsert(_ context.Context, rec *models.CallRecord) error 
 	return nil
 }
 
+type fakeCallContextStore struct {
+	byID map[string]struct {
+		orderID, tripID, direction, caller string
+	}
+}
+
+func newFakeCallContextStore() *fakeCallContextStore {
+	return &fakeCallContextStore{byID: make(map[string]struct {
+		orderID, tripID, direction, caller string
+	})}
+}
+
+func (f *fakeCallContextStore) PutCallContext(_ context.Context, callUUID, conversationUUID, orderID, tripID, direction, caller string) error {
+	data := struct {
+		orderID, tripID, direction, caller string
+	}{orderID, tripID, direction, caller}
+	if callUUID != "" {
+		f.byID[callUUID] = data
+	}
+	if conversationUUID != "" {
+		f.byID[conversationUUID] = data
+	}
+	return nil
+}
+
+func (f *fakeCallContextStore) GetCallContext(_ context.Context, conversationUUID, callUUID string) (orderID, tripID, direction, caller string, found bool) {
+	for _, id := range []string{conversationUUID, callUUID} {
+		if id == "" {
+			continue
+		}
+		if data, ok := f.byID[id]; ok {
+			return data.orderID, data.tripID, data.direction, data.caller, true
+		}
+	}
+	return "", "", "", "", false
+}
+
 // signHS256 creates a valid HS256-signed JWT with the given secret.
 func signHS256(t *testing.T, secret string) string {
 	t.Helper()
@@ -87,6 +124,7 @@ type testVoiceOptions struct {
 	count     int
 	secret    string
 	callStore callRecorder
+	callCtx   callContextStore
 }
 
 func withTrip(trip *models.Trip) testVoiceOption {
@@ -105,6 +143,10 @@ func withCallStore(store callRecorder) testVoiceOption {
 	return func(o *testVoiceOptions) { o.callStore = store }
 }
 
+func withCallContext(store callContextStore) testVoiceOption {
+	return func(o *testVoiceOptions) { o.callCtx = store }
+}
+
 func newTestVoiceHandlers(t *testing.T, opts ...testVoiceOption) *VoiceHandlers {
 	t.Helper()
 	o := &testVoiceOptions{}
@@ -114,6 +156,9 @@ func newTestVoiceHandlers(t *testing.T, opts ...testVoiceOption) *VoiceHandlers 
 	if o.callStore == nil {
 		o.callStore = &fakeCallStore{}
 	}
+	if o.callCtx == nil {
+		o.callCtx = newFakeCallContextStore()
+	}
 	cfg := config.VoiceConfig{AppID: "test-app", PrivateKeyB64: testVoiceRSAKeyB64(t)}
 	tokenSvc := service.NewVoiceTokenService(cfg, logrus.New())
 	return NewVoiceHandlers(
@@ -122,6 +167,7 @@ func newTestVoiceHandlers(t *testing.T, opts ...testVoiceOption) *VoiceHandlers 
 		&fakeTripGetter{trip: o.trip},
 		&fakeCallCounter{count: o.count},
 		o.callStore,
+		o.callCtx,
 		o.secret,
 		logrus.New(),
 	)
@@ -261,9 +307,6 @@ func TestEventWebhookPersistsRecord(t *testing.T) {
 	}
 }
 
-// TestEventWebhookStoresResolvedDirection verifies that the server derives the
-// call direction from the trip + From field, ignoring whatever the client sent
-// in custom_data.direction (FIX 1).
 func TestEventWebhookStoresResolvedDirection(t *testing.T) {
 	store := &fakeCallStore{}
 	trip := &models.Trip{
@@ -293,5 +336,81 @@ func TestEventWebhookStoresResolvedDirection(t *testing.T) {
 	}
 	if got := store.upserts[0].Direction; got != "de_to_cust" {
 		t.Fatalf("Direction = %q, want %q (server-resolved)", got, "de_to_cust")
+	}
+}
+
+func TestEventWebhookPersistsFromCachedContext(t *testing.T) {
+	store := &fakeCallStore{}
+	callCtx := newFakeCallContextStore()
+	trip := &models.Trip{
+		TripID:         "T1",
+		OrderID:        "ORD0565919100",
+		DEID:           "D1",
+		CustomerUserID: "U9",
+		Status:         models.TripStatusOutForDelivery,
+	}
+	h := newTestVoiceHandlers(t,
+		withSignatureSecret("sek"),
+		withCallStore(store),
+		withCallContext(callCtx),
+		withTrip(trip),
+	)
+
+	callCtx.PutCallContext(context.Background(),
+		"ff2ddad1-1c88-44c6-8189-52c9b89462a1",
+		"CON-2a722000-593f-475f-a2d5-f6944c4d5047",
+		"ORD0565919100", "T1", "cust_to_de", "cust_U9",
+	)
+
+	tok := signHS256(t, "sek")
+	body := `{
+		"from":null,
+		"to":"cust_U9",
+		"uuid":"ff2ddad1-1c88-44c6-8189-52c9b89462a1",
+		"conversation_uuid":"CON-2a722000-593f-475f-a2d5-f6944c4d5047",
+		"status":"completed",
+		"duration":"33",
+		"direction":"inbound"
+	}`
+	req := httptest.NewRequest("POST", "/webhooks/voice/event", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rr := httptest.NewRecorder()
+	h.EventWebhook(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if len(store.upserts) != 1 {
+		t.Fatalf("expected 1 upsert, got %d", len(store.upserts))
+	}
+	rec := store.upserts[0]
+	if rec.CallID != "ff2ddad1-1c88-44c6-8189-52c9b89462a1" || rec.TripID != "T1" || rec.DurationSec != 33 {
+		t.Fatalf("upsert = %+v", rec)
+	}
+	if rec.Direction != "cust_to_de" {
+		t.Fatalf("Direction = %q, want cust_to_de", rec.Direction)
+	}
+}
+
+func TestAnswerWebhookCachesCallContext(t *testing.T) {
+	callCtx := newFakeCallContextStore()
+	trip := &models.Trip{TripID: "T1", OrderID: "O1", DEID: "D1", CustomerUserID: "U9",
+		Status: models.TripStatusOutForDelivery}
+	h := newTestVoiceHandlers(t, withTrip(trip), withCallCount(0), withCallContext(callCtx))
+
+	body := `{
+		"uuid":"call-1",
+		"conversation_uuid":"CON-1",
+		"from_user":"cust_U9",
+		"custom_data":"{\"order_id\":\"O1\",\"direction\":\"cust_to_de\"}"
+	}`
+	req := httptest.NewRequest("POST", "/webhooks/voice/answer", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.AnswerWebhook(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	orderID, tripID, direction, caller, ok := callCtx.GetCallContext(context.Background(), "CON-1", "call-1")
+	if !ok || orderID != "O1" || tripID != "T1" || direction != "cust_to_de" || caller != "cust_U9" {
+		t.Fatalf("cache = %q %q %q %q ok=%v", orderID, tripID, direction, caller, ok)
 	}
 }
