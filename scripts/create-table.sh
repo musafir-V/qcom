@@ -124,10 +124,10 @@ create_gsi "UserIdIndex" \
   "AttributeName=user_id,AttributeType=S" \
   "AttributeName=created_at,AttributeType=S"
 
-# OrderIndex — trip lookup by order_id
+# OrderIndex — sparse trip lookup by trip_order_id (only trip items set this key)
 create_gsi "OrderIndex" \
-  '[{"Create":{"IndexName":"OrderIndex","KeySchema":[{"AttributeName":"order_id","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}}]' \
-  "AttributeName=order_id,AttributeType=S"
+  '[{"Create":{"IndexName":"OrderIndex","KeySchema":[{"AttributeName":"trip_order_id","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}}]' \
+  "AttributeName=trip_order_id,AttributeType=S"
 
 # DisputeOrderIndex — dispute lookup by order number (sparse: only dispute items set dispute_order_number)
 create_gsi "DisputeOrderIndex" \

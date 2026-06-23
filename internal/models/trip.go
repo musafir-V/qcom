@@ -51,7 +51,10 @@ type Task struct {
 type Trip struct {
 	TripID  string     `json:"trip_id" dynamodbav:"trip_id"`
 	OrderID string     `json:"order_id" dynamodbav:"order_id"`
-	StoreID string     `json:"store_id" dynamodbav:"store_id"`
+	// TripOrderID is the sparse OrderIndex GSI hash key; equals OrderID.
+	// Only trip items set this attribute so VOICECTX and other types never pollute the index.
+	TripOrderID string     `json:"-" dynamodbav:"trip_order_id,omitempty"`
+	StoreID     string     `json:"store_id" dynamodbav:"store_id"`
 	DEID    string     `json:"de_id,omitempty" dynamodbav:"de_id,omitempty"`
 	DEPhone string     `json:"de_phone,omitempty" dynamodbav:"de_phone,omitempty"`
 	Status  TripStatus `json:"status" dynamodbav:"status"`
@@ -85,6 +88,13 @@ type Trip struct {
 
 func (t *Trip) GetPK() string { return "TRIP!" + t.TripID }
 func (t *Trip) GetSK() string { return "METADATA" }
+
+// SyncIndexKeys copies OrderID into TripOrderID before persisting a trip.
+func (t *Trip) SyncIndexKeys() {
+	if id := t.OrderID; id != "" {
+		t.TripOrderID = id
+	}
+}
 
 // PickupTask returns the pickup task from the embedded list.
 func (t *Trip) PickupTask() *Task {

@@ -37,6 +37,7 @@ func (r *TripRepository) Create(ctx context.Context, trip *models.Trip) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	trip.CreatedAt = now
 	trip.UpdatedAt = now
+	trip.SyncIndexKeys()
 
 	item, err := attributevalue.MarshalMap(trip)
 	if err != nil {
@@ -86,7 +87,7 @@ func (r *TripRepository) GetByID(ctx context.Context, tripID string) (*models.Tr
 	return &trip, nil
 }
 
-// GetByOrderID fetches a trip using the OrderIndex GSI.
+// GetByOrderID fetches a trip using the sparse OrderIndex GSI (trip_order_id).
 // Returns nil if no trip exists for this order yet.
 func (r *TripRepository) GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
 	op := logging.Start(ctx, r.logger, "TripRepository.GetByOrderID", logrus.Fields{"order_id": orderID})
@@ -95,7 +96,7 @@ func (r *TripRepository) GetByOrderID(ctx context.Context, orderID string) (*mod
 	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
 		IndexName:              aws.String("OrderIndex"),
-		KeyConditionExpression: aws.String("order_id = :oid"),
+		KeyConditionExpression: aws.String("trip_order_id = :oid"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":oid": &types.AttributeValueMemberS{Value: orderID},
 		},

@@ -1,6 +1,11 @@
 package models
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+)
 
 func sampleTrip() *Trip {
 	return &Trip{
@@ -167,5 +172,36 @@ func TestHasRejected(t *testing.T) {
 	}
 	if trip.HasRejected("de-3") {
 		t.Error("expected de-3 to NOT be rejected")
+	}
+}
+
+func TestTripSyncIndexKeys(t *testing.T) {
+	trip := &Trip{OrderID: "ORD123"}
+	trip.SyncIndexKeys()
+	if trip.TripOrderID != "ORD123" {
+		t.Errorf("TripOrderID = %q, want ORD123", trip.TripOrderID)
+	}
+}
+
+func TestTripMarshalHasTripOrderID(t *testing.T) {
+	trip := &Trip{
+		TripID:  "trip-1",
+		OrderID: "ORD123",
+		Status:  TripStatusCreated,
+	}
+	trip.SyncIndexKeys()
+
+	m, err := attributevalue.MarshalMap(trip)
+	if err != nil {
+		t.Fatalf("MarshalMap failed: %v", err)
+	}
+	if _, ok := m["trip_order_id"]; !ok {
+		t.Errorf("marshaled map must have trip_order_id for OrderIndex GSI, got keys: %v", m)
+	}
+	if v, ok := m["trip_order_id"].(*types.AttributeValueMemberS); !ok || v.Value != "ORD123" {
+		t.Errorf("trip_order_id = %v, want ORD123", m["trip_order_id"])
+	}
+	if _, ok := m["order_id"]; !ok {
+		t.Errorf("marshaled map must still have order_id for API/display, got keys: %v", m)
 	}
 }

@@ -28,6 +28,7 @@ func voiceCallContextPK(id string) string { return "VOICECTX!" + id }
 
 // PutCallContext stores order/trip metadata keyed by call UUID and conversation UUID
 // so lifecycle event webhooks (which omit custom_data) can persist CallRecords.
+// order_id is stored for direct lookup only — OrderIndex uses trip_order_id (trips only).
 func (r *VoiceCallContextRepository) PutCallContext(
 	ctx context.Context,
 	callUUID, conversationUUID, orderID, tripID, direction, caller string,
