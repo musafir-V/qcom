@@ -69,10 +69,22 @@ func TestJavaOrder_MissingDeliveryNameDecodesEmpty(t *testing.T) {
 	}
 }
 
-func TestJavaOrder_EffectiveOrderID_FallsBackToOrderNumber(t *testing.T) {
+func TestJavaOrder_EffectiveOrderID_PrefersOrderNumber(t *testing.T) {
+	order := JavaOrder{OrderID: "uuid-123", OrderNumber: "ORD999"}
+	if got, want := order.EffectiveOrderID(), "ORD999"; got != want {
+		t.Fatalf("EffectiveOrderID() = %q, want %q", got, want)
+	}
+
+	order.normalizeOrderID()
+	if got, want := order.OrderID, "ORD999"; got != want {
+		t.Fatalf("OrderID after normalize = %q, want %q", got, want)
+	}
+}
+
+func TestJavaOrder_EffectiveOrderID_FallsBackToOrderID(t *testing.T) {
 	payload := `{
-		"orderId": null,
-		"orderNumber": "ORD1162844363",
+		"orderId": "uuid-456",
+		"orderNumber": null,
 		"status": "READY_FOR_DELIVERY",
 		"delivery": {"address": "1 Main", "latitude": -15.4, "longitude": 28.3, "phone": "0970000000"},
 		"items": []
@@ -82,19 +94,7 @@ func TestJavaOrder_EffectiveOrderID_FallsBackToOrderNumber(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &order); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if got, want := order.EffectiveOrderID(), "ORD1162844363"; got != want {
-		t.Fatalf("EffectiveOrderID() = %q, want %q", got, want)
-	}
-
-	order.normalizeOrderID()
-	if got, want := order.OrderID, "ORD1162844363"; got != want {
-		t.Fatalf("OrderID after normalize = %q, want %q", got, want)
-	}
-}
-
-func TestJavaOrder_EffectiveOrderID_PrefersOrderID(t *testing.T) {
-	order := JavaOrder{OrderID: "uuid-123", OrderNumber: "ORD999"}
-	if got, want := order.EffectiveOrderID(), "uuid-123"; got != want {
+	if got, want := order.EffectiveOrderID(), "uuid-456"; got != want {
 		t.Fatalf("EffectiveOrderID() = %q, want %q", got, want)
 	}
 }

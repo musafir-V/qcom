@@ -18,10 +18,10 @@ type userEnsurer interface {
 	EnsureUser(ctx context.Context, sub string) error
 }
 
-// tripGetter abstracts TripRepository.GetByID so the handler is testable
+// tripGetter abstracts TripRepository.GetByOrderID so the handler is testable
 // without a real DynamoDB connection.
 type tripGetter interface {
-	GetByID(ctx context.Context, tripID string) (*models.Trip, error)
+	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
 }
 
 // callCounter abstracts CallRecordRepository.CountByTripDirection so the
@@ -117,7 +117,7 @@ func (h *VoiceHandlers) PostToken(w http.ResponseWriter, r *http.Request) {
 type answerReq struct {
 	From       string `json:"from"`
 	CustomData struct {
-		TripID    string `json:"trip_id"`
+		OrderID   string `json:"order_id"`
 		Direction string `json:"direction"`
 	} `json:"custom_data"`
 }
@@ -128,12 +128,12 @@ type answerReq struct {
 // (Vonage requires a valid NCCO even on reject).
 func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 	var req answerReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CustomData.TripID == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CustomData.OrderID == "" {
 		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
 		return
 	}
 
-	trip, err := h.trips.GetByID(r.Context(), req.CustomData.TripID)
+	trip, err := h.trips.GetByOrderID(r.Context(), req.CustomData.OrderID)
 	if err != nil || trip == nil {
 		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_found"))
 		return
@@ -171,7 +171,7 @@ type eventReq struct {
 	Status   string `json:"status"`
 	Duration string `json:"duration"`
 	CustomData struct {
-		TripID    string `json:"trip_id"`
+		OrderID   string `json:"order_id"`
 		Direction string `json:"direction"`
 	} `json:"custom_data"`
 }
@@ -193,20 +193,25 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// FIX 3: guard missing identifiers before Upsert to avoid Vonage retry storms.
-	if req.UUID == "" || req.CustomData.TripID == "" {
-		h.logger.Warn("voice: EventWebhook: missing uuid or trip_id, skipping upsert")
+	if req.UUID == "" || req.CustomData.OrderID == "" {
+		h.logger.Warn("voice: EventWebhook: missing uuid or order_id, skipping upsert")
 		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 
-	// FIX 1: resolve direction server-side so the rate cap cannot be evaded by
+	// Resolve the trip by order_id to get the canonical TripID (DDB key) and
+	// FIX 1: derive direction server-side so the rate cap cannot be evaded by
 	// rotating custom_data.direction on the client.
+	trip, tripErr := h.trips.GetByOrderID(r.Context(), req.CustomData.OrderID)
+	if tripErr != nil || trip == nil {
+		h.logger.WithError(tripErr).Warn("voice: EventWebhook: trip not found by order_id, skipping upsert")
+		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
 	direction := req.CustomData.Direction // fallback for unresolvable events
-	trip, tripErr := h.trips.GetByID(r.Context(), req.CustomData.TripID)
-	if tripErr == nil && trip != nil {
-		if _, dir, ok := service.ResolveCounterpart(trip, req.From); ok {
-			direction = dir
-		}
+	if _, dir, ok := service.ResolveCounterpart(trip, req.From); ok {
+		direction = dir
 	}
 
 	dur, err := strconv.Atoi(req.Duration)
@@ -215,7 +220,7 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rec := models.CallRecord{
-		TripID:      req.CustomData.TripID,
+		TripID:      trip.TripID,
 		CallID:      req.UUID,
 		Direction:   direction,
 		Status:      req.Status,

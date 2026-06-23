@@ -44,7 +44,7 @@ func (f *fakeEnsurer) EnsureUser(_ context.Context, _ string) error { return nil
 // fakeTripGetter returns the configured trip or an error if nil.
 type fakeTripGetter struct{ trip *models.Trip }
 
-func (f *fakeTripGetter) GetByID(_ context.Context, _ string) (*models.Trip, error) {
+func (f *fakeTripGetter) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
 	if f.trip == nil {
 		return nil, errors.New("not found")
 	}
@@ -148,11 +148,11 @@ func TestPostTokenReturnsTokenForDE(t *testing.T) {
 }
 
 func TestAnswerWebhookConnectsWhenEligible(t *testing.T) {
-	trip := &models.Trip{TripID: "T1", DEID: "D1", CustomerUserID: "U9",
+	trip := &models.Trip{TripID: "T1", OrderID: "O1", DEID: "D1", CustomerUserID: "U9",
 		Status: models.TripStatusOutForDelivery}
 	h := newTestVoiceHandlers(t, withTrip(trip), withCallCount(0))
 
-	body := `{"from":"de_D1","custom_data":{"trip_id":"T1","direction":"de_to_cust"}}`
+	body := `{"from":"de_D1","custom_data":{"order_id":"O1","direction":"de_to_cust"}}`
 	req := httptest.NewRequest("POST", "/webhooks/voice/answer", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.AnswerWebhook(rr, req)
@@ -168,10 +168,10 @@ func TestAnswerWebhookConnectsWhenEligible(t *testing.T) {
 }
 
 func TestAnswerWebhookRejectsWhenNotCallable(t *testing.T) {
-	trip := &models.Trip{TripID: "T1", DEID: "D1", CustomerUserID: "U9",
+	trip := &models.Trip{TripID: "T1", OrderID: "O1", DEID: "D1", CustomerUserID: "U9",
 		Status: models.TripStatusAccepted}
 	h := newTestVoiceHandlers(t, withTrip(trip), withCallCount(0))
-	body := `{"from":"de_D1","custom_data":{"trip_id":"T1","direction":"de_to_cust"}}`
+	body := `{"from":"de_D1","custom_data":{"order_id":"O1","direction":"de_to_cust"}}`
 	req := httptest.NewRequest("POST", "/webhooks/voice/answer", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.AnswerWebhook(rr, req)
@@ -183,10 +183,10 @@ func TestAnswerWebhookRejectsWhenNotCallable(t *testing.T) {
 }
 
 func TestAnswerWebhookRejectsOverCap(t *testing.T) {
-	trip := &models.Trip{TripID: "T1", DEID: "D1", CustomerUserID: "U9",
+	trip := &models.Trip{TripID: "T1", OrderID: "O1", DEID: "D1", CustomerUserID: "U9",
 		Status: models.TripStatusOutForDelivery}
 	h := newTestVoiceHandlers(t, withTrip(trip), withCallCount(models.CallCapPerDirection))
-	body := `{"from":"de_D1","custom_data":{"trip_id":"T1","direction":"de_to_cust"}}`
+	body := `{"from":"de_D1","custom_data":{"order_id":"O1","direction":"de_to_cust"}}`
 	req := httptest.NewRequest("POST", "/webhooks/voice/answer", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	h.AnswerWebhook(rr, req)
@@ -214,10 +214,12 @@ func TestEventWebhookRejectsBadSignature(t *testing.T) {
 
 func TestEventWebhookPersistsRecord(t *testing.T) {
 	store := &fakeCallStore{}
-	h := newTestVoiceHandlers(t, withSignatureSecret("sek"), withCallStore(store))
+	trip := &models.Trip{TripID: "T1", OrderID: "O1", DEID: "D1", CustomerUserID: "U9",
+		Status: models.TripStatusOutForDelivery}
+	h := newTestVoiceHandlers(t, withSignatureSecret("sek"), withCallStore(store), withTrip(trip))
 	tok := signHS256(t, "sek")
 	body := `{"uuid":"C2","status":"completed","duration":"42",
-		"custom_data":{"trip_id":"T1","direction":"de_to_cust"}}`
+		"custom_data":{"order_id":"O1","direction":"de_to_cust"}}`
 	req := httptest.NewRequest("POST", "/webhooks/voice/event", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rr := httptest.NewRecorder()
@@ -237,6 +239,7 @@ func TestEventWebhookStoresResolvedDirection(t *testing.T) {
 	store := &fakeCallStore{}
 	trip := &models.Trip{
 		TripID:         "T1",
+		OrderID:        "O1",
 		DEID:           "D1",
 		CustomerUserID: "U9",
 		Status:         models.TripStatusOutForDelivery,
@@ -248,7 +251,7 @@ func TestEventWebhookStoresResolvedDirection(t *testing.T) {
 	)
 	tok := signHS256(t, "sek")
 	// from is "de_D1" (rider sub); direction in custom_data is attacker-supplied garbage.
-	body := `{"uuid":"C3","from":"de_D1","status":"answered","duration":"0","custom_data":{"trip_id":"T1","direction":"GARBAGE"}}`
+	body := `{"uuid":"C3","from":"de_D1","status":"answered","duration":"0","custom_data":{"order_id":"O1","direction":"GARBAGE"}}`
 	req := httptest.NewRequest("POST", "/webhooks/voice/event", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rr := httptest.NewRecorder()

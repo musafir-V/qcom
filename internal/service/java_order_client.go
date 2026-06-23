@@ -29,14 +29,13 @@ type JavaOrder struct {
 	CustomerID string `json:"customerId"`
 }
 
-// EffectiveOrderID returns orderId when set, otherwise orderNumber. Some Java
-// deployments return a null orderId but always populate orderNumber (e.g.
-// ORD1162844363), which the order-service also accepts in /orders/{id} paths.
+// EffectiveOrderID returns orderNumber when set (the stable human-readable key
+// e.g. "ORD1162844363"), falling back to orderId if orderNumber is absent.
 func (o JavaOrder) EffectiveOrderID() string {
-	if id := strings.TrimSpace(o.OrderID); id != "" {
-		return id
+	if n := strings.TrimSpace(o.OrderNumber); n != "" {
+		return n
 	}
-	return strings.TrimSpace(o.OrderNumber)
+	return strings.TrimSpace(o.OrderID)
 }
 
 // normalizeOrderID copies EffectiveOrderID into OrderID so downstream code and
