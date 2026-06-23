@@ -115,15 +115,6 @@ func (h *VoiceHandlers) PostToken(w http.ResponseWriter, r *http.Request) {
 	h.respondWithJSON(w, http.StatusOK, voiceTokenResponse{Token: token, User: sub, TTL: 3600})
 }
 
-// answerReq is the inbound payload Vonage POSTs to the answer webhook.
-type answerReq struct {
-	From       string `json:"from"`
-	CustomData struct {
-		OrderID   string `json:"order_id"`
-		Direction string `json:"direction"`
-	} `json:"custom_data"`
-}
-
 // AnswerWebhook handles POST /webhooks/voice/answer.
 // Vonage calls this when an SDK user places an app-to-app call.
 // It authorizes by Trip and returns an NCCO. Always responds HTTP 200
@@ -144,8 +135,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 		"raw_body":     string(body),
 	}).Info("voice: AnswerWebhook: inbound payload")
 
-	var req answerReq
-	decodeErr := json.Unmarshal(body, &req)
+	req, decodeErr := parseVoiceWebhookBody(body)
 	customDataKeys, customDataRaw := voiceCustomDataDebug(body)
 
 	if decodeErr != nil {
@@ -259,18 +249,6 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 	h.respondWithJSON(w, http.StatusOK, service.ConnectAppNCCO(toUser))
 }
 
-// eventReq is the inbound payload Vonage POSTs to the event webhook.
-type eventReq struct {
-	UUID     string `json:"uuid"`
-	From     string `json:"from"`
-	Status   string `json:"status"`
-	Duration string `json:"duration"`
-	CustomData struct {
-		OrderID   string `json:"order_id"`
-		Direction string `json:"direction"`
-	} `json:"custom_data"`
-}
-
 // EventWebhook handles POST /webhooks/voice/event.
 // Vonage calls this as a call progresses through its lifecycle.
 // It verifies the Vonage HS256 signature, then upserts a CallRecord
@@ -294,8 +272,8 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req eventReq
-	if err := json.Unmarshal(body, &req); err != nil {
+	req, err := parseVoiceWebhookBody(body)
+	if err != nil {
 		h.logger.WithError(err).WithField("body_preview", truncateForLog(string(body), 512)).
 			Warn("voice: EventWebhook: decode failed")
 		h.respondWithError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body")
@@ -391,6 +369,12 @@ func voiceCustomDataDebug(body []byte) (keys []string, raw string) {
 		return nil, ""
 	}
 	raw = truncateForLog(string(partial.CustomData), 256)
+	keys = customDataKeys(partial.CustomData)
+	if len(keys) > 0 {
+		sort.Strings(keys)
+		return keys, raw
+	}
+	// Legacy object form for debug output when keys couldn't be parsed yet.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(partial.CustomData, &fields); err != nil {
 		return nil, raw

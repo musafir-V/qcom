@@ -167,6 +167,35 @@ func TestAnswerWebhookConnectsWhenEligible(t *testing.T) {
 	}
 }
 
+func TestAnswerWebhookConnectsVonageAppPayload(t *testing.T) {
+	trip := &models.Trip{TripID: "T1", OrderID: "ORD0565919100", DEID: "0b5c6011", CustomerUserID: "15d02021-b59f-4470-b649-cca22844dd8c",
+		Status: models.TripStatusOutForDelivery}
+	h := newTestVoiceHandlers(t, withTrip(trip), withCallCount(0))
+
+	body := `{
+		"endpoint_type":"app",
+		"from_user":"cust_15d02021-b59f-4470-b649-cca22844dd8c",
+		"uuid":"81884205-6d26-4555-bdc6-2470d0a6bcaa",
+		"custom_data":"{\"order_id\":\"ORD0565919100\",\"direction\":\"cust_to_de\"}"
+	}`
+	req := httptest.NewRequest("POST", "/webhooks/voice/answer", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	h.AnswerWebhook(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	var ncco []map[string]any
+	json.Unmarshal(rr.Body.Bytes(), &ncco)
+	if ncco[0]["action"] != "connect" {
+		t.Fatalf("expected connect, got %+v", ncco[0])
+	}
+	endpoint := ncco[0]["endpoint"].([]any)[0].(map[string]any)
+	if endpoint["user"] != "de_0b5c6011" {
+		t.Fatalf("expected connect to de_0b5c6011, got %+v", endpoint)
+	}
+}
+
 func TestAnswerWebhookRejectsWhenNotCallable(t *testing.T) {
 	trip := &models.Trip{TripID: "T1", OrderID: "O1", DEID: "D1", CustomerUserID: "U9",
 		Status: models.TripStatusAccepted}
