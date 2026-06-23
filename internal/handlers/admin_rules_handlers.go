@@ -54,6 +54,35 @@ func (h *AdminRulesHandlers) ListRules(w http.ResponseWriter, r *http.Request) {
 	h.respondWithJSON(w, http.StatusOK, latest)
 }
 
+// ListRuleVersions returns every stored version of a rule id, newest first.
+func (h *AdminRulesHandlers) ListRuleVersions(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(mux.Vars(r)["id"])
+	if id == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "id is required")
+		return
+	}
+	rules, err := h.repo.ListAll(r.Context())
+	if err != nil {
+		h.logger.WithError(err).Error("admin rules: list versions failed")
+		h.respondWithError(w, http.StatusInternalServerError, "RULES_LIST_FAILED", "Failed to list rule versions")
+		return
+	}
+	versions := make([]models.Rule, 0)
+	for _, rule := range rules {
+		if rule != nil && rule.ID == id {
+			cp := *rule
+			cp.Spec = cloneRaw(rule.Spec)
+			versions = append(versions, cp)
+		}
+	}
+	if len(versions) == 0 {
+		h.respondWithError(w, http.StatusNotFound, "RULE_NOT_FOUND", "rule not found")
+		return
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i].Version > versions[j].Version })
+	h.respondWithJSON(w, http.StatusOK, versions)
+}
+
 func (h *AdminRulesHandlers) CreateRule(w http.ResponseWriter, r *http.Request) {
 	var req models.Rule
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

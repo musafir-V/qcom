@@ -125,6 +125,43 @@ func (s *UploadService) GeneratePresignedURL(ctx context.Context, useCase, entit
 	}, nil
 }
 
+// GeneratePresignedPutURL presigns a PUT to an explicit bucket/key, bypassing the
+// use-case registry. Used by admin tooling (e.g. driver onboarding) where the target
+// entity does not exist yet. Authorization is the caller's responsibility (admin key).
+func (s *UploadService) GeneratePresignedPutURL(ctx context.Context, bucket, objectKey, contentType string, fileSize int64) (*PresignedUploadResult, error) {
+	op := logging.Start(ctx, s.logger, "GeneratePresignedPutURL", logrus.Fields{"bucket": bucket, "object_key": objectKey})
+	defer op.End()
+
+	if strings.TrimSpace(bucket) == "" || strings.TrimSpace(objectKey) == "" {
+		return nil, op.Fail(fmt.Errorf("%w: bucket and object_key are required", ErrInvalidFileRequest))
+	}
+
+	input := &s3.PutObjectInput{
+		Bucket:      aws.String(bucket),
+		Key:         aws.String(objectKey),
+		ContentType: aws.String(contentType),
+	}
+	if fileSize > 0 {
+		input.ContentLength = aws.Int64(fileSize)
+	}
+
+	presignResult, err := s.presignClient.PresignPutObject(ctx, input, s3.WithPresignExpires(s.presignExpiry))
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to generate presigned URL: %w", err))
+	}
+
+	return &PresignedUploadResult{
+		UploadURL:        presignResult.URL,
+		ObjectKey:        objectKey,
+		ExpiresInSeconds: int(s.presignExpiry.Seconds()),
+	}, nil
+}
+
+// PresignGetURL presigns a short-lived GET for an explicit bucket/key (admin tooling).
+func (s *UploadService) PresignGetURL(ctx context.Context, bucket, objectKey string) (string, error) {
+	return s.presignGetObject(ctx, bucket, objectKey)
+}
+
 // GeneratePresignedViewURL returns a short-lived GET URL for an object the caller owns.
 func (s *UploadService) GeneratePresignedViewURL(ctx context.Context, useCase, entityType, entityID, objectKey string) (*PresignedViewResult, error) {
 	entry, err := s.loadUseCaseForObjectKey(ctx, useCase, entityType, entityID, objectKey)

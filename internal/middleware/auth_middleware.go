@@ -105,6 +105,19 @@ func (m *AuthMiddleware) RequireCustomerAuth(next http.Handler) http.Handler {
 	}))
 }
 
+// RequireAdminAuth requires a valid token whose entity_type is "admin".
+// This gates the ops admin dashboard endpoints.
+func (m *AuthMiddleware) RequireAdminAuth(next http.Handler) http.Handler {
+	return m.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entityType, _ := r.Context().Value("entity_type").(string)
+		if entityType != "admin" {
+			m.respondForbidden(w, "This endpoint requires admin authentication")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
 func (m *AuthMiddleware) respondUnauthorized(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)

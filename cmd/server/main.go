@@ -57,11 +57,13 @@ func main() {
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	vonageJWTRepo := repository.NewVonageJWTRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cashConfigRepo := repository.NewCashConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	cashDepositLedgerRepo := repository.NewCashDepositLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	deviceTokenRepo := repository.NewDeviceTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	uploadUseCaseRepo := repository.NewUploadUseCaseRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	voiceProvisionRepo := repository.NewVoiceProvisionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	callRecordRepo := repository.NewCallRecordRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	ruleRepo := repository.NewRuleRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	adminUserRepo := repository.NewAdminUserRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -102,6 +104,16 @@ func main() {
 		logger.WithError(err).Fatal("Failed to seed default rules")
 	}
 
+	adminUserService := service.NewAdminUserService(adminUserRepo, logger)
+	if err := adminUserService.Bootstrap(
+		appCtx,
+		os.Getenv("ADMIN_BOOTSTRAP_USERNAME"),
+		os.Getenv("ADMIN_BOOTSTRAP_PASSWORD"),
+		os.Getenv("ADMIN_BOOTSTRAP_NAME"),
+	); err != nil {
+		logger.WithError(err).Error("Failed to bootstrap initial admin user")
+	}
+
 	s3Client, err := initS3(cfg, logger)
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to initialize S3")
@@ -132,10 +144,23 @@ func main() {
 	tripHandlers := handlers.NewTripHandlers(tripService, logger)
 	adminHandlers := handlers.NewAdminHandlers(adminService, logger)
 	adminRulesHandlers := handlers.NewAdminRulesHandlers(ruleRepo, logger)
+	adminAuthHandlers := handlers.NewAdminAuthHandlers(adminUserService, jwtService, logger)
 	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
 	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
 	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, earningsLedgerRepo, logger)
 	cashDepositHandlers := handlers.NewCashDepositHandlers(cashDepositService, logger)
+	adminDriverHandlers := handlers.NewAdminDriverHandlers(
+		deService,
+		deRepo,
+		payoutConfigRepo,
+		cashConfigRepo,
+		cashDepositLedgerRepo,
+		uploadService,
+		earningsHandlers,
+		referralHandlers,
+		cfg.S3.Bucket,
+		logger,
+	)
 	notificationHandlers := handlers.NewNotificationHandlers(notificationService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)
 
@@ -160,7 +185,7 @@ func main() {
 	disputeHandlers := handlers.NewDisputeHandlers(disputeService, uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, voiceHandlers, authMiddleware, os.Getenv("ADMIN_KEY"), logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, voiceHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -267,6 +292,8 @@ func setupRouter(
 	tripHandlers *handlers.TripHandlers,
 	adminHandlers *handlers.AdminHandlers,
 	adminRulesHandlers *handlers.AdminRulesHandlers,
+	adminAuthHandlers *handlers.AdminAuthHandlers,
+	adminDriverHandlers *handlers.AdminDriverHandlers,
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
@@ -276,7 +303,6 @@ func setupRouter(
 	disputeHandlers *handlers.DisputeHandlers,
 	voiceHandlers *handlers.VoiceHandlers,
 	authMiddleware *middleware.AuthMiddleware,
-	adminKey string,
 	logger *logrus.Logger,
 ) *mux.Router {
 	router := mux.NewRouter()
@@ -320,18 +346,45 @@ func setupRouter(
 	// Payout config update endpoint (no auth — ops/runtime tuning)
 	api.HandleFunc("/config/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH", "OPTIONS")
 
+	// Admin login (username/password) — public; returns a bearer token. Must be
+	// registered before the /admin subrouter so it is not gated by admin auth.
+	api.HandleFunc("/admin/login", adminAuthHandlers.Login).Methods("POST", "OPTIONS")
+
+	// All /admin/* routes (and the ops disbursement/cash-deposit endpoints, now
+	// namespaced under /admin) require a valid admin bearer token (entity_type
+	// "admin"). Preflight OPTIONS is short-circuited by CORSMiddleware first.
 	admin := api.PathPrefix("/admin").Subrouter()
+	admin.Use(authMiddleware.RequireAdminAuth)
+
+	// Admin account self + user management.
+	admin.HandleFunc("/me", adminAuthHandlers.Me).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/users", adminAuthHandlers.ListUsers).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/users", adminAuthHandlers.CreateUser).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/users/{username}/password", adminAuthHandlers.ChangePassword).Methods("POST", "OPTIONS")
+
 	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
+
+	// Driver onboarding: presign document upload, then create the driver.
+	admin.HandleFunc("/uploads/url", adminDriverHandlers.PresignDriverDoc).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/drivers", adminDriverHandlers.CreateDriver).Methods("POST", "OPTIONS")
+
+	// Driver detail + sub-resources (specific paths before the generic /{phone}).
+	admin.HandleFunc("/drivers/{phone}/earnings", adminDriverHandlers.GetDriverEarnings).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/disbursements", adminDriverHandlers.GetDriverDisbursements).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/referrals", adminDriverHandlers.GetDriverReferrals).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/cash-ledger", adminDriverHandlers.GetDriverCashLedger).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}", adminDriverHandlers.GetDriver).Methods("GET", "OPTIONS")
+
+	// Ops cash-deposit + disbursement recording (now gated under /admin).
+	admin.HandleFunc("/de/{phone}/cash-deposit", cashDepositHandlers.RecordCashDeposit).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST", "OPTIONS")
+
 	adminRules := admin.PathPrefix("/rules").Subrouter()
-	adminRules.Use(handlers.AdminKeyMiddleware(adminKey))
 	adminRules.HandleFunc("", adminRulesHandlers.ListRules).Methods("GET", "OPTIONS")
 	adminRules.HandleFunc("", adminRulesHandlers.CreateRule).Methods("POST", "OPTIONS")
+	adminRules.HandleFunc("/{id}/versions", adminRulesHandlers.ListRuleVersions).Methods("GET", "OPTIONS")
 	adminRules.HandleFunc("/{id}", adminRulesHandlers.UpdateRule).Methods("PUT", "OPTIONS")
 	adminRules.HandleFunc("/{id}", adminRulesHandlers.DeleteRule).Methods("DELETE", "OPTIONS")
-
-	// Ops disbursement recording endpoint (no auth — internal)
-	api.HandleFunc("/de/{deId}/disbursement", disbursementHandlers.RecordDisbursement).Methods("POST", "OPTIONS")
-	api.HandleFunc("/admin/de/{phone}/cash-deposit", cashDepositHandlers.RecordCashDeposit).Methods("POST", "OPTIONS")
 
 	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()

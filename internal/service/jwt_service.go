@@ -191,6 +191,41 @@ func (s *JWTService) GenerateAccessTokenWithFamily(phoneNumber, entityID, entity
 	}, familyID, nil
 }
 
+// adminTokenExpiry is how long an admin dashboard session token stays valid.
+// Admin tokens are single (no refresh) — the dashboard re-authenticates with
+// username/password when this expires.
+const adminTokenExpiry = 12 * time.Hour
+
+// GenerateAdminToken issues a signed access token for an admin dashboard user.
+// The token carries entity_type="admin" so RequireAdminAuth can authorize it.
+// Returns the token string and its lifetime in seconds.
+func (s *JWTService) GenerateAdminToken(username string) (string, int64, error) {
+	now := time.Now()
+	jti := uuid.New().String()
+
+	claims := &Claims{
+		Phone:      username,
+		EntityID:   username,
+		EntityType: "admin",
+		Type:       "access",
+		JTI:        jti,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   username,
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.Add(adminTokenExpiry)),
+			ID:        jti,
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := token.SignedString(s.secretKey)
+	if err != nil {
+		s.logger.WithError(err).Error("Failed to sign admin token")
+		return "", 0, fmt.Errorf("failed to sign admin token: %w", err)
+	}
+	return signed, int64(adminTokenExpiry.Seconds()), nil
+}
+
 func GenerateSecretKey() (string, error) {
 	key := make([]byte, 32) // 256 bits
 	if _, err := rand.Read(key); err != nil {

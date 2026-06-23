@@ -1,0 +1,382 @@
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"path/filepath"
+	"strings"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
+	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/repository"
+	"github.com/qcom/qcom/internal/service"
+	"github.com/qcom/qcom/internal/timezone"
+	"github.com/sirupsen/logrus"
+)
+
+// AdminDriverHandlers powers the admin dashboard's driver-centric flows:
+// lookup-by-phone detail aggregation, paginated sub-resource reads (earnings,
+// disbursements, referrals, cash ledger), onboarding photo presign, and
+// admin-driven driver creation. All routes sit behind AdminKeyMiddleware.
+type AdminDriverHandlers struct {
+	deService        *service.DEService
+	deRepo           *repository.DERepository
+	payoutConfigRepo *repository.PayoutConfigRepository
+	cashConfigRepo   *repository.CashConfigRepository
+	cashLedgerRepo   *repository.CashDepositLedgerRepository
+	uploadService    *service.UploadService
+	earningsHandlers *EarningsHandlers
+	referralHandlers *ReferralHandlers
+	bucket           string
+	logger           *logrus.Logger
+}
+
+func NewAdminDriverHandlers(
+	deService *service.DEService,
+	deRepo *repository.DERepository,
+	payoutConfigRepo *repository.PayoutConfigRepository,
+	cashConfigRepo *repository.CashConfigRepository,
+	cashLedgerRepo *repository.CashDepositLedgerRepository,
+	uploadService *service.UploadService,
+	earningsHandlers *EarningsHandlers,
+	referralHandlers *ReferralHandlers,
+	bucket string,
+	logger *logrus.Logger,
+) *AdminDriverHandlers {
+	return &AdminDriverHandlers{
+		deService:        deService,
+		deRepo:           deRepo,
+		payoutConfigRepo: payoutConfigRepo,
+		cashConfigRepo:   cashConfigRepo,
+		cashLedgerRepo:   cashLedgerRepo,
+		uploadService:    uploadService,
+		earningsHandlers: earningsHandlers,
+		referralHandlers: referralHandlers,
+		bucket:           bucket,
+		logger:           logger,
+	}
+}
+
+// normalizePhone trims the path param and ensures a leading "+".
+func normalizePhone(raw string) string {
+	p := strings.TrimSpace(raw)
+	if p != "" && !strings.HasPrefix(p, "+") {
+		p = "+" + p
+	}
+	return p
+}
+
+// GET /api/v1/admin/drivers/{phone}
+// Aggregated driver detail: profile, docs (view URLs), live status, cash, trips,
+// today's earnings, and daily milestone progress.
+func (h *AdminDriverHandlers) GetDriver(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	de, err := h.deRepo.GetByPhone(r.Context(), phone)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to fetch driver")
+		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		return
+	}
+	if de == nil {
+		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		return
+	}
+
+	todayEarnings, err := h.deService.GetTodayEarnings(r.Context(), de.DEID)
+	if err != nil {
+		h.logger.WithError(err).Warn("admin: failed to compute today's earnings; defaulting to 0")
+		todayEarnings = 0
+	}
+
+	tripsToday := de.TripsToday(timezone.DateString())
+
+	resp := map[string]interface{}{
+		"de_id":                 de.DEID,
+		"phone_number":          de.PhoneNumber,
+		"name":                  de.Name,
+		"status":                de.Status,
+		"profile_url":           de.ProfileURL,
+		"profile_view_url":      h.docViewURL(r.Context(), de.ProfileURL),
+		"nrc_url":               de.NRCURL,
+		"nrc_view_url":          h.docViewURL(r.Context(), de.NRCURL),
+		"driver_license_url":    de.DriverLicenseURL,
+		"driver_license_view_url": h.docViewURL(r.Context(), de.DriverLicenseURL),
+		"referral_code":         de.ReferralCode,
+		"current_store_id":      de.CurrentStoreID,
+		"current_order_id":      de.CurrentOrderID,
+		"current_trip_id":       de.CurrentTripID,
+		"trips_today":           tripsToday,
+		"total_trips_completed": de.TotalTripsCompleted,
+		"in_hand_cash_zmw":      de.InHandCashZMW,
+		"today_earnings_zmw":    todayEarnings,
+		"last_disbursed_at":     de.LastDisbursedAt,
+		"created_at":            de.CreatedAt,
+		"updated_at":            de.UpdatedAt,
+	}
+
+	if payoutCfg, err := h.payoutConfigRepo.Get(r.Context()); err != nil {
+		h.logger.WithError(err).Warn("admin: failed to fetch payout config; omitting daily_milestone")
+	} else {
+		resp["daily_milestone"] = service.ComputeDailyMilestone(tripsToday, payoutCfg)
+	}
+
+	cashCfg, err := h.cashConfigRepo.Get(r.Context())
+	if err != nil {
+		h.logger.WithError(err).Warn("admin: failed to fetch cash config; defaulting limit")
+		cashCfg = &models.CashConfig{}
+	}
+	resp["cash_limit_zmw"] = cashCfg.EffectiveLimitZMW()
+	resp["cash_blocked"] = de.CashExceeds(cashCfg.EffectiveLimitZMW())
+
+	h.respondWithJSON(w, http.StatusOK, resp)
+}
+
+// docViewURL returns a displayable URL for a stored document value. Legacy
+// records store full http(s) URLs (returned as-is); admin-onboarded records
+// store S3 object keys, which we presign for short-lived GET access.
+func (h *AdminDriverHandlers) docViewURL(ctx context.Context, stored string) string {
+	stored = strings.TrimSpace(stored)
+	if stored == "" {
+		return ""
+	}
+	if strings.HasPrefix(stored, "http://") || strings.HasPrefix(stored, "https://") {
+		return stored
+	}
+	url, err := h.uploadService.PresignGetURL(ctx, h.bucket, stored)
+	if err != nil {
+		h.logger.WithError(err).Warn("admin: failed to presign doc view URL")
+		return ""
+	}
+	return url
+}
+
+// GET /api/v1/admin/drivers/{phone}/earnings
+// Delegates to the DE earnings handler with phone injected from the path.
+func (h *AdminDriverHandlers) GetDriverEarnings(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	ctx := context.WithValue(r.Context(), "phone", phone)
+	h.earningsHandlers.GetEarningsSummary(w, r.WithContext(ctx))
+}
+
+// GET /api/v1/admin/drivers/{phone}/disbursements
+func (h *AdminDriverHandlers) GetDriverDisbursements(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	ctx := context.WithValue(r.Context(), "phone", phone)
+	h.earningsHandlers.GetDisbursements(w, r.WithContext(ctx))
+}
+
+// GET /api/v1/admin/drivers/{phone}/referrals
+// The referral handler keys on entity_id (de_id) + phone, so resolve the driver first.
+func (h *AdminDriverHandlers) GetDriverReferrals(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	de, err := h.deRepo.GetByPhone(r.Context(), phone)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to fetch driver for referrals")
+		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		return
+	}
+	if de == nil {
+		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		return
+	}
+	ctx := context.WithValue(r.Context(), "phone", phone)
+	ctx = context.WithValue(ctx, "entity_id", de.DEID)
+	ctx = context.WithValue(ctx, "entity_type", "de")
+	h.referralHandlers.GetReferralScreen(w, r.WithContext(ctx))
+}
+
+// GET /api/v1/admin/drivers/{phone}/cash-ledger
+func (h *AdminDriverHandlers) GetDriverCashLedger(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	de, err := h.deRepo.GetByPhone(r.Context(), phone)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to fetch driver for cash ledger")
+		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		return
+	}
+	if de == nil {
+		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		return
+	}
+
+	entries, err := h.cashLedgerRepo.ListByDE(r.Context(), de.DEID)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to list cash ledger")
+		h.respondWithError(w, http.StatusInternalServerError, "CASH_LEDGER_FETCH_FAILED", "Failed to fetch cash deposits")
+		return
+	}
+
+	type item struct {
+		DepositID          string  `json:"deposit_id"`
+		RequestedAmountZMW float64 `json:"requested_amount_zmw"`
+		AppliedAmountZMW   float64 `json:"applied_amount_zmw"`
+		CreatedAt          string  `json:"created_at"`
+	}
+	items := make([]item, 0, len(entries))
+	for _, e := range entries {
+		items = append(items, item{
+			DepositID:          e.DepositID,
+			RequestedAmountZMW: e.RequestedAmountZMW,
+			AppliedAmountZMW:   e.AppliedAmountZMW,
+			CreatedAt:          e.CreatedAt,
+		})
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"in_hand_cash_zmw": de.InHandCashZMW,
+		"deposits":         items,
+	})
+}
+
+// uploadDocExt maps allowed MIME types to a canonical extension for onboarding docs.
+var uploadDocExt = map[string]string{
+	"image/jpeg":      ".jpg",
+	"image/png":       ".png",
+	"image/heic":      ".heic",
+	"application/pdf": ".pdf",
+}
+
+// POST /api/v1/admin/uploads/url
+// Presigns a direct-to-S3 PUT for a driver onboarding document. The driver record
+// need not exist yet; objects are keyed under drivers/{phone}/{kind}/.
+func (h *AdminDriverHandlers) PresignDriverDoc(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Kind     string `json:"kind"`
+		Phone    string `json:"phone"`
+		FileName string `json:"file_name"`
+		FileType string `json:"file_type"`
+		FileSize int64  `json:"file_size"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+
+	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	switch kind {
+	case "profile", "nrc", "license":
+	default:
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_KIND", "kind must be one of: profile, nrc, license")
+		return
+	}
+
+	phone := normalizePhone(req.Phone)
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "phone is required")
+		return
+	}
+	if strings.TrimSpace(req.FileType) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "file_type is required")
+		return
+	}
+
+	ext := uploadDocExt[req.FileType]
+	if ext == "" {
+		ext = strings.ToLower(filepath.Ext(req.FileName))
+	}
+
+	// Strip the leading "+" so the S3 key stays URL-safe.
+	phoneKey := strings.TrimPrefix(phone, "+")
+	objectKey := fmt.Sprintf("drivers/%s/%s/%s%s", phoneKey, kind, uuid.New().String(), ext)
+
+	result, err := h.uploadService.GeneratePresignedPutURL(r.Context(), h.bucket, objectKey, req.FileType, req.FileSize)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to presign driver doc")
+		h.respondWithError(w, http.StatusInternalServerError, "PRESIGN_FAILED", "Failed to generate upload URL")
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"upload_url":         result.UploadURL,
+		"object_key":         result.ObjectKey,
+		"expires_in_seconds": result.ExpiresInSeconds,
+	})
+}
+
+// POST /api/v1/admin/drivers
+// Admin-driven driver onboarding. Wraps DEService.Register with the same validation
+// as self-service registration; *_url fields are typically S3 object keys produced
+// by PresignDriverDoc.
+func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		PhoneNumber      string `json:"phone_number"`
+		Name             string `json:"name"`
+		ProfileURL       string `json:"profile_url"`
+		NRCURL           string `json:"nrc_url"`
+		DriverLicenseURL string `json:"driver_license_url"`
+		ReferralCode     string `json:"referral_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+
+	req.PhoneNumber = normalizePhone(req.PhoneNumber)
+	if !isValidPhoneNumber(req.PhoneNumber) {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name is required")
+		return
+	}
+	if strings.TrimSpace(req.ProfileURL) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "profile_url is required")
+		return
+	}
+	if strings.TrimSpace(req.NRCURL) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_url is required")
+		return
+	}
+	if strings.TrimSpace(req.DriverLicenseURL) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "driver_license_url is required")
+		return
+	}
+
+	de, err := h.deService.Register(r.Context(), service.RegisterDERequest{
+		PhoneNumber:      req.PhoneNumber,
+		Name:             req.Name,
+		ProfileURL:       req.ProfileURL,
+		NRCURL:           req.NRCURL,
+		DriverLicenseURL: req.DriverLicenseURL,
+		ReferralCode:     req.ReferralCode,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "already registered") {
+			h.respondWithError(w, http.StatusConflict, "DE_ALREADY_EXISTS", err.Error())
+			return
+		}
+		h.logger.WithError(err).Error("admin: failed to register driver")
+		h.respondWithError(w, http.StatusInternalServerError, "REGISTRATION_FAILED", "Failed to register driver")
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
+		"de_id":         de.DEID,
+		"phone_number":  de.PhoneNumber,
+		"name":          de.Name,
+		"status":        de.Status,
+		"referral_code": de.ReferralCode,
+		"created_at":    de.CreatedAt,
+	})
+}
+
+func (h *AdminDriverHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(payload)
+}
+
+func (h *AdminDriverHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
+	h.respondWithJSON(w, status, ErrorResponse{
+		Error: ErrorDetail{Code: code, Message: message},
+	})
+}
