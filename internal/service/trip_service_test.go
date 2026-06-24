@@ -239,6 +239,9 @@ func TestCancelTripByOrder_ActiveAssignedTrip_CancelAndPN(t *testing.T) {
 	if notifier.lastReq.EventType != "TRIP_CANCELLED" {
 		t.Fatalf("wrong event type: %q", notifier.lastReq.EventType)
 	}
+	if notifier.lastReq.Data["type"] != "TRIP_CANCELLED" {
+		t.Fatalf("PN data missing type field: %v", notifier.lastReq.Data)
+	}
 }
 
 func TestCancelTripByOrder_ActiveUnassignedTrip_CancelNoPN(t *testing.T) {

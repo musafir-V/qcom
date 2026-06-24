@@ -112,6 +112,7 @@ func (s *TripService) CancelTripByOrder(ctx context.Context, orderID, reason str
 			Title:         "Trip cancelled",
 			Body:          "Your delivery for order " + shortOrder + " has been cancelled.",
 			Data: map[string]string{
+				"type":     "TRIP_CANCELLED",
 				"trip_id":  trip.TripID,
 				"order_id": orderID,
 			},
