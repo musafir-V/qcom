@@ -16,8 +16,24 @@ func TestConnectAppNCCO(t *testing.T) {
 }
 
 func TestRejectNCCO(t *testing.T) {
-	ncco := RejectNCCO("trip_not_callable")
-	if ncco[0]["action"] != "talk" {
-		t.Fatalf("expected talk, got %+v", ncco[0])
+	cases := []struct {
+		reason  string
+		wantMsg string
+	}{
+		{"cap_exceeded", "You have reached the maximum number of calls allowed for this delivery."},
+		{"trip_not_callable", "Calls are not available for this order at this time."},
+		{"trip_not_found", "This order could not be found."},
+		{"unknown_caller", "You are not authorised to make this call."},
+		{"bad_request", "The person you are calling is unavailable."},
+		{"", "The person you are calling is unavailable."},
+	}
+	for _, tc := range cases {
+		ncco := RejectNCCO(tc.reason)
+		if ncco[0]["action"] != "talk" {
+			t.Fatalf("reason=%q: expected talk action, got %+v", tc.reason, ncco[0])
+		}
+		if ncco[0]["text"] != tc.wantMsg {
+			t.Fatalf("reason=%q: got text %q, want %q", tc.reason, ncco[0]["text"], tc.wantMsg)
+		}
 	}
 }
