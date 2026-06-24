@@ -253,3 +253,44 @@ func TestGetDetail_NoTrip_FailOpen(t *testing.T) {
 		t.Errorf("expected nil trip, got %v", detail.Trip)
 	}
 }
+
+func TestGetDetail_NoDE_FailOpen(t *testing.T) {
+	d := &models.Dispute{
+		DisputeID: "disp-3", OrderNumber: "ORD-002",
+		CustomerID: "cust-1", DispositionCode: "WRONG_ITEM",
+		Status:    models.DisputeStatusOpen,
+		CreatedAt: "2026-06-24T10:00:00Z", UpdatedAt: "2026-06-24T10:00:00Z",
+	}
+	trip := &models.Trip{
+		TripID:  "trip-2",
+		OrderID: "ORD-002",
+		DEID:    "de-2",
+		DEPhone: "+260971000002",
+		Items:   []models.TripItem{{Name: "Gadget", ImageURL: "items/g.jpg", Quantity: 1}},
+		Tasks: []models.Task{
+			{TaskID: "tp", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted, CompletedAt: "2026-06-24T10:30:00Z"},
+			{TaskID: "td", Type: models.TaskTypeDrop, Status: models.TaskStatusCompleted, CompletedAt: "2026-06-24T11:00:00Z", PhotoS3Key: "orders/ORD-002/drop/de-2/xyz.jpg"},
+		},
+	}
+	// Create service with trip succeeding but DE lookup failing
+	ds := &adminDetailDisputeStore{
+		byID: map[string]*models.Dispute{d.DisputeID: d},
+	}
+	svc := &AdminDisputeService{
+		disputes:     ds,
+		dispositions: &adminDetailDispositionStore{},
+		trips:        &stubTripStoreForDispute{trip: trip},
+		riders:       &stubDEStoreForDispute{de: nil, err: errors.New("DE lookup failed")},
+	}
+
+	detail, err := svc.GetDetail(context.Background(), "disp-3")
+	if err != nil {
+		t.Fatalf("unexpected error (should fail-open): %v", err)
+	}
+	if detail.Trip == nil || detail.Trip.OrderID != "ORD-002" {
+		t.Errorf("expected trip with ORD-002, got %v", detail.Trip)
+	}
+	if detail.DE != nil {
+		t.Errorf("expected nil DE due to lookup failure, got %v", detail.DE)
+	}
+}
