@@ -494,23 +494,18 @@ func validatePickupScan(trip *models.Trip, scannedOrderID string) error {
 // GetTripForPhotoPresign fetches a trip and validates the caller is the assigned DE.
 // Returns the trip and specified task. Used by the photo presign endpoint.
 func (s *TripService) GetTripForPhotoPresign(ctx context.Context, tripID, taskID, callerPhone string) (*models.Trip, *models.Task, error) {
-	trip, err := s.tripRepo.GetByID(ctx, tripID)
+	op := logging.Start(ctx, s.logger, "TripService.GetTripForPhotoPresign", logrus.Fields{
+		"trip_id": tripID, "task_id": taskID,
+	})
+	defer op.End()
+
+	trip, _, err := s.ownedTrip(ctx, op, tripID, callerPhone)
 	if err != nil {
 		return nil, nil, err
-	}
-	if trip == nil {
-		return nil, nil, fmt.Errorf("%w: %s", ErrTripNotFound, tripID)
-	}
-	de, err := s.deRepo.GetByPhone(ctx, callerPhone)
-	if err != nil {
-		return nil, nil, err
-	}
-	if de == nil || trip.DEID != de.DEID {
-		return nil, nil, ErrTripForbidden
 	}
 	task := trip.TaskByID(taskID)
 	if task == nil {
-		return nil, nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+		return nil, nil, op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTaskNotFound, taskID))
 	}
 	return trip, task, nil
 }
