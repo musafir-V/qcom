@@ -46,6 +46,7 @@ type Task struct {
 	Lng           float64    `json:"lng" dynamodbav:"lng"`
 	OTP           string     `json:"otp,omitempty" dynamodbav:"otp,omitempty"`                       // drop task only
 	RecipientName string     `json:"recipient_name,omitempty" dynamodbav:"recipient_name,omitempty"` // drop task only
+	PhotoS3Key    string     `json:"photo_s3_key,omitempty" dynamodbav:"photo_s3_key,omitempty"`     // set when driver uploads a verification photo
 }
 
 type Trip struct {

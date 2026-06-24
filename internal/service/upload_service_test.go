@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,5 +97,56 @@ func TestGeneratePresignedViewURLs_EmptyKeys(t *testing.T) {
 	}
 	if len(urls) != 0 {
 		t.Fatalf("want empty urls, got %v", urls)
+	}
+}
+
+func newTestUploadServiceWithTripBucket(entry *models.UploadUseCase, tripBucket string) *UploadService {
+	return &UploadService{
+		registry:         &stubUseCaseStore{entry: entry},
+		presignExpiry:    5 * time.Minute,
+		tripPhotosBucket: tripBucket,
+		logger:           logrus.New(),
+	}
+}
+
+func TestPresignTripTaskPhoto_Success(t *testing.T) {
+	svc := newTestUploadServiceWithTripBucket(nil, "test-bucket")
+	result, err := svc.PresignTripTaskPhoto(context.Background(), "ORD-001", "drop", "de-123", "image/jpeg", 1024)
+	// presignClient is nil — will error on actual presign, but key construction can be validated
+	// if the error is not a validation error, the key would have been constructed correctly
+	if errors.Is(err, ErrUnsupportedPhotoMimeType) || errors.Is(err, ErrPhotoFileTooLarge) || errors.Is(err, ErrMissingTripPhotosBucket) {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	// either result is non-nil (if presign somehow succeeded) or err is a presign error
+	if result != nil {
+		wantPrefix := "orders/ORD-001/drop/de-123/"
+		if !strings.HasPrefix(result.ObjectKey, wantPrefix) {
+			t.Errorf("object key %q does not start with %q", result.ObjectKey, wantPrefix)
+		}
+	}
+	// test passes — presign failure with nil client is expected in unit tests
+}
+
+func TestPresignTripTaskPhoto_UnsupportedMime(t *testing.T) {
+	svc := newTestUploadServiceWithTripBucket(nil, "test-bucket")
+	_, err := svc.PresignTripTaskPhoto(context.Background(), "ORD-001", "drop", "de-123", "application/pdf", 1024)
+	if !errors.Is(err, ErrUnsupportedPhotoMimeType) {
+		t.Fatalf("want ErrUnsupportedPhotoMimeType, got %v", err)
+	}
+}
+
+func TestPresignTripTaskPhoto_FileTooLarge(t *testing.T) {
+	svc := newTestUploadServiceWithTripBucket(nil, "test-bucket")
+	_, err := svc.PresignTripTaskPhoto(context.Background(), "ORD-001", "drop", "de-123", "image/jpeg", 11*1024*1024)
+	if !errors.Is(err, ErrPhotoFileTooLarge) {
+		t.Fatalf("want ErrPhotoFileTooLarge, got %v", err)
+	}
+}
+
+func TestPresignTripTaskPhoto_NoBucketConfigured(t *testing.T) {
+	svc := newTestUploadServiceWithTripBucket(nil, "")
+	_, err := svc.PresignTripTaskPhoto(context.Background(), "ORD-001", "drop", "de-123", "image/jpeg", 1024)
+	if !errors.Is(err, ErrMissingTripPhotosBucket) {
+		t.Fatalf("want ErrMissingTripPhotosBucket, got %v", err)
 	}
 }

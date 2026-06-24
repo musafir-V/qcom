@@ -123,6 +123,7 @@ func main() {
 		s3.NewPresignClient(s3Client),
 		uploadUseCaseRepo,
 		time.Duration(cfg.S3.PresignExpirySeconds)*time.Second,
+		cfg.S3.TripPhotosBucket,
 		logger,
 	)
 

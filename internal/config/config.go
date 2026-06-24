@@ -49,11 +49,12 @@ type OTPConfig struct {
 }
 
 type S3Config struct {
-	Endpoint         string
-	Region           string
-	Bucket           string
+	Endpoint             string
+	Region               string
+	Bucket               string
+	TripPhotosBucket     string
 	PresignExpirySeconds int
-	ForcePathStyle   bool
+	ForcePathStyle       bool
 }
 
 type GoogleConfig struct {
@@ -124,6 +125,7 @@ func Load() (*Config, error) {
 			Endpoint:             getEnv("S3_ENDPOINT", ""),
 			Region:               getEnv("S3_REGION", "ap-southeast-2"),
 			Bucket:               getEnv("S3_BUCKET", "printdrop-documents"),
+			TripPhotosBucket:     getEnv("S3_TRIP_PHOTOS_BUCKET", "printdrop-documents"),
 			PresignExpirySeconds: getEnvAsInt("S3_PRESIGN_EXPIRY_SECONDS", 300),
 			ForcePathStyle:       getEnv("S3_FORCE_PATH_STYLE", "false") == "true",
 		},

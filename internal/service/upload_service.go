@@ -25,6 +25,12 @@ var (
 	ErrInvalidObjectKey     = errors.New("object key is not owned by this entity")
 )
 
+var (
+	ErrMissingTripPhotosBucket  = errors.New("trip photos bucket not configured")
+	ErrUnsupportedPhotoMimeType = errors.New("file_type must be image/jpeg or image/png")
+	ErrPhotoFileTooLarge        = errors.New("photo exceeds 10 MB limit")
+)
+
 // mimeExtensions maps an allowed MIME type to its canonical file extension.
 var mimeExtensions = map[string]string{
 	"application/pdf": ".pdf",
@@ -41,10 +47,11 @@ type UploadUseCaseStore interface {
 }
 
 type UploadService struct {
-	presignClient *s3.PresignClient
-	registry      UploadUseCaseStore
-	presignExpiry time.Duration
-	logger        *logrus.Logger
+	presignClient    *s3.PresignClient
+	registry         UploadUseCaseStore
+	presignExpiry    time.Duration
+	tripPhotosBucket string
+	logger           *logrus.Logger
 }
 
 type PresignedUploadResult struct {
@@ -60,12 +67,13 @@ type PresignedViewResult struct {
 	ExpiresInSeconds int
 }
 
-func NewUploadService(presignClient *s3.PresignClient, registry UploadUseCaseStore, presignExpiry time.Duration, logger *logrus.Logger) *UploadService {
+func NewUploadService(presignClient *s3.PresignClient, registry UploadUseCaseStore, presignExpiry time.Duration, tripPhotosBucket string, logger *logrus.Logger) *UploadService {
 	return &UploadService{
-		presignClient: presignClient,
-		registry:      registry,
-		presignExpiry: presignExpiry,
-		logger:        logger,
+		presignClient:    presignClient,
+		registry:         registry,
+		presignExpiry:    presignExpiry,
+		tripPhotosBucket: tripPhotosBucket,
+		logger:           logger,
 	}
 }
 
@@ -228,6 +236,49 @@ func (s *UploadService) loadUseCaseForObjectKey(ctx context.Context, useCase, en
 		return nil, fmt.Errorf("%w: %q", ErrInvalidObjectKey, objectKey)
 	}
 	return entry, nil
+}
+
+// PresignTripTaskPhoto generates a presigned PUT URL for a driver task photo.
+// Key: orders/{orderNumber}/{taskType}/{deID}/{uuid}{ext}
+// Allowed types: image/jpeg, image/png. Max 10 MB.
+func (s *UploadService) PresignTripTaskPhoto(ctx context.Context, orderNumber, taskType, deID, fileType string, fileSize int64) (*PresignedUploadResult, error) {
+	if s.tripPhotosBucket == "" {
+		return nil, ErrMissingTripPhotosBucket
+	}
+	if fileType != "image/jpeg" && fileType != "image/png" {
+		return nil, ErrUnsupportedPhotoMimeType
+	}
+	const maxSize = 10 * 1024 * 1024
+	if fileSize > maxSize {
+		return nil, ErrPhotoFileTooLarge
+	}
+	if s.presignClient == nil {
+		return nil, fmt.Errorf("presign client not configured")
+	}
+	ext := mimeExtensions[fileType]
+	fileID := uuid.New().String()
+	objectKey := fmt.Sprintf("orders/%s/%s/%s/%s%s", orderNumber, taskType, deID, fileID, ext)
+	presignResult, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.tripPhotosBucket),
+		Key:    aws.String(objectKey),
+	}, s3.WithPresignExpires(s.presignExpiry))
+	if err != nil {
+		return nil, fmt.Errorf("failed to presign trip task photo: %w", err)
+	}
+	return &PresignedUploadResult{
+		FileID:           fileID,
+		UploadURL:        presignResult.URL,
+		ObjectKey:        objectKey,
+		ExpiresInSeconds: int(s.presignExpiry.Seconds()),
+	}, nil
+}
+
+// PresignTripTaskPhotoViewURL returns a short-lived GET URL for a stored driver photo.
+func (s *UploadService) PresignTripTaskPhotoViewURL(ctx context.Context, objectKey string) (string, error) {
+	if s.tripPhotosBucket == "" {
+		return "", ErrMissingTripPhotosBucket
+	}
+	return s.presignGetObject(ctx, s.tripPhotosBucket, objectKey)
 }
 
 func (s *UploadService) presignGetObject(ctx context.Context, bucket, objectKey string) (string, error) {
