@@ -186,8 +186,11 @@ func main() {
 	)
 	disputeHandlers := handlers.NewDisputeHandlers(disputeService, uploadService, logger)
 
+	adminDisputeService := service.NewAdminDisputeService(disputeRepo, dispositionRepo)
+	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
+
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, voiceHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -303,6 +306,7 @@ func setupRouter(
 	notificationHandlers *handlers.NotificationHandlers,
 	webhookHandlers *handlers.WebhookHandlers,
 	disputeHandlers *handlers.DisputeHandlers,
+	adminDisputeHandlers *handlers.AdminDisputeHandlers,
 	voiceHandlers *handlers.VoiceHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
@@ -390,6 +394,11 @@ func setupRouter(
 	adminRules.HandleFunc("/{id}/versions", adminRulesHandlers.ListRuleVersions).Methods("GET", "OPTIONS")
 	adminRules.HandleFunc("/{id}", adminRulesHandlers.UpdateRule).Methods("PUT", "OPTIONS")
 	adminRules.HandleFunc("/{id}", adminRulesHandlers.DeleteRule).Methods("DELETE", "OPTIONS")
+
+	// Dispute review: summary route registered before /{id} so it isn't shadowed.
+	admin.HandleFunc("/disputes/summary", adminDisputeHandlers.Summary).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/disputes", adminDisputeHandlers.List).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/disputes/{id}", adminDisputeHandlers.UpdateStatus).Methods("PATCH", "OPTIONS")
 
 	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()
