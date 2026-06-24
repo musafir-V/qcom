@@ -272,11 +272,12 @@ func TestCancelTripByOrder_ActiveUnassignedTrip_CancelNoPN(t *testing.T) {
 // CancelTripByOrder. GetByID and CompleteTripAndFreeDE are used by UpdateTaskStatus
 // (drop path). updateTasksFn, if set, is called by UpdateTasks (pickup path).
 type stubTripRepo struct {
-	trip          *models.Trip
-	cancelCalled  bool
-	cancelTripID  string
-	cancelDEPhone string
-	updateTasksFn func(ctx context.Context, tripID string, tasks []models.Task) error
+	trip           *models.Trip
+	cancelCalled   bool
+	cancelTripID   string
+	cancelDEPhone  string
+	updateTasksFn  func(ctx context.Context, tripID string, tasks []models.Task) error
+	capturedTasks  []models.Task
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -294,7 +295,9 @@ func (s *stubTripRepo) GetByID(_ context.Context, _ string) (*models.Trip, error
 	return s.trip, nil
 }
 
-func (s *stubTripRepo) CompleteTripAndFreeDE(_ context.Context, _, _ string, _ []models.Task, _ float64) error {
+func (s *stubTripRepo) CompleteTripAndFreeDE(_ context.Context, _, _ string, tasks []models.Task, _ float64) error {
+	s.capturedTasks = make([]models.Task, len(tasks))
+	copy(s.capturedTasks, tasks)
 	return nil
 }
 
@@ -365,9 +368,9 @@ func newTripServiceForTest(repo *stubTripRepo, deRepo *stubDERepo) *TripService 
 }
 
 func TestUpdateTaskStatus_PhotoS3Key_StoredOnDrop(t *testing.T) {
-	// Verify that when photoS3Key is passed, it is stored on the task before persistence.
-	// We test via applyTaskCompletion indirectly by checking the tasks slice passed to UpdateTasks.
-	var savedTasks []models.Task
+	// Verify that when photoS3Key is passed, it is stored on the drop task before
+	// CompleteTripAndFreeDE is called. Drop tasks route through applyTaskCompletion →
+	// CompleteTripAndFreeDE (not UpdateTasks), so we capture tasks there.
 	repo := &stubTripRepo{
 		trip: &models.Trip{
 			TripID:  "t1",
@@ -379,10 +382,6 @@ func TestUpdateTaskStatus_PhotoS3Key_StoredOnDrop(t *testing.T) {
 				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
 			},
 		},
-		updateTasksFn: func(_ context.Context, _ string, tasks []models.Task) error {
-			savedTasks = tasks
-			return nil
-		},
 	}
 	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
 	svc := newTripServiceForTest(repo, deRepo)
@@ -391,14 +390,19 @@ func TestUpdateTaskStatus_PhotoS3Key_StoredOnDrop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
 	var dropTask *models.Task
-	for i := range savedTasks {
-		if savedTasks[i].TaskID == "task-drop" {
-			dropTask = &savedTasks[i]
+	for i := range repo.capturedTasks {
+		if repo.capturedTasks[i].Type == models.TaskTypeDrop {
+			dropTask = &repo.capturedTasks[i]
+			break
 		}
 	}
-	// Note: drop task calls CompleteTripAndFreeDE not UpdateTasks; for this test stub
-	// we only validate no error. Actual key persistence is verified via CompleteTripAndFreeDE
-	// which receives the mutated tasks slice.
-	_ = dropTask
+	if dropTask == nil {
+		t.Fatal("CompleteTripAndFreeDE was not called or no drop task in captured tasks")
+	}
+	const wantKey = "orders/ORD-001/drop/de-1/abc.jpg"
+	if dropTask.PhotoS3Key != wantKey {
+		t.Errorf("drop task PhotoS3Key = %q, want %q", dropTask.PhotoS3Key, wantKey)
+	}
 }
