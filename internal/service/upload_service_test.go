@@ -150,3 +150,31 @@ func TestPresignTripTaskPhoto_NoBucketConfigured(t *testing.T) {
 		t.Fatalf("want ErrMissingTripPhotosBucket, got %v", err)
 	}
 }
+
+func TestPresignTripTaskPhoto_KeyFormat(t *testing.T) {
+	tests := []struct {
+		name        string
+		orderNumber string
+		taskType    string
+		deID        string
+		fileType    string
+		expectedExt string
+	}{
+		{"jpeg_pickup", "ORD-001", "pickup", "de-123", "image/jpeg", ".jpg"},
+		{"jpeg_drop", "ORD-001", "drop", "de-123", "image/jpeg", ".jpg"},
+		{"png_pickup", "ORD-002", "pickup", "de-456", "image/png", ".png"},
+		{"png_drop", "ORD-002", "drop", "de-456", "image/png", ".png"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testFileID := "550e8400-e29b-41d4-a716-446655440000"
+			key := buildTripTaskPhotoKey(tt.orderNumber, tt.taskType, tt.deID, tt.fileType, testFileID)
+
+			// Verify key follows format: orders/{orderNumber}/{taskType}/{deID}/{fileID}{ext}
+			wantPrefix := "orders/" + tt.orderNumber + "/" + tt.taskType + "/" + tt.deID + "/" + testFileID
+			if key != wantPrefix+tt.expectedExt {
+				t.Errorf("key %q does not match expected format %q", key, wantPrefix+tt.expectedExt)
+			}
+		})
+	}
+}

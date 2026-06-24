@@ -238,6 +238,13 @@ func (s *UploadService) loadUseCaseForObjectKey(ctx context.Context, useCase, en
 	return entry, nil
 }
 
+// buildTripTaskPhotoKey constructs the S3 object key for a trip task photo.
+// Assumes fileType has been validated. Key format: orders/{orderNumber}/{taskType}/{deID}/{fileID}{ext}
+func buildTripTaskPhotoKey(orderNumber, taskType, deID, fileType, fileID string) string {
+	ext := mimeExtensions[fileType]
+	return fmt.Sprintf("orders/%s/%s/%s/%s%s", orderNumber, taskType, deID, fileID, ext)
+}
+
 // PresignTripTaskPhoto generates a presigned PUT URL for a driver task photo.
 // Key: orders/{orderNumber}/{taskType}/{deID}/{uuid}{ext}
 // Allowed types: image/jpeg, image/png. Max 10 MB.
@@ -255,9 +262,8 @@ func (s *UploadService) PresignTripTaskPhoto(ctx context.Context, orderNumber, t
 	if s.presignClient == nil {
 		return nil, fmt.Errorf("presign client not configured")
 	}
-	ext := mimeExtensions[fileType]
 	fileID := uuid.New().String()
-	objectKey := fmt.Sprintf("orders/%s/%s/%s/%s%s", orderNumber, taskType, deID, fileID, ext)
+	objectKey := buildTripTaskPhotoKey(orderNumber, taskType, deID, fileType, fileID)
 	presignResult, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.tripPhotosBucket),
 		Key:    aws.String(objectKey),
@@ -270,6 +276,7 @@ func (s *UploadService) PresignTripTaskPhoto(ctx context.Context, orderNumber, t
 		UploadURL:        presignResult.URL,
 		ObjectKey:        objectKey,
 		ExpiresInSeconds: int(s.presignExpiry.Seconds()),
+		MaxFileSize:      maxSize,
 	}, nil
 }
 
