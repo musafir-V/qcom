@@ -478,6 +478,30 @@ func validatePickupScan(trip *models.Trip, scannedOrderID string) error {
 	return nil
 }
 
+// GetTripForPhotoPresign fetches a trip and validates the caller is the assigned DE.
+// Returns the trip and specified task. Used by the photo presign endpoint.
+func (s *TripService) GetTripForPhotoPresign(ctx context.Context, tripID, taskID, callerPhone string) (*models.Trip, *models.Task, error) {
+	trip, err := s.tripRepo.GetByID(ctx, tripID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if trip == nil {
+		return nil, nil, fmt.Errorf("%w: %s", ErrTripNotFound, tripID)
+	}
+	de, err := s.deRepo.GetByPhone(ctx, callerPhone)
+	if err != nil {
+		return nil, nil, err
+	}
+	if de == nil || trip.DEID != de.DEID {
+		return nil, nil, ErrTripForbidden
+	}
+	task := trip.TaskByID(taskID)
+	if task == nil {
+		return nil, nil, fmt.Errorf("%w: %s", ErrTaskNotFound, taskID)
+	}
+	return trip, task, nil
+}
+
 // VerifyPickup confirms the DE scanned the correct bill QR for their trip.
 // It does not mutate state — the swipe-to-confirm afterward completes the
 // pickup task via UpdateTaskStatus.

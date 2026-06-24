@@ -143,7 +143,7 @@ func main() {
 	deHandlers := handlers.NewDEHandlers(deService, qrService, payoutConfigRepo, cashConfigRepo, logger)
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
-	tripHandlers := handlers.NewTripHandlers(tripService, logger)
+	tripHandlers := handlers.NewTripHandlers(tripService, uploadService, logger)
 	adminHandlers := handlers.NewAdminHandlers(adminService, logger)
 	adminRulesHandlers := handlers.NewAdminRulesHandlers(ruleRepo, logger)
 	adminAuthHandlers := handlers.NewAdminAuthHandlers(adminUserService, jwtService, logger)
@@ -455,6 +455,8 @@ func setupRouter(
 	tripRoutes.HandleFunc("/{tripId}/accept", tripHandlers.AcceptTrip).Methods("POST", "OPTIONS")
 	tripRoutes.HandleFunc("/{tripId}/reject", tripHandlers.RejectTrip).Methods("POST", "OPTIONS")
 	tripRoutes.HandleFunc("/{tripId}/verify-pickup", tripHandlers.VerifyPickup).Methods("POST", "OPTIONS")
+	tripRoutes.HandleFunc("/{tripId}/task/{taskId}/photo/presign",
+		tripHandlers.PresignTaskPhoto).Methods("POST", "OPTIONS")
 
 	internal := router.PathPrefix("/internal/v1").Subrouter()
 	internal.HandleFunc("/notifications/send", notificationHandlers.SendNotification).Methods("POST", "OPTIONS")

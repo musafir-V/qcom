@@ -13,12 +13,13 @@ import (
 )
 
 type TripHandlers struct {
-	tripService *service.TripService
-	logger      *logrus.Logger
+	tripService   *service.TripService
+	uploadService *service.UploadService
+	logger        *logrus.Logger
 }
 
-func NewTripHandlers(tripService *service.TripService, logger *logrus.Logger) *TripHandlers {
-	return &TripHandlers{tripService: tripService, logger: logger}
+func NewTripHandlers(tripService *service.TripService, uploadService *service.UploadService, logger *logrus.Logger) *TripHandlers {
+	return &TripHandlers{tripService: tripService, uploadService: uploadService, logger: logger}
 }
 
 // GET /api/v1/de/trip
@@ -209,6 +210,64 @@ func classifyVerifyPickupError(err error) (status int, code string) {
 	default:
 		return http.StatusInternalServerError, "VERIFY_FAILED"
 	}
+}
+
+// POST /api/v1/trip/{tripId}/task/{taskId}/photo/presign
+// Body: { "file_name": "photo.jpg", "file_type": "image/jpeg", "file_size": 1048576 }
+func (h *TripHandlers) PresignTaskPhoto(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	tripID := vars["tripId"]
+	taskID := vars["taskId"]
+	phone, _ := r.Context().Value("phone").(string)
+	deID, _ := r.Context().Value("entity_id").(string)
+
+	var req struct {
+		FileName string `json:"file_name"`
+		FileType string `json:"file_type"`
+		FileSize int64  `json:"file_size"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.FileName) == "" || strings.TrimSpace(req.FileType) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "file_name and file_type are required")
+		return
+	}
+
+	trip, task, err := h.tripService.GetTripForPhotoPresign(r.Context(), tripID, taskID, phone)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrTripNotFound), errors.Is(err, service.ErrTaskNotFound):
+			h.respondWithError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		case errors.Is(err, service.ErrTripForbidden):
+			h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Trip not assigned to you")
+		default:
+			h.logger.WithError(err).Error("GetTripForPhotoPresign failed")
+			h.respondWithError(w, http.StatusInternalServerError, "PRESIGN_FAILED", "Failed to generate upload URL")
+		}
+		return
+	}
+
+	result, err := h.uploadService.PresignTripTaskPhoto(r.Context(), trip.OrderID, string(task.Type), deID, req.FileType, req.FileSize)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrUnsupportedPhotoMimeType):
+			h.respondWithError(w, http.StatusBadRequest, "MIME_NOT_ALLOWED", err.Error())
+		case errors.Is(err, service.ErrPhotoFileTooLarge):
+			h.respondWithError(w, http.StatusBadRequest, "FILE_TOO_LARGE", err.Error())
+		default:
+			h.logger.WithError(err).Error("PresignTripTaskPhoto failed")
+			h.respondWithError(w, http.StatusInternalServerError, "PRESIGN_FAILED", "Failed to generate upload URL")
+		}
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"upload_url":         result.UploadURL,
+		"object_key":         result.ObjectKey,
+		"expires_in_seconds": result.ExpiresInSeconds,
+	})
 }
 
 // POST /internal/v1/trips/cancel-by-order
