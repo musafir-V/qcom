@@ -55,8 +55,9 @@ func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
-		Status string `json:"status"`
-		OTP    string `json:"otp"`
+		Status     string `json:"status"`
+		OTP        string `json:"otp"`
+		PhotoS3Key string `json:"photo_s3_key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
@@ -68,7 +69,7 @@ func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	newStatus := models.TaskStatus(req.Status)
-	err := h.tripService.UpdateTaskStatus(r.Context(), tripID, taskID, phone, newStatus, req.OTP)
+	err := h.tripService.UpdateTaskStatus(r.Context(), tripID, taskID, phone, newStatus, req.OTP, req.PhotoS3Key)
 	if err != nil {
 		status, code := classifyTaskUpdateError(err)
 		if status == http.StatusInternalServerError {

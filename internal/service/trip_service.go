@@ -44,9 +44,15 @@ type tripRepoI interface {
 	CancelByOrderID(ctx context.Context, tripID, dePhone string) error
 }
 
+// deRepoI is the subset of DERepository methods used by TripService.
+// Narrowing to an interface allows unit tests to inject stubs without DynamoDB.
+type deRepoI interface {
+	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
+}
+
 type TripService struct {
 	tripRepo      tripRepoI
-	deRepo        *repository.DERepository
+	deRepo        deRepoI
 	javaClient    *JavaOrderClient
 	payoutService *PayoutService
 	notifier      NotificationService
@@ -150,7 +156,8 @@ func (s *TripService) GetCurrentTrip(ctx context.Context, dePhone string) (*mode
 
 // UpdateTaskStatus validates and applies a task status transition.
 // callerDEPhone is extracted from the JWT and used to verify trip ownership.
-func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, callerDEPhone string, newStatus models.TaskStatus, otp string) error {
+// photoS3Key is optional; when non-empty it is stored on the task record before persistence.
+func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, callerDEPhone string, newStatus models.TaskStatus, otp, photoS3Key string) error {
 	op := logging.Start(ctx, s.logger, "TripService.UpdateTaskStatus", logrus.Fields{
 		"trip_id": tripID, "task_id": taskID, "new_status": string(newStatus),
 	})
@@ -205,6 +212,9 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 		}
 	}
 
+	if photoS3Key != "" {
+		task.PhotoS3Key = photoS3Key
+	}
 	return s.applyTaskCompletion(ctx, trip, task, de, newStatus, otp)
 }
 
@@ -354,6 +364,9 @@ func (s *TripService) notifyCustomer(orderID, eventType string, priority models.
 // syncJavaWithRetry retries the Java status update up to 3 times with backoff.
 // Runs in a goroutine — does not block the DE response.
 func (s *TripService) syncJavaWithRetry(orderID, status, deID string) {
+	if s.javaClient == nil {
+		return
+	}
 	ctx := context.Background()
 	backoff := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
 	for i, delay := range backoff {
