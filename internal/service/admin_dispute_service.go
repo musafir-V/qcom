@@ -10,10 +10,9 @@ import (
 )
 
 var (
-	ErrInvalidDisputeStatus = errors.New("invalid dispute status")
-	// ErrInvalidTransition is reused from trip_service.go (same package); a redeclaration
-	// would not compile. Disputes share the same sentinel for invalid status transitions.
-	ErrResolutionNoteRequired = errors.New("resolution note is required")
+	ErrInvalidDisputeStatus     = errors.New("invalid dispute status")
+	ErrInvalidDisputeTransition = errors.New("dispute cannot move to that status")
+	ErrResolutionNoteRequired   = errors.New("resolution note is required")
 )
 
 type adminDisputeStore interface {
@@ -93,7 +92,7 @@ func (s *AdminDisputeService) UpdateStatus(ctx context.Context, id string, newSt
 		return nil, ErrDisputeNotFound
 	}
 	if !models.CanTransitionDispute(d.Status, newStatus) {
-		return nil, ErrInvalidTransition
+		return nil, ErrInvalidDisputeTransition
 	}
 	note = strings.TrimSpace(note)
 	if (newStatus == models.DisputeStatusResolved || newStatus == models.DisputeStatusRejected) && note == "" {

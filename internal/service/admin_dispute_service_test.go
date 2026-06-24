@@ -84,8 +84,8 @@ func TestAdminUpdateStatus_NoteRequiredForResolve(t *testing.T) {
 func TestAdminUpdateStatus_InvalidTransition(t *testing.T) {
 	store := &fakeAdminDisputeStore{getByID: &models.Dispute{Status: models.DisputeStatusResolved}}
 	svc := NewAdminDisputeService(store, &fakeDispositionLookup{})
-	if _, err := svc.UpdateStatus(context.Background(), "d1", models.DisputeStatusOpen, "x", "alice"); !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("want ErrInvalidTransition, got %v", err)
+	if _, err := svc.UpdateStatus(context.Background(), "d1", models.DisputeStatusOpen, "x", "alice"); !errors.Is(err, ErrInvalidDisputeTransition) {
+		t.Fatalf("want ErrInvalidDisputeTransition, got %v", err)
 	}
 }
 
