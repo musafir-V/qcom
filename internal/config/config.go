@@ -100,6 +100,7 @@ func loadVoiceConfig() VoiceConfig {
 }
 
 func Load() (*Config, error) {
+	s3Bucket := getEnv("S3_BUCKET", "printdrop-documents")
 	cfg := &Config{
 		Server: ServerConfig{
 			Port:         getEnv("PORT", "8080"),
@@ -124,8 +125,8 @@ func Load() (*Config, error) {
 		S3: S3Config{
 			Endpoint:             getEnv("S3_ENDPOINT", ""),
 			Region:               getEnv("S3_REGION", "ap-southeast-2"),
-			Bucket:               getEnv("S3_BUCKET", "printdrop-documents"),
-			TripPhotosBucket:     getEnv("S3_TRIP_PHOTOS_BUCKET", "printdrop-documents"),
+			Bucket:               s3Bucket,
+			TripPhotosBucket:     getEnv("S3_TRIP_PHOTOS_BUCKET", s3Bucket),
 			PresignExpirySeconds: getEnvAsInt("S3_PRESIGN_EXPIRY_SECONDS", 300),
 			ForcePathStyle:       getEnv("S3_FORCE_PATH_STYLE", "false") == "true",
 		},

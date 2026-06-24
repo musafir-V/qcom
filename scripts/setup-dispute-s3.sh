@@ -87,8 +87,7 @@ POLICY_DOC=$(cat <<EOF
     ],
     "Resource": [
       "arn:aws:s3:::${BUCKET}",
-      "arn:aws:s3:::${BUCKET}/disputes/*",
-      "arn:aws:s3:::${BUCKET}/printdrop/*"
+      "arn:aws:s3:::${BUCKET}/*"
     ]
   }]
 }
@@ -108,6 +107,15 @@ aws ssm put-parameter \
   --region "$REGION" \
   --no-cli-pager >/dev/null
 
+echo "Writing SSM ${SSM_PREFIX}/S3_TRIP_PHOTOS_BUCKET=${BUCKET}..."
+aws ssm put-parameter \
+  --name "${SSM_PREFIX}/S3_TRIP_PHOTOS_BUCKET" \
+  --type String \
+  --value "$BUCKET" \
+  --overwrite \
+  --region "$REGION" \
+  --no-cli-pager >/dev/null
+
 if [[ "$SEED_DISPUTE_CONFIG" == "true" ]]; then
   echo "Updating DynamoDB upload use-case registry..."
   SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -118,7 +126,7 @@ fi
 echo ""
 echo "=== Done ==="
 echo "Bucket: s3://${BUCKET}"
-echo "Prefixes: disputes/ (dispute photos), printdrop/ (print files)"
+echo "Prefixes: disputes/ (dispute photos), orders/ (trip photos), printdrop/ (print files)"
 echo ""
 echo "Note: qcom EC2 picks up new IAM within ~15 min, or restart qcom:"
 echo "  sudo systemctl restart qcom"
