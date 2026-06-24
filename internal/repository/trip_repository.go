@@ -494,10 +494,12 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone st
 					"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 					"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 				},
+				ConditionExpression:      aws.String("#status <> :completed AND #status <> :cancelled"),
 				UpdateExpression:         aws.String("SET #status = :cancelled, cancelled_at = :now, updated_at = :now"),
 				ExpressionAttributeNames: map[string]string{"#status": "status"},
 				ExpressionAttributeValues: map[string]types.AttributeValue{
 					":cancelled": &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
+					":completed": &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
 					":now":       &types.AttributeValueMemberS{Value: now},
 				},
 			},
@@ -526,6 +528,11 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone st
 		TransactItems: items,
 	})
 	if err != nil {
+		var txErr *types.TransactionCanceledException
+		if errors.As(err, &txErr) {
+			r.logger.WithField("trip_id", tripID).Info("CancelByOrderID: trip already terminal — skipping (condition check)")
+			return nil
+		}
 		return op.Fail(fmt.Errorf("failed to cancel trip: %w", err))
 	}
 	return nil
