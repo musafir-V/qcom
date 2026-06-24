@@ -211,6 +211,34 @@ func classifyVerifyPickupError(err error) (status int, code string) {
 	}
 }
 
+// POST /internal/v1/trips/cancel-by-order
+// Body: { "order_id": "...", "reason": "..." }
+// Called by Java order-service when an order is cancelled. Fail-open on the Java side —
+// this handler returns 200 for all non-validation outcomes so Java treats errors as skip.
+func (h *TripHandlers) CancelTripByOrder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrderID string `json:"order_id"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.OrderID) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id is required")
+		return
+	}
+
+	if err := h.tripService.CancelTripByOrder(r.Context(), req.OrderID, req.Reason); err != nil {
+		h.logger.WithError(err).WithField("order_id", req.OrderID).Error("CancelTripByOrder failed")
+		// Return 200 so Java fail-open treats this as a skipped side-effect, not a hard error.
+		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "error", "reason": err.Error()})
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *TripHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
