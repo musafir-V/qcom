@@ -30,8 +30,22 @@ var (
 	ErrPickupOrderMismatch    = errors.New("scanned order does not match assigned trip")
 )
 
+// tripRepoI is the subset of TripRepository methods used by TripService.
+// Using an interface here allows unit tests to inject stub implementations
+// without spinning up a real DynamoDB client.
+type tripRepoI interface {
+	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+	GetByID(ctx context.Context, tripID string) (*models.Trip, error)
+	CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone string, tasks []models.Task, codAmount float64) error
+	UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error
+	UpdateStatus(ctx context.Context, tripID string, status models.TripStatus) error
+	Accept(ctx context.Context, tripID, deID string) error
+	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
+	CancelByOrderID(ctx context.Context, tripID, dePhone string) error
+}
+
 type TripService struct {
-	tripRepo      *repository.TripRepository
+	tripRepo      tripRepoI
 	deRepo        *repository.DERepository
 	javaClient    *JavaOrderClient
 	payoutService *PayoutService
@@ -55,6 +69,55 @@ func NewTripService(
 		notifier:      notifier,
 		logger:        logger,
 	}
+}
+
+// CancelTripByOrder is called by the order-service when an order is cancelled (any actor).
+// It looks up the trip, guards against terminal statuses, cancels it atomically via DynamoDB,
+// and fires a rider push notification if a DE is assigned. PN errors are fire-and-forget;
+// all other errors are returned to the caller so the HTTP handler can decide on fail-open policy.
+func (s *TripService) CancelTripByOrder(ctx context.Context, orderID, reason string) error {
+	trip, err := s.tripRepo.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("CancelTripByOrder: lookup failed: %w", err)
+	}
+	if trip == nil {
+		s.logger.WithField("order_id", orderID).Debug("CancelTripByOrder: no trip found — no-op")
+		return nil
+	}
+	if trip.Status == models.TripStatusCompleted {
+		s.logger.WithFields(logrus.Fields{"order_id": orderID, "trip_id": trip.TripID}).
+			Warn("CancelTripByOrder: trip already completed — skipping cancel")
+		return nil
+	}
+	if trip.Status == models.TripStatusCancelled {
+		s.logger.WithFields(logrus.Fields{"order_id": orderID, "trip_id": trip.TripID}).
+			Debug("CancelTripByOrder: trip already cancelled — idempotent no-op")
+		return nil
+	}
+
+	if err := s.tripRepo.CancelByOrderID(ctx, trip.TripID, trip.DEPhone); err != nil {
+		return fmt.Errorf("CancelTripByOrder: db cancel failed: %w", err)
+	}
+
+	if trip.DEID != "" {
+		shortOrder := orderID
+		if len(shortOrder) > 12 {
+			shortOrder = shortOrder[:12]
+		}
+		s.notifier.Send(ctx, models.NotificationSendRequest{
+			RecipientType: models.RecipientTypeDriver,
+			RecipientID:   trip.DEID,
+			EventType:     "TRIP_CANCELLED",
+			Priority:      models.PriorityHigh,
+			Title:         "Trip cancelled",
+			Body:          "Your delivery for order " + shortOrder + " has been cancelled.",
+			Data: map[string]string{
+				"trip_id":  trip.TripID,
+				"order_id": orderID,
+			},
+		})
+	}
+	return nil
 }
 
 // GetCurrentTrip returns the active trip for the calling DE.
