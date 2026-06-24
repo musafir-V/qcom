@@ -35,8 +35,13 @@ type Dispute struct {
 	PhotoKeys          []string      `json:"photo_keys,omitempty" dynamodbav:"photo_keys,omitempty"`
 	Status             DisputeStatus `json:"status" dynamodbav:"status"`
 	ResolutionNote     string        `json:"resolution_note,omitempty" dynamodbav:"resolution_note,omitempty"`
-	CreatedAt          string        `json:"created_at" dynamodbav:"created_at"`
-	UpdatedAt          string        `json:"updated_at" dynamodbav:"updated_at"`
+	// ResolvedBy is the admin username that last changed the status (audit).
+	ResolvedBy string `json:"resolved_by,omitempty" dynamodbav:"resolved_by,omitempty"`
+	// DisputeStatusKey is the sparse-GSI (DisputeStatusIndex) hash key; equals string(Status).
+	// Dispute-only attribute so non-dispute items never appear in the index.
+	DisputeStatusKey string `json:"-" dynamodbav:"dispute_status_key,omitempty"`
+	CreatedAt        string `json:"created_at" dynamodbav:"created_at"`
+	UpdatedAt        string `json:"updated_at" dynamodbav:"updated_at"`
 }
 
 func (d *Dispute) GetPK() string { return "DISPUTE!" + d.DisputeID }
@@ -45,6 +50,20 @@ func (d *Dispute) GetSK() string { return "METADATA" }
 // DisputeOpenGuardPK is the PK of the uniqueness-guard item that enforces at most
 // one dispute per order in v1; the guard is not cleared until admin tooling lands.
 func DisputeOpenGuardPK(orderNumber string) string { return "DISPUTEOPEN!" + orderNumber }
+
+// CanTransitionDispute reports whether an admin may move a dispute from `from` to `to`.
+// OPEN may go to UNDER_REVIEW/RESOLVED/REJECTED; UNDER_REVIEW may go to RESOLVED/REJECTED;
+// RESOLVED and REJECTED are terminal. No-op transitions are rejected.
+func CanTransitionDispute(from, to DisputeStatus) bool {
+	switch from {
+	case DisputeStatusOpen:
+		return to == DisputeStatusUnderReview || to == DisputeStatusResolved || to == DisputeStatusRejected
+	case DisputeStatusUnderReview:
+		return to == DisputeStatusResolved || to == DisputeStatusRejected
+	default:
+		return false
+	}
+}
 
 // DisputeDisposition is a predefined, backend-controlled dispute reason.
 type DisputeDisposition struct {

@@ -29,6 +29,29 @@ func TestDisputeDispositionSK(t *testing.T) {
 	}
 }
 
+func TestCanTransitionDispute(t *testing.T) {
+	cases := []struct {
+		from, to DisputeStatus
+		want     bool
+	}{
+		{DisputeStatusOpen, DisputeStatusUnderReview, true},
+		{DisputeStatusOpen, DisputeStatusResolved, true},
+		{DisputeStatusOpen, DisputeStatusRejected, true},
+		{DisputeStatusUnderReview, DisputeStatusResolved, true},
+		{DisputeStatusUnderReview, DisputeStatusRejected, true},
+		{DisputeStatusUnderReview, DisputeStatusOpen, false},
+		{DisputeStatusResolved, DisputeStatusOpen, false},
+		{DisputeStatusRejected, DisputeStatusUnderReview, false},
+		{DisputeStatusOpen, DisputeStatusOpen, false},
+		{DisputeStatus("BOGUS"), DisputeStatusResolved, false},
+	}
+	for _, c := range cases {
+		if got := CanTransitionDispute(c.from, c.to); got != c.want {
+			t.Errorf("CanTransitionDispute(%q,%q)=%v want %v", c.from, c.to, got, c.want)
+		}
+	}
+}
+
 func TestDisputeMarshalHasNoOrderIDAttribute(t *testing.T) {
 	d := &Dispute{
 		DisputeID:          "d1",
