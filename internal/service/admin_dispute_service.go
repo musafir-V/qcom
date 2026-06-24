@@ -26,6 +26,21 @@ type dispositionLookup interface {
 	GetByCode(ctx context.Context, code string) (*models.DisputeDisposition, error)
 }
 
+type tripStoreForDispute interface {
+	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+}
+
+type deStoreForDispute interface {
+	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
+}
+
+// DisputeDetail is the assembled result for GET /admin/disputes/{id}.
+type DisputeDetail struct {
+	Dispute *models.Dispute
+	Trip    *models.Trip              // nil if trip not found (fail-open)
+	DE      *models.DeliveryExecutive // nil if DE not found (fail-open)
+}
+
 // DisputeSummary holds per-status counts used by the dashboard badge + tabs.
 type DisputeSummary struct {
 	Open        int `json:"open"`
@@ -37,10 +52,12 @@ type DisputeSummary struct {
 type AdminDisputeService struct {
 	disputes     adminDisputeStore
 	dispositions dispositionLookup
+	trips        tripStoreForDispute
+	riders       deStoreForDispute
 }
 
-func NewAdminDisputeService(disputes adminDisputeStore, dispositions dispositionLookup) *AdminDisputeService {
-	return &AdminDisputeService{disputes: disputes, dispositions: dispositions}
+func NewAdminDisputeService(disputes adminDisputeStore, dispositions dispositionLookup, trips tripStoreForDispute, riders deStoreForDispute) *AdminDisputeService {
+	return &AdminDisputeService{disputes: disputes, dispositions: dispositions, trips: trips, riders: riders}
 }
 
 func validDisputeStatus(s models.DisputeStatus) bool {
@@ -107,6 +124,32 @@ func (s *AdminDisputeService) UpdateStatus(ctx context.Context, id string, newSt
 		return nil, ErrDisputeNotFound
 	}
 	return updated, nil
+}
+
+// GetDetail fetches a dispute and, on a best-effort basis, the associated trip and DE.
+// Trip and DE fields are nil when not found — callers must handle gracefully.
+func (s *AdminDisputeService) GetDetail(ctx context.Context, id string) (*DisputeDetail, error) {
+	d, err := s.disputes.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if d == nil {
+		return nil, ErrDisputeNotFound
+	}
+	detail := &DisputeDetail{Dispute: d}
+	if s.trips != nil {
+		trip, err := s.trips.GetByOrderID(ctx, d.OrderNumber)
+		if err == nil && trip != nil {
+			detail.Trip = trip
+			if s.riders != nil && trip.DEPhone != "" {
+				de, err := s.riders.GetByPhone(ctx, trip.DEPhone)
+				if err == nil && de != nil {
+					detail.DE = de
+				}
+			}
+		}
+	}
+	return detail, nil
 }
 
 // TitlesFor resolves disposition codes to human titles, deduping and skipping unknowns.

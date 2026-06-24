@@ -187,7 +187,7 @@ func main() {
 	)
 	disputeHandlers := handlers.NewDisputeHandlers(disputeService, uploadService, logger)
 
-	adminDisputeService := service.NewAdminDisputeService(disputeRepo, dispositionRepo)
+	adminDisputeService := service.NewAdminDisputeService(disputeRepo, dispositionRepo, tripRepo, deRepo)
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
@@ -400,6 +400,7 @@ func setupRouter(
 	admin.HandleFunc("/disputes/summary", adminDisputeHandlers.Summary).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/disputes", adminDisputeHandlers.List).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/disputes/{id}", adminDisputeHandlers.UpdateStatus).Methods("PATCH", "OPTIONS")
+	admin.HandleFunc("/disputes/{id}", adminDisputeHandlers.Get).Methods("GET", "OPTIONS")
 
 	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()

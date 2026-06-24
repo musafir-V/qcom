@@ -39,6 +39,34 @@ type adminDisputeDTO struct {
 	UpdatedAt        string   `json:"updated_at"`
 }
 
+type disputeItemDTO struct {
+	Name     string `json:"name"`
+	ImageURL string `json:"image_url"`
+	Quantity int    `json:"quantity"`
+}
+
+type disputeOrderEvidenceDTO struct {
+	OrderNumber       string           `json:"order_number"`
+	Items             []disputeItemDTO `json:"items"`
+	PickupCompletedAt string           `json:"pickup_completed_at,omitempty"`
+	DropCompletedAt   string           `json:"drop_completed_at,omitempty"`
+	DriverPhotoURL    string           `json:"driver_photo_url,omitempty"`
+}
+
+type disputeDriverDetailDTO struct {
+	DEID                string `json:"de_id"`
+	Name                string `json:"name"`
+	PhoneNumber         string `json:"phone_number"`
+	TotalTripsCompleted int    `json:"total_trips_completed"`
+	CreatedAt           string `json:"created_at"`
+}
+
+type adminDisputeDetailDTO struct {
+	adminDisputeDTO
+	Order  *disputeOrderEvidenceDTO `json:"order,omitempty"`
+	Driver *disputeDriverDetailDTO  `json:"driver,omitempty"`
+}
+
 func (h *AdminDisputeHandlers) toDTO(ctx context.Context, d *models.Dispute, titles map[string]string) adminDisputeDTO {
 	dto := adminDisputeDTO{
 		DisputeID: d.DisputeID, OrderNumber: d.OrderNumber, CustomerID: d.CustomerID,
@@ -115,6 +143,57 @@ func (h *AdminDisputeHandlers) UpdateStatus(w http.ResponseWriter, r *http.Reque
 	}
 	titles := h.service.TitlesFor(r.Context(), []string{d.DispositionCode})
 	h.respondJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDTO(r.Context(), d, titles)})
+}
+
+// GET /admin/disputes/{id}
+func (h *AdminDisputeHandlers) Get(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	detail, err := h.service.GetDetail(r.Context(), id)
+	if err != nil {
+		h.respondErr(w, err)
+		return
+	}
+
+	titles := h.service.TitlesFor(r.Context(), []string{detail.Dispute.DispositionCode})
+	out := adminDisputeDetailDTO{adminDisputeDTO: h.toDTO(r.Context(), detail.Dispute, titles)}
+
+	if detail.Trip != nil {
+		ev := &disputeOrderEvidenceDTO{
+			OrderNumber: detail.Trip.OrderID,
+			Items:       make([]disputeItemDTO, len(detail.Trip.Items)),
+		}
+		for i, it := range detail.Trip.Items {
+			ev.Items[i] = disputeItemDTO{Name: it.Name, ImageURL: it.ImageURL, Quantity: it.Quantity}
+		}
+		for _, t := range detail.Trip.Tasks {
+			if t.Type == models.TaskTypePickup && t.CompletedAt != "" {
+				ev.PickupCompletedAt = t.CompletedAt
+			}
+			if t.Type == models.TaskTypeDrop {
+				ev.DropCompletedAt = t.CompletedAt
+				if t.PhotoS3Key != "" {
+					if url, err := h.uploadService.PresignTripTaskPhotoViewURL(r.Context(), t.PhotoS3Key); err == nil {
+						ev.DriverPhotoURL = url
+					} else {
+						h.logger.WithError(err).Warn("failed to presign driver photo")
+					}
+				}
+			}
+		}
+		out.Order = ev
+	}
+
+	if detail.DE != nil {
+		out.Driver = &disputeDriverDetailDTO{
+			DEID:                detail.DE.DEID,
+			Name:                detail.DE.Name,
+			PhoneNumber:         detail.DE.PhoneNumber,
+			TotalTripsCompleted: detail.DE.TotalTripsCompleted,
+			CreatedAt:           detail.DE.CreatedAt,
+		}
+	}
+
+	h.respondJSON(w, http.StatusOK, map[string]interface{}{"dispute": out})
 }
 
 func classifyAdminDisputeError(err error) (int, string) {
