@@ -1,8 +1,14 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/sirupsen/logrus"
 )
 
 // Guards the wire contract with the Java order-service: the struct tags on
@@ -96,5 +102,70 @@ func TestJavaOrder_EffectiveOrderID_FallsBackToOrderID(t *testing.T) {
 	}
 	if got, want := order.EffectiveOrderID(), "uuid-456"; got != want {
 		t.Fatalf("EffectiveOrderID() = %q, want %q", got, want)
+	}
+}
+
+func newTestJavaClient(serverURL string) *JavaOrderClient {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	return NewJavaOrderClient(serverURL, logger)
+}
+
+func TestGetOrderRaw_ReturnsFullPayloadVerbatim(t *testing.T) {
+	const body = `{"orderNumber":"ORD123","status":"OUT_FOR_DELIVERY","grandTotal":42.5,"items":[{"sku":"SKU-1","quantity":2}],"delivery":{"address":"12 Cairo Rd","phone":"0971234567"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/orders/ORD123" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	got, err := newTestJavaClient(srv.URL).GetOrderRaw(context.Background(), "ORD123")
+	if err != nil {
+		t.Fatalf("GetOrderRaw error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected payload, got nil")
+	}
+	if string(got["orderNumber"]) != `"ORD123"` {
+		t.Errorf("orderNumber not preserved: %s", got["orderNumber"])
+	}
+	if string(got["grandTotal"]) != `42.5` {
+		t.Errorf("grandTotal not preserved verbatim: %s", got["grandTotal"])
+	}
+	if _, ok := got["items"]; !ok {
+		t.Error("items key missing")
+	}
+	if _, ok := got["delivery"]; !ok {
+		t.Error("delivery key missing")
+	}
+}
+
+func TestGetOrderRaw_NotFoundReturnsNilNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	got, err := newTestJavaClient(srv.URL).GetOrderRaw(context.Background(), "MISSING")
+	if err != nil {
+		t.Fatalf("expected nil error for 404, got %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil map for 404, got %v", got)
+	}
+}
+
+func TestGetOrderRaw_ServerErrorReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, err := newTestJavaClient(srv.URL).GetOrderRaw(context.Background(), "ORD123")
+	if err == nil {
+		t.Fatal("expected error for 500, got nil")
 	}
 }

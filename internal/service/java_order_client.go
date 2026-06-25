@@ -229,3 +229,35 @@ func (c *JavaOrderClient) GetOrderStatus(ctx context.Context, orderID string) (s
 	}
 	return order.Status, nil
 }
+
+// GetOrderRaw fetches the full order payload as a loosely-typed object so every
+// field is preserved verbatim. Returns (nil, nil) when the order does not exist.
+func (c *JavaOrderClient) GetOrderRaw(ctx context.Context, orderID string) (map[string]json.RawMessage, error) {
+	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetOrderRaw", logrus.Fields{"order_id": orderID})
+	defer op.End()
+
+	url := fmt.Sprintf("%s/api/v1/orders/%s", c.baseURL, orderID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to build request: %w", err))
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("java order-service unavailable: %w", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, op.Fail(fmt.Errorf("java returned %d", resp.StatusCode))
+	}
+
+	var order map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&order); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to decode order: %w", err))
+	}
+	return order, nil
+}
