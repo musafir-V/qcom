@@ -129,8 +129,11 @@ Let `committed := trip != nil && (trip.Status == accepted || trip.Status == out_
   `deRepo.GetByPhone`; on success set the DE name. Else `null`.
 - **`otp`**: when `committed && dropTask != nil && dropTask.Status == created`,
   set `dropTask.OTP`. Else `null`.
-- **`eta`**: when `trip != nil && trip.CreatedAt != ""`, `computeETA(trip.CreatedAt)`
-  (existing 15-minute promise, Africa/Lusaka). Else `null`.
+- **`eta`**: when `trip != nil && trip.CreatedAt != ""` **and the trip is not in a
+  terminal state** (i.e. not `completed`/`cancelled`), `computeETA(trip.CreatedAt)`
+  (existing 15-minute promise, Africa/Lusaka). Else `null`. Terminal trips return
+  `null` so a delivered/cancelled order never surfaces a stale "delivery running
+  delayed" ETA.
 
 `ETAPayload` shape is unchanged: `{ expires_at, remaining_minutes, is_delayed, message }`.
 
@@ -141,8 +144,8 @@ Let `committed := trip != nil && (trip.Status == accepted || trip.Status == out_
 | No trip yet (CONFIRMED/PACKING/READY) | null | null | null |
 | Trip created/assigned (finding driver) | null | null | computed |
 | Accepted / out-for-delivery, drop open | shown | shown | computed |
-| Delivered (drop complete) | null | shown→null* | computed |
-| Cancelled | null | null | computed-or-null |
+| Delivered (drop complete) | null | shown→null* | null |
+| Cancelled | null | null | null |
 
 \* `de_name` follows the committed-state rule: it resolves while
 `out_for_delivery`, and is `null` once the trip is `completed`. Net effect:
@@ -191,7 +194,21 @@ paths:
   the same call the screen already made before; net external load is unchanged once
   the frontend consolidates onto track. Java client already has a 10s timeout.
 - **OTP exposure window:** unchanged — OTP only surfaces while a driver is
-  committed and the drop is open. No widening of the secret's visibility.
+  committed and the drop is open. No widening of the *time-window* visibility.
+
+- **KNOWN SECURITY RISK (accepted, follow-up tracked): missing order-ownership
+  authorization (IDOR).** The route is registered under `RequireAuth` only and the
+  handler reads `orderId` straight from the path with no check that the order
+  belongs to the authenticated caller. Any authenticated user can therefore fetch
+  any order by number. This is **pre-existing** (the prior 4-field track handler
+  exposed `otp` the same way), but this change widens the leaked surface from 4
+  trip fields to the **entire order payload (full PII) plus the delivery OTP**.
+  Decision (2026-06-25): accept the risk for this iteration and ship, with a
+  **tracked follow-up** to add an `entity_id` ownership check that returns `403`
+  for foreign orders — mirroring the existing `dispute_handlers.go` scoping pattern
+  (`entity_id` → `ErrDisputeForbidden`). Do not let this risk persist silently;
+  the follow-up must be filed before this endpoint becomes the app's primary
+  order-details source.
 
 ## Out of Scope (follow-ups)
 
