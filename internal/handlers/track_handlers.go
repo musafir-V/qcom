@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -17,10 +18,21 @@ import (
 
 const etaMinutes = 15 // fixed 15-minute delivery promise
 
+// Dependency seams — the concrete service/repositories satisfy these.
+type trackOrderFetcher interface {
+	GetOrderRaw(ctx context.Context, orderID string) (map[string]json.RawMessage, error)
+}
+type trackTripGetter interface {
+	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+}
+type trackDEResolver interface {
+	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
+}
+
 type TrackHandlers struct {
-	tripRepo   *repository.TripRepository
-	deRepo     *repository.DERepository
-	javaClient *service.JavaOrderClient
+	tripRepo   trackTripGetter
+	deRepo     trackDEResolver
+	javaClient trackOrderFetcher
 	logger     *logrus.Logger
 }
 
@@ -38,13 +50,6 @@ func NewTrackHandlers(
 	}
 }
 
-type TrackResponse struct {
-	TripStatus string      `json:"trip_status"`
-	DEName     *string     `json:"de_name"`
-	OTP        *string     `json:"otp"`
-	ETA        *ETAPayload `json:"eta"`
-}
-
 type ETAPayload struct {
 	ExpiresAt        string  `json:"expires_at"`
 	RemainingMinutes int     `json:"remaining_minutes"`
@@ -53,7 +58,8 @@ type ETAPayload struct {
 }
 
 // Track handles GET /api/v1/orders/{orderId}/track.
-// Requires customer JWT auth.
+// Returns the full order-details payload (from order-service) enriched with the
+// trip-derived fields otp, de_name, and eta. Requires customer JWT auth.
 func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 	orderID := mux.Vars(r)["orderId"]
 	if strings.TrimSpace(orderID) == "" {
@@ -61,74 +67,53 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up trip by order ID
+	// Order payload is required — hard-fail if we can't load it.
+	order, err := h.javaClient.GetOrderRaw(r.Context(), orderID)
+	if err != nil {
+		h.logger.WithError(err).Error("track: failed to fetch order from order-service")
+		h.respondWithError(w, http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch order")
+		return
+	}
+	if order == nil {
+		h.respondWithError(w, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+
+	// Trip enrichment is best-effort — a lookup failure degrades to null fields.
 	trip, err := h.tripRepo.GetByOrderID(r.Context(), orderID)
 	if err != nil {
-		h.logger.WithError(err).Error("track: failed to query trip by order ID")
-		h.respondWithError(w, http.StatusInternalServerError, "FETCH_FAILED", "Failed to fetch trip")
-		return
+		h.logger.WithError(err).Error("track: trip lookup failed, returning order without tracking fields")
+		trip = nil
 	}
 
-	// No trip yet — verify order exists in Java then return finding_driver
-	if trip == nil {
-		javaStatus, err := h.javaClient.GetOrderStatus(r.Context(), orderID)
-		if err != nil || javaStatus == "NOT_FOUND" {
-			h.respondWithError(w, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
-			return
+	var otp, deName *string
+	var eta *ETAPayload
+	if trip != nil {
+		if trip.CreatedAt != "" {
+			eta = computeETA(trip.CreatedAt)
 		}
-		h.respondWithJSON(w, http.StatusOK, TrackResponse{
-			TripStatus: "finding_driver",
-			DEName:     nil,
-			OTP:        nil,
-			ETA:        nil,
-		})
-		return
-	}
-
-	// Completed or cancelled trips return an error — customer should see summary screen
-	if trip.Status == models.TripStatusCompleted {
-		h.respondWithError(w, http.StatusBadRequest, "TRIP_COMPLETED", "This order has already been delivered.")
-		return
-	}
-	if trip.Status == models.TripStatusCancelled {
-		h.respondWithError(w, http.StatusBadRequest, "TRIP_CANCELLED", "This order has been cancelled.")
-		return
-	}
-
-	// Build response
-	response := TrackResponse{
-		TripStatus: string(trip.Status),
-	}
-
-	// Driver is revealed to the customer only once they have accepted — never
-	// during the assigned (pending-accept) window, which may end in a reject.
-	committed := trip.Status == models.TripStatusAccepted || trip.Status == models.TripStatusOutForDelivery
-	if committed && trip.DEPhone != "" {
-		de, err := h.deRepo.GetByPhone(r.Context(), trip.DEPhone)
-		if err == nil && de != nil {
-			response.DEName = &de.Name
+		// Driver and OTP are revealed only once the driver has committed
+		// (accepted/out_for_delivery) — never during the pending-accept window.
+		committed := trip.Status == models.TripStatusAccepted || trip.Status == models.TripStatusOutForDelivery
+		if committed && trip.DEPhone != "" {
+			if de, derr := h.deRepo.GetByPhone(r.Context(), trip.DEPhone); derr == nil && de != nil {
+				deName = &de.Name
+			}
+		}
+		if committed {
+			if drop := trip.DropTask(); drop != nil && drop.Status == models.TaskStatusCreated {
+				otp = &drop.OTP
+			}
 		}
 	}
 
-	// OTP — shown only once the driver has committed and the drop is still open.
-	dropTask := trip.DropTask()
-	if committed && dropTask != nil && dropTask.Status == models.TaskStatusCreated {
-		otp := dropTask.OTP
-		response.OTP = &otp
+	if err := enrichOrderWithTracking(order, otp, deName, eta); err != nil {
+		h.logger.WithError(err).Error("track: failed to enrich order payload")
+		h.respondWithError(w, http.StatusInternalServerError, "ENRICH_FAILED", "Failed to build response")
+		return
 	}
 
-	// ETA — only meaningful once trip is created (has a created_at)
-	if trip.CreatedAt != "" {
-		response.ETA = computeETA(trip.CreatedAt)
-	}
-
-	// Customer sees "finding_driver" until a driver accepts — the assigned
-	// (pending-accept) window and any reject churn stay invisible.
-	if trip.Status == models.TripStatusCreated || trip.Status == models.TripStatusAssigned {
-		response.TripStatus = "finding_driver"
-	}
-
-	h.respondWithJSON(w, http.StatusOK, response)
+	h.respondWithJSON(w, http.StatusOK, order)
 }
 
 // computeETA builds the ETA payload from trip.CreatedAt.
