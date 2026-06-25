@@ -170,6 +170,9 @@ func TestTrack_Delivered_NoOTPNoName(t *testing.T) {
 	if string(body["de_name"]) != "null" {
 		t.Errorf("de_name should be null after completion: %s", body["de_name"])
 	}
+	if string(body["eta"]) != "null" {
+		t.Errorf("eta should be null for a delivered (terminal) trip: %s", body["eta"])
+	}
 }
 
 func TestTrack_Cancelled_NoOTP(t *testing.T) {
@@ -183,6 +186,33 @@ func TestTrack_Cancelled_NoOTP(t *testing.T) {
 	body := decodeBody(t, rec)
 	if string(body["otp"]) != "null" {
 		t.Errorf("otp = %s, want null", body["otp"])
+	}
+	if string(body["de_name"]) != "null" {
+		t.Errorf("de_name should be null for a cancelled trip: %s", body["de_name"])
+	}
+	if string(body["eta"]) != "null" {
+		t.Errorf("eta should be null for a cancelled (terminal) trip: %s", body["eta"])
+	}
+}
+
+func TestTrack_Accepted_ShowsOTPNameETA(t *testing.T) {
+	of := fakeOrderFetcher{raw: baseOrder()}
+	tg := trackFakeTripGetter{trip: tripWith(models.TripStatusAccepted, models.TaskStatusCreated, "4321")}
+	de := fakeDEResolver{de: &models.DeliveryExecutive{Name: "John M."}}
+	rec := doTrack(newTrackHandlers(of, tg, de), "ORD1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := decodeBody(t, rec)
+	if string(body["otp"]) != `"4321"` {
+		t.Errorf("otp = %s", body["otp"])
+	}
+	if string(body["de_name"]) != `"John M."` {
+		t.Errorf("de_name = %s", body["de_name"])
+	}
+	if string(body["eta"]) == "null" || len(body["eta"]) == 0 {
+		t.Errorf("eta should be present for an accepted (non-terminal) trip: %s", body["eta"])
 	}
 }
 

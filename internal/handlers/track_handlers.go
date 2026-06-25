@@ -89,14 +89,18 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 	var otp, deName *string
 	var eta *ETAPayload
 	if trip != nil {
-		if trip.CreatedAt != "" {
+		terminal := trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled
+		if trip.CreatedAt != "" && !terminal {
 			eta = computeETA(trip.CreatedAt)
 		}
 		// Driver and OTP are revealed only once the driver has committed
 		// (accepted/out_for_delivery) — never during the pending-accept window.
 		committed := trip.Status == models.TripStatusAccepted || trip.Status == models.TripStatusOutForDelivery
 		if committed && trip.DEPhone != "" {
-			if de, derr := h.deRepo.GetByPhone(r.Context(), trip.DEPhone); derr == nil && de != nil {
+			de, derr := h.deRepo.GetByPhone(r.Context(), trip.DEPhone)
+			if derr != nil {
+				h.logger.WithError(derr).Warn("track: DE lookup failed; de_name omitted")
+			} else if de != nil {
 				deName = &de.Name
 			}
 		}
