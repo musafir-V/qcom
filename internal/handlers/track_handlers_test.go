@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -62,5 +63,44 @@ func TestComputeETA_InvalidTimestamp(t *testing.T) {
 	eta := computeETA("not-a-timestamp")
 	if eta != nil {
 		t.Fatal("expected nil for invalid timestamp")
+	}
+}
+
+func TestEnrichOrderWithTracking_AllPresent(t *testing.T) {
+	order := map[string]json.RawMessage{"orderNumber": json.RawMessage(`"ORD1"`)}
+	otp := "1234"
+	name := "John M."
+	eta := &ETAPayload{ExpiresAt: "2026-06-25T10:00:00Z", RemainingMinutes: 8, IsDelayed: false}
+
+	if err := enrichOrderWithTracking(order, &otp, &name, eta); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(order["otp"]) != `"1234"` {
+		t.Errorf("otp = %s", order["otp"])
+	}
+	if string(order["de_name"]) != `"John M."` {
+		t.Errorf("de_name = %s", order["de_name"])
+	}
+	if string(order["orderNumber"]) != `"ORD1"` {
+		t.Errorf("original field clobbered: %s", order["orderNumber"])
+	}
+	var gotETA ETAPayload
+	if err := json.Unmarshal(order["eta"], &gotETA); err != nil {
+		t.Fatalf("eta not valid json: %v", err)
+	}
+	if gotETA.RemainingMinutes != 8 {
+		t.Errorf("eta.remaining_minutes = %d", gotETA.RemainingMinutes)
+	}
+}
+
+func TestEnrichOrderWithTracking_NilsBecomeJSONNull(t *testing.T) {
+	order := map[string]json.RawMessage{}
+	if err := enrichOrderWithTracking(order, nil, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, k := range []string{"otp", "de_name", "eta"} {
+		if string(order[k]) != "null" {
+			t.Errorf("%s = %s, want null", k, order[k])
+		}
 	}
 }

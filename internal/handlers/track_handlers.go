@@ -163,6 +163,19 @@ func computeETA(createdAtUTC string) *ETAPayload {
 	return eta
 }
 
+// enrichOrderWithTracking injects the trip-derived tracking fields into the
+// order object in place. nil pointers are written as JSON null.
+func enrichOrderWithTracking(order map[string]json.RawMessage, otp *string, deName *string, eta *ETAPayload) error {
+	for key, val := range map[string]any{"otp": otp, "de_name": deName, "eta": eta} {
+		raw, err := json.Marshal(val)
+		if err != nil {
+			return err
+		}
+		order[key] = raw
+	}
+	return nil
+}
+
 func (h *TrackHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
