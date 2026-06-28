@@ -71,7 +71,8 @@ func (t EntityType) Decode(id string) (int64, error) {
 	if n <= 0 || n > maxID {
 		return 0, fmt.Errorf("ids: %q decodes out of range", id)
 	}
-	if round, _ := t.Format(n); round != id {
+	round, ferr := t.Format(n)
+	if ferr != nil || round != id {
 		return 0, fmt.Errorf("ids: %q failed round-trip", id)
 	}
 	return n, nil

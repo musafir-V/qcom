@@ -92,11 +92,13 @@ func TestPrefixesAndKeysUnique(t *testing.T) {
 }
 
 type fakeCounter struct {
-	n   int64
-	err error
+	n      int64
+	err    error
+	gotKey string
 }
 
-func (f *fakeCounter) NextValue(_ context.Context, _ string) (int64, error) {
+func (f *fakeCounter) NextValue(_ context.Context, counterKey string) (int64, error) {
+	f.gotKey = counterKey
 	if f.err != nil {
 		return 0, f.err
 	}
@@ -113,7 +115,10 @@ func TestGeneratorNextID(t *testing.T) {
 	if first != "TR0458047115" {
 		t.Fatalf("first NextID = %q, want TR0458047115", first)
 	}
-	second, _ := g.NextID(context.Background(), Trip)
+	second, err := g.NextID(context.Background(), Trip)
+	if err != nil {
+		t.Fatalf("second NextID: %v", err)
+	}
 	if second != "TR2033899500" {
 		t.Fatalf("second NextID = %q, want TR2033899500", second)
 	}
@@ -122,8 +127,32 @@ func TestGeneratorNextID(t *testing.T) {
 func TestGeneratorPropagatesError(t *testing.T) {
 	sentinel := errors.New("boom")
 	g := NewGeneratorWithCounter(&fakeCounter{err: sentinel})
-	if _, err := g.NextID(context.Background(), Trip); err == nil {
+	_, err := g.NextID(context.Background(), Trip)
+	if err == nil {
 		t.Fatalf("expected error from counter")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("NextID error = %v, want sentinel %v", err, sentinel)
+	}
+}
+
+func TestGeneratorRoutesCounterKey(t *testing.T) {
+	ctx := context.Background()
+	fc := &fakeCounter{}
+	g := NewGeneratorWithCounter(fc)
+
+	if _, err := g.NextID(ctx, Trip); err != nil {
+		t.Fatalf("NextID(Trip): %v", err)
+	}
+	if fc.gotKey != "COUNTER!TRIP" {
+		t.Fatalf("Trip counter key = %q, want COUNTER!TRIP", fc.gotKey)
+	}
+
+	if _, err := g.NextID(ctx, User); err != nil {
+		t.Fatalf("NextID(User): %v", err)
+	}
+	if fc.gotKey != "COUNTER!USER" {
+		t.Fatalf("User counter key = %q, want COUNTER!USER", fc.gotKey)
 	}
 }
 
