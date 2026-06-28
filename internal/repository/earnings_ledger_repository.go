@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
@@ -18,10 +19,11 @@ type EarningsLedgerRepository struct {
 	client    *dynamodb.Client
 	tableName string
 	logger    *logrus.Logger
+	idGen     *ids.Generator
 }
 
 func NewEarningsLedgerRepository(client *dynamodb.Client, tableName string, logger *logrus.Logger) *EarningsLedgerRepository {
-	return &EarningsLedgerRepository{client: client, tableName: tableName, logger: logger}
+	return &EarningsLedgerRepository{client: client, tableName: tableName, logger: logger, idGen: ids.NewGenerator(client, tableName)}
 }
 
 // Append writes a new earning entry to the ledger.
@@ -33,6 +35,14 @@ func (r *EarningsLedgerRepository) Append(ctx context.Context, entry *models.Ear
 
 	if entry.CreatedAt == "" {
 		entry.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	if entry.EarningID == "" {
+		id, err := r.idGen.NextID(ctx, ids.Earning)
+		if err != nil {
+			return op.Fail(fmt.Errorf("failed to generate earning_id: %w", err))
+		}
+		entry.EarningID = id
 	}
 
 	item, err := attributevalue.MarshalMap(entry)

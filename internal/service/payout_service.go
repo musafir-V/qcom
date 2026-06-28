@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/money"
@@ -90,7 +89,6 @@ func (s *PayoutService) OnTripCompleted(ctx context.Context, trip *models.Trip, 
 	now := timezone.Now().Format(time.RFC3339)
 	tripEntry := &models.EarningsLedger{
 		DEID:        de.DEID,
-		EarningID:   uuid.New().String(),
 		Type:        models.EarningTypeTrip,
 		AmountZMW:   trip.TotalPayZMW,
 		CreatedAt:   now,
@@ -117,7 +115,6 @@ func (s *PayoutService) writeReferralBonusEntries(ctx context.Context, referredD
 	for _, deID := range []string{referredDEID, referrerDEID} {
 		entry := &models.EarningsLedger{
 			DEID:        deID,
-			EarningID:   uuid.New().String(),
 			Type:        models.EarningTypeReferralBonus,
 			AmountZMW:   amount,
 			CreatedAt:   now,

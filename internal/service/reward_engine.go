@@ -4,7 +4,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/models"
 )
 
@@ -31,9 +30,8 @@ func EvaluateAccumulator(deID string, spec models.AccumulatorSpec, window string
 
 	return []*models.EarningsLedger{
 		{
-			DEID:        deID,
-			EarningID:   uuid.New().String(),
-			Type:        earningType,
+			DEID:  deID,
+			Type:  earningType,
 			AmountZMW:   spec.Reward.AmountZMW,
 			Label:       spec.Reward.Label,
 			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -114,9 +112,8 @@ func EvaluateRanking(spec models.RankingSpec, window string, perDE map[string][]
 	out := make([]*models.EarningsLedger, 0, limit)
 	for i := 0; i < limit; i++ {
 		out = append(out, &models.EarningsLedger{
-			DEID:        candidates[i].deID,
-			EarningID:   uuid.New().String(),
-			Type:        earningType,
+			DEID:  candidates[i].deID,
+			Type:  earningType,
 			AmountZMW:   spec.Reward.AmountZMW,
 			Label:       spec.Reward.Label,
 			CreatedAt:   time.Now().UTC().Format(time.RFC3339),
