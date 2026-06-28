@@ -198,7 +198,6 @@ func TestGetDisputeByOrder_NotFound(t *testing.T) {
 	}
 }
 
-
 func TestCreateDispute_DescriptionTooShort(t *testing.T) {
 	disp := basicDisposition()
 	disp.DescriptionRequired = true

@@ -17,8 +17,8 @@ import (
 const orderStatusNotFound = "NOT_FOUND"
 
 var (
-	ErrOrderNotFound      = errors.New("order not found")
-	ErrOrderNotDisputable = errors.New("order is not in a disputable state")
+	ErrOrderNotFound       = errors.New("order not found")
+	ErrOrderNotDisputable  = errors.New("order is not in a disputable state")
 	ErrDispositionNotFound = errors.New("disposition not found")
 	ErrDescriptionRequired = errors.New("description is required for this disposition")
 	ErrDescriptionTooShort = errors.New("description is too short")
