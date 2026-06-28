@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/timezone"
@@ -396,9 +395,8 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 
 	basePayZMW := computeBasePay(distKM, cfg)
 
-	tripID := uuid.New().String()
-	pickupTaskID := uuid.New().String()
-	dropTaskID := uuid.New().String()
+	// IDs are assigned by TripRepository.Create at the persistence boundary.
+	var tripID, pickupTaskID, dropTaskID string
 
 	if order.PaymentMethod != "" && !isKnownPaymentMethod(order.PaymentMethod) {
 		c.logger.WithFields(logrus.Fields{

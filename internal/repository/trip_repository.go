@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
@@ -20,10 +21,11 @@ type TripRepository struct {
 	client    *dynamodb.Client
 	tableName string
 	logger    *logrus.Logger
+	idGen     *ids.Generator
 }
 
 func NewTripRepository(client *dynamodb.Client, tableName string, logger *logrus.Logger) *TripRepository {
-	return &TripRepository{client: client, tableName: tableName, logger: logger}
+	return &TripRepository{client: client, tableName: tableName, logger: logger, idGen: ids.NewGenerator(client, tableName)}
 }
 
 // Create inserts a new Trip. Fails if a trip with the same PK already exists.
@@ -33,6 +35,23 @@ func (r *TripRepository) Create(ctx context.Context, trip *models.Trip) error {
 		"order_id": trip.OrderID,
 	})
 	defer op.End()
+
+	if trip.TripID == "" {
+		id, err := r.idGen.NextID(ctx, ids.Trip)
+		if err != nil {
+			return op.Fail(fmt.Errorf("failed to generate trip_id: %w", err))
+		}
+		trip.TripID = id
+	}
+	for i := range trip.Tasks {
+		if trip.Tasks[i].TaskID == "" {
+			tid, err := r.idGen.NextID(ctx, ids.Task)
+			if err != nil {
+				return op.Fail(fmt.Errorf("failed to generate task_id: %w", err))
+			}
+			trip.Tasks[i].TaskID = tid
+		}
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	trip.CreatedAt = now
