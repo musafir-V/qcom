@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
@@ -17,6 +18,7 @@ type AddressRepository struct {
 	client    *dynamodb.Client
 	tableName string
 	logger    *logrus.Logger
+	idGen     *ids.Generator
 }
 
 func NewAddressRepository(client *dynamodb.Client, tableName string, logger *logrus.Logger) *AddressRepository {
@@ -24,12 +26,21 @@ func NewAddressRepository(client *dynamodb.Client, tableName string, logger *log
 		client:    client,
 		tableName: tableName,
 		logger:    logger,
+		idGen:     ids.NewGenerator(client, tableName),
 	}
 }
 
 func (r *AddressRepository) Create(ctx context.Context, address *models.Address) error {
 	op := logging.Start(ctx, r.logger, "Create", logrus.Fields{"address_id": address.AddressID})
 	defer op.End()
+
+	if address.AddressID == "" {
+		id, err := r.idGen.NextID(ctx, ids.Address)
+		if err != nil {
+			return op.Fail(fmt.Errorf("failed to generate address_id: %w", err))
+		}
+		address.AddressID = id
+	}
 
 	item, err := attributevalue.MarshalMap(address)
 	if err != nil {

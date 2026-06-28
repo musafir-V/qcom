@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
@@ -49,7 +48,6 @@ func (s *DEService) Register(ctx context.Context, req RegisterDERequest) (*model
 	}
 
 	de := &models.DeliveryExecutive{
-		DEID:             uuid.New().String(),
 		PhoneNumber:      req.PhoneNumber,
 		Name:             req.Name,
 		ProfileURL:       req.ProfileURL,

@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
@@ -26,10 +27,11 @@ type DERepository struct {
 	client    *dynamodb.Client
 	tableName string
 	logger    *logrus.Logger
+	idGen     *ids.Generator
 }
 
 func NewDERepository(client *dynamodb.Client, tableName string, logger *logrus.Logger) *DERepository {
-	return &DERepository{client: client, tableName: tableName, logger: logger}
+	return &DERepository{client: client, tableName: tableName, logger: logger, idGen: ids.NewGenerator(client, tableName)}
 }
 
 func (r *DERepository) Create(ctx context.Context, de *models.DeliveryExecutive) error {
@@ -40,6 +42,14 @@ func (r *DERepository) Create(ctx context.Context, de *models.DeliveryExecutive)
 	de.CreatedAt = now
 	de.UpdatedAt = now
 	de.Status = models.DEStatusOffline
+
+	if de.DEID == "" {
+		id, err := r.idGen.NextID(ctx, ids.DE)
+		if err != nil {
+			return op.Fail(fmt.Errorf("failed to generate de_id: %w", err))
+		}
+		de.DEID = id
+	}
 
 	item, err := attributevalue.MarshalMap(de)
 	if err != nil {

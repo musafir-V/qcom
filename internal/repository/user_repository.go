@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/google/uuid"
+	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
@@ -19,6 +19,7 @@ type UserRepository struct {
 	client    *dynamodb.Client
 	tableName string
 	logger    *logrus.Logger
+	idGen     *ids.Generator
 }
 
 func NewUserRepository(client *dynamodb.Client, tableName string, logger *logrus.Logger) *UserRepository {
@@ -26,6 +27,7 @@ func NewUserRepository(client *dynamodb.Client, tableName string, logger *logrus
 		client:    client,
 		tableName: tableName,
 		logger:    logger,
+		idGen:     ids.NewGenerator(client, tableName),
 	}
 }
 
@@ -75,7 +77,13 @@ func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 	defer op.End()
 
 	now := time.Now()
-	user.UserID = uuid.New().String()
+	if user.UserID == "" {
+		id, err := r.idGen.NextID(ctx, ids.User)
+		if err != nil {
+			return op.Fail(fmt.Errorf("failed to generate user_id: %w", err))
+		}
+		user.UserID = id
+	}
 	user.CreatedAt = now
 	user.UpdatedAt = now
 

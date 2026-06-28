@@ -7,7 +7,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
@@ -38,7 +37,6 @@ func (s *AddressService) CreateAddress(ctx context.Context, userID string, addr 
 	defer op.End()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	addr.AddressID = uuid.New().String()
 	addr.UserID = userID
 	addr.IsActive = true
 	addr.CreatedAt = now
