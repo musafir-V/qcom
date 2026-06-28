@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
@@ -57,8 +56,8 @@ type DepositResult struct {
 }
 
 // RecordDeposit validates, clamps, and atomically decrements the DE's in-hand
-// cash while appending an idempotent ledger entry. depositID may be empty (a
-// UUID is generated). Returns the new balance and whether the DE is still blocked.
+// cash while appending an idempotent ledger entry. depositID may be empty; the
+// repository generates one. Returns the new balance and whether the DE is still blocked.
 func (s *CashDepositService) RecordDeposit(ctx context.Context, phone, depositID string, requested float64) (*DepositResult, error) {
 	op := logging.Start(ctx, s.logger, "RecordDeposit", logrus.Fields{"phone": phone, "requested": requested})
 	defer op.End()
@@ -73,10 +72,6 @@ func (s *CashDepositService) RecordDeposit(ctx context.Context, phone, depositID
 	}
 	if de == nil {
 		return nil, op.Outcome("not_found", ErrDepositDENotFound)
-	}
-
-	if depositID == "" {
-		depositID = uuid.New().String()
 	}
 
 	cfg, err := s.cashConfigRepo.Get(ctx)

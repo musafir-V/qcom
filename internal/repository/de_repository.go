@@ -427,6 +427,14 @@ func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expec
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	if entry.DepositID == "" {
+		id, err := r.idGen.NextID(ctx, ids.CashDeposit)
+		if err != nil {
+			return op.Fail(fmt.Errorf("failed to generate deposit_id: %w", err))
+		}
+		entry.DepositID = id
+	}
+
 	ledgerItem, err := attributevalue.MarshalMap(entry)
 	if err != nil {
 		return op.Fail(fmt.Errorf("failed to marshal cash deposit entry: %w", err))
