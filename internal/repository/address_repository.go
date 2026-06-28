@@ -41,6 +41,7 @@ func (r *AddressRepository) Create(ctx context.Context, address *models.Address)
 		}
 		address.AddressID = id
 	}
+	op.With("address_id", address.AddressID)
 
 	item, err := attributevalue.MarshalMap(address)
 	if err != nil {

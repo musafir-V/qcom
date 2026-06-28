@@ -43,6 +43,7 @@ func (r *TripRepository) Create(ctx context.Context, trip *models.Trip) error {
 		}
 		trip.TripID = id
 	}
+	op.With("trip_id", trip.TripID)
 	for i := range trip.Tasks {
 		if trip.Tasks[i].TaskID == "" {
 			tid, err := r.idGen.NextID(ctx, ids.Task)

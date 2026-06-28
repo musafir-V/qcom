@@ -434,6 +434,7 @@ func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expec
 		}
 		entry.DepositID = id
 	}
+	op.With("deposit_id", entry.DepositID)
 
 	ledgerItem, err := attributevalue.MarshalMap(entry)
 	if err != nil {
