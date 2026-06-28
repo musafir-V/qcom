@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
@@ -141,7 +140,6 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 	// 5. Persist (transactional one-open guard inside the repo).
 	now := time.Now().UTC().Format(time.RFC3339)
 	d := &models.Dispute{
-		DisputeID:       uuid.New().String(),
 		OrderNumber:     in.OrderNumber,
 		CustomerID:      in.CustomerID,
 		DispositionCode: in.DispositionCode,

@@ -23,6 +23,9 @@ func (s *stubDisputeStore) Create(_ context.Context, d *models.Dispute) error {
 	if s.createErr != nil {
 		return s.createErr
 	}
+	if d.DisputeID == "" {
+		d.DisputeID = "DP0000000001"
+	}
 	s.created = d
 	return nil
 }

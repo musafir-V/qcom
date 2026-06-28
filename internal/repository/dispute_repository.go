@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -23,10 +24,11 @@ type DisputeRepository struct {
 	client    *dynamodb.Client
 	tableName string
 	logger    *logrus.Logger
+	idGen     *ids.Generator
 }
 
 func NewDisputeRepository(client *dynamodb.Client, tableName string, logger *logrus.Logger) *DisputeRepository {
-	return &DisputeRepository{client: client, tableName: tableName, logger: logger}
+	return &DisputeRepository{client: client, tableName: tableName, logger: logger, idGen: ids.NewGenerator(client, tableName)}
 }
 
 func buildOpenGuardKey(orderNumber string) (string, string) {
@@ -38,6 +40,14 @@ func buildOpenGuardKey(orderNumber string) (string, string) {
 // the guard is never cleared until admin tooling lands, so this is effectively a
 // permanent per-order cap until an admin manually removes the guard item.
 func (r *DisputeRepository) Create(ctx context.Context, d *models.Dispute) error {
+	if d.DisputeID == "" {
+		id, err := r.idGen.NextID(ctx, ids.Dispute)
+		if err != nil {
+			return fmt.Errorf("failed to generate dispute_id: %w", err)
+		}
+		d.DisputeID = id
+	}
+
 	d.DisputeOrderNumber = d.OrderNumber
 	d.DisputeStatusKey = string(d.Status)
 
