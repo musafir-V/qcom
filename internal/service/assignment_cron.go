@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -390,6 +391,24 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 
 	distKM, err := c.distanceService.DistanceKM(ctx, ds.Latitude, ds.Longitude, order.Delivery.Lat, order.Delivery.Lng)
 	if err != nil {
+		// Permanent no-route (ZERO_RESULTS / NOT_FOUND): persist a terminal
+		// distance_failed trip so the order disappears from the needs-create set
+		// and is never re-billed to the Distance Matrix API. Returns (nil, nil):
+		// the order is handled, but there is no assignable trip.
+		if errors.Is(err, ErrNoRoute) {
+			failed := buildTripFromOrder(order, "", "", "", orderID, storeID, 0, 0, ds)
+			failed.Status = models.TripStatusDistanceFailed
+			if perr := c.tripRepo.Create(ctx, failed); perr != nil {
+				return nil, fmt.Errorf("failed to persist distance_failed trip for order %s: %w", orderID, perr)
+			}
+			c.logger.WithError(err).WithFields(logrus.Fields{
+				"order_id": orderID,
+				"store_id": storeID,
+				"origin":   fmt.Sprintf("%.4f,%.4f", ds.Latitude, ds.Longitude),
+				"dest":     fmt.Sprintf("%.4f,%.4f", order.Delivery.Lat, order.Delivery.Lng),
+			}).Warn("createTrip: no drivable route — marked trip distance_failed (will not retry)")
+			return nil, nil
+		}
 		return nil, fmt.Errorf("distance lookup failed for order %s: %w", orderID, err)
 	}
 

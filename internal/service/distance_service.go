@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -11,15 +12,28 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ErrNoRoute is returned by DistanceKM when the Distance Matrix API reports that
+// no drivable route exists between the two points (status ZERO_RESULTS or
+// NOT_FOUND), at either the top level or the element level. This is a permanent
+// condition for the given coordinates: retrying will only re-bill the same call,
+// so callers MUST treat it as terminal (do not retry) — see errors.Is checks in
+// the assignment cron.
+var ErrNoRoute = errors.New("distance: no drivable route between points")
+
+// distanceMatrixBaseURL is the Google Maps Distance Matrix JSON endpoint.
+const distanceMatrixBaseURL = "https://maps.googleapis.com/maps/api/distancematrix/json"
+
 type DistanceService struct {
 	apiKey     string
+	baseURL    string
 	httpClient *http.Client
 	logger     *logrus.Logger
 }
 
 func NewDistanceService(apiKey string, logger *logrus.Logger) *DistanceService {
 	return &DistanceService{
-		apiKey: apiKey,
+		apiKey:  apiKey,
+		baseURL: distanceMatrixBaseURL,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -37,9 +51,13 @@ func (s *DistanceService) DistanceKM(ctx context.Context, originLat, originLng, 
 	})
 	defer op.End()
 
+	base := s.baseURL
+	if base == "" {
+		base = distanceMatrixBaseURL
+	}
 	url := fmt.Sprintf(
-		"https://maps.googleapis.com/maps/api/distancematrix/json?origins=%.6f%%2C%.6f&destinations=%.6f%%2C%.6f&key=%s",
-		originLat, originLng, destLat, destLng, s.apiKey,
+		"%s?origins=%.6f%%2C%.6f&destinations=%.6f%%2C%.6f&key=%s",
+		base, originLat, originLng, destLat, destLng, s.apiKey,
 	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -69,6 +87,9 @@ func (s *DistanceService) DistanceKM(ctx context.Context, originLat, originLng, 
 	}
 
 	if result.Status != "OK" {
+		if isNoRouteStatus(result.Status) {
+			return 0, op.Fail(fmt.Errorf("distance API status %s: %w", result.Status, ErrNoRoute))
+		}
 		return 0, op.Fail(fmt.Errorf("distance API status: %s", result.Status))
 	}
 	if len(result.Rows) == 0 || len(result.Rows[0].Elements) == 0 {
@@ -77,10 +98,22 @@ func (s *DistanceService) DistanceKM(ctx context.Context, originLat, originLng, 
 
 	elem := result.Rows[0].Elements[0]
 	if elem.Status != "OK" {
+		if isNoRouteStatus(elem.Status) {
+			return 0, op.Fail(fmt.Errorf("distance element status %s: %w", elem.Status, ErrNoRoute))
+		}
 		return 0, op.Fail(fmt.Errorf("distance element status: %s", elem.Status))
 	}
 
 	km := float64(elem.Distance.Value) / 1000.0
 	op.With("km", km)
 	return km, nil
+}
+
+// isNoRouteStatus reports whether a Distance Matrix status string means the pair
+// of coordinates has no drivable route — a permanent condition that callers must
+// not retry. ZERO_RESULTS: no route found (e.g. intercontinental). NOT_FOUND: an
+// endpoint could not be geocoded. Every other non-OK status (OVER_QUERY_LIMIT,
+// UNKNOWN_ERROR, etc.) is transient and remains a retryable error.
+func isNoRouteStatus(status string) bool {
+	return status == "ZERO_RESULTS" || status == "NOT_FOUND"
 }

@@ -13,6 +13,12 @@ const (
 	TripStatusOutForDelivery TripStatus = "out_for_delivery"
 	TripStatusCompleted      TripStatus = "completed"
 	TripStatusCancelled      TripStatus = "cancelled"
+	// TripStatusDistanceFailed is a terminal state for orders the Distance Matrix
+	// API cannot route (ZERO_RESULTS / NOT_FOUND). Persisting it stops the
+	// assignment cron from re-attempting — and re-billing — the same order every
+	// tick. It is intentionally absent from IsValidTripTransition: such trips are
+	// dead ends requiring manual intervention (fix the coordinates, then cancel).
+	TripStatusDistanceFailed TripStatus = "distance_failed"
 
 	TaskTypePickup TaskType = "pickup"
 	TaskTypeDrop   TaskType = "drop"
