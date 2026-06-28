@@ -6,3 +6,6 @@ data/ssm-export*.json
 # AWS credentials — never commit.
 .deploy.local.env
 .deploy.new.env
+
+# Git worktrees for isolated feature work.
+.worktrees/
