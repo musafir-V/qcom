@@ -128,6 +128,9 @@ type stubDisbursementRepo struct {
 }
 
 func (s *stubDisbursementRepo) Create(_ context.Context, d *models.Disbursement) error {
+	if d.DisbursementID == "" {
+		d.DisbursementID = "DB0000000001"
+	}
 	s.created = d
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
@@ -18,10 +19,11 @@ type DisbursementRepository struct {
 	client    *dynamodb.Client
 	tableName string
 	logger    *logrus.Logger
+	idGen     *ids.Generator
 }
 
 func NewDisbursementRepository(client *dynamodb.Client, tableName string, logger *logrus.Logger) *DisbursementRepository {
-	return &DisbursementRepository{client: client, tableName: tableName, logger: logger}
+	return &DisbursementRepository{client: client, tableName: tableName, logger: logger, idGen: ids.NewGenerator(client, tableName)}
 }
 
 // Create records a new offline disbursement.
@@ -33,6 +35,14 @@ func (r *DisbursementRepository) Create(ctx context.Context, d *models.Disbursem
 
 	if d.DisbursedAt == "" {
 		d.DisbursedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	if d.DisbursementID == "" {
+		id, err := r.idGen.NextID(ctx, ids.Disbursement)
+		if err != nil {
+			return op.Fail(fmt.Errorf("failed to generate disbursement_id: %w", err))
+		}
+		d.DisbursementID = id
 	}
 
 	item, err := attributevalue.MarshalMap(d)

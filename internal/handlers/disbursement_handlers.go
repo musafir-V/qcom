@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
@@ -163,12 +162,11 @@ func (h *DisbursementHandlers) RecordDisbursement(w http.ResponseWriter, r *http
 	// Use Zambia RFC3339 to match earnings ledger created_at (see EarningsLedger.Append).
 	disbursedAt := timezone.Now().Format(time.RFC3339)
 	disbursement := &models.Disbursement{
-		DEID:           deID,
-		DisbursementID: uuid.New().String(),
-		AmountZMW:      req.AmountZMW,
-		PeriodFrom:     strings.TrimSpace(req.PeriodFrom),
-		PeriodTo:       strings.TrimSpace(req.PeriodTo),
-		DisbursedAt:    disbursedAt,
+		DEID:        deID,
+		AmountZMW:   req.AmountZMW,
+		PeriodFrom:  strings.TrimSpace(req.PeriodFrom),
+		PeriodTo:    strings.TrimSpace(req.PeriodTo),
+		DisbursedAt: disbursedAt,
 	}
 
 	if err := h.disbursementRepo.Create(r.Context(), disbursement); err != nil {
@@ -189,7 +187,6 @@ func (h *DisbursementHandlers) RecordDisbursement(w http.ResponseWriter, r *http
 
 	mirror := &models.EarningsLedger{
 		DEID:        deID,
-		EarningID:   uuid.New().String(),
 		Type:        models.EarningTypeDisbursement,
 		AmountZMW:   -req.AmountZMW,
 		Label:       "Weekly Payout",
