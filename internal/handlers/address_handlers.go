@@ -41,7 +41,11 @@ type UpdateReceiverRequest struct {
 }
 
 var phoneRegex = regexp.MustCompile(`^\+[1-9]\d{1,14}$`)
-var uuidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// addressIDRegex accepts the current prefixed entity-ID format (a two-letter
+// prefix followed by 10 digits, e.g. "AD1609067713") as well as the legacy
+// UUID format used for addresses created before the ID scheme changed.
+var addressIDRegex = regexp.MustCompile(`^(?:[A-Z]{2}\d{10}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
 var validTags = map[string]bool{"home": true, "work": true, "other": true}
 
 func (h *AddressHandlers) extractUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -148,7 +152,7 @@ func (h *AddressHandlers) GetAddressByID(w http.ResponseWriter, r *http.Request)
 	vars := mux.Vars(r)
 	addressID := vars["id"]
 
-	if !uuidRegex.MatchString(addressID) {
+	if !addressIDRegex.MatchString(addressID) {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_ADDRESS_ID", "Invalid address ID format")
 		return
 	}
@@ -200,7 +204,7 @@ func (h *AddressHandlers) UpdateReceiverDetails(w http.ResponseWriter, r *http.R
 	vars := mux.Vars(r)
 	addressID := vars["id"]
 
-	if !uuidRegex.MatchString(addressID) {
+	if !addressIDRegex.MatchString(addressID) {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_ADDRESS_ID", "Invalid address ID format")
 		return
 	}
@@ -263,7 +267,7 @@ func (h *AddressHandlers) RemoveAddress(w http.ResponseWriter, r *http.Request) 
 	vars := mux.Vars(r)
 	addressID := vars["id"]
 
-	if !uuidRegex.MatchString(addressID) {
+	if !addressIDRegex.MatchString(addressID) {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_ADDRESS_ID", "Invalid address ID format")
 		return
 	}
