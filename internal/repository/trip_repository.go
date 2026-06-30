@@ -17,6 +17,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ErrTripTerminal is returned by UpdatePayment when the trip is already in a
+// terminal state (completed / cancelled / distance_failed) and therefore must
+// not have its payment snapshot mutated — by then COD cash may already have
+// been collected and accrued to the DE.
+var ErrTripTerminal = errors.New("trip is in a terminal state; payment cannot be updated")
+
 type TripRepository struct {
 	client    *dynamodb.Client
 	tableName string
@@ -554,6 +560,51 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone st
 			return nil
 		}
 		return op.Fail(fmt.Errorf("failed to cancel trip: %w", err))
+	}
+	return nil
+}
+
+// UpdatePayment overwrites the trip's payment snapshot (collect_cash, amount,
+// currency, method). It is conditional on the trip NOT being terminal: once a
+// trip is completed/cancelled/distance_failed the cash decision is frozen
+// (COD may already be accrued), so the update is rejected with ErrTripTerminal.
+// Used by the internal payment-update endpoint when an order's payment method
+// changes upstream (e.g. a COD order is paid online).
+func (r *TripRepository) UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.UpdatePayment", logrus.Fields{
+		"trip_id": tripID, "collect_cash": payment.CollectCash, "method": payment.Method,
+	})
+	defer op.End()
+
+	paymentAttr, err := attributevalue.Marshal(payment)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to marshal payment: %w", err))
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:    aws.String("SET payment = :payment, updated_at = :now"),
+		ConditionExpression: aws.String("attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":payment":         paymentAttr,
+			":now":             &types.AttributeValueMemberS{Value: now},
+			":completed":       &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
+			":cancelled":       &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
+			":distance_failed": &types.AttributeValueMemberS{Value: string(models.TripStatusDistanceFailed)},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return op.Outcome("terminal", ErrTripTerminal)
+		}
+		return op.Fail(fmt.Errorf("failed to update trip payment: %w", err))
 	}
 	return nil
 }

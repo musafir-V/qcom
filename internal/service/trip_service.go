@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ type tripRepoI interface {
 	Accept(ctx context.Context, tripID, deID string) error
 	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
 	CancelByOrderID(ctx context.Context, tripID, dePhone string) error
+	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
 }
 
 // deRepoI is the subset of DERepository methods used by TripService.
@@ -125,6 +127,120 @@ func (s *TripService) CancelTripByOrder(ctx context.Context, orderID, reason str
 		})
 	}
 	return nil
+}
+
+// PaymentUpdateInput is an upstream (order-service) payment change for an order.
+type PaymentUpdateInput struct {
+	OrderID       string
+	PaymentMethod string
+	GrandTotal    float64
+	Currency      string
+}
+
+// PaymentUpdateResult describes the outcome of UpdateTripPayment so the HTTP
+// handler can pick the right status code.
+type PaymentUpdateResult struct {
+	Updated bool
+	// Reason is empty when Updated is true; otherwise "no_active_trip" (no trip
+	// exists yet for the order) or "trip_terminal" (trip already closed).
+	Reason string
+}
+
+// UpdateTripPayment re-snapshots a trip's payment after the order's payment
+// method changed upstream (e.g. a COD order was paid online). It is idempotent
+// and safe to call regardless of trip existence/state:
+//   - no trip yet  -> no-op (the trip will be created from the updated order)
+//   - active trip  -> overwrite payment, push the rider to re-sync
+//   - terminal trip-> rejected (cash may already be collected/accrued)
+//
+// payment is derived from the same mapping used at trip creation, so creation
+// and update always produce identical snapshots.
+func (s *TripService) UpdateTripPayment(ctx context.Context, in PaymentUpdateInput) (PaymentUpdateResult, error) {
+	op := logging.Start(ctx, s.logger, "TripService.UpdateTripPayment", logrus.Fields{
+		"order_id": in.OrderID, "payment_method": in.PaymentMethod,
+	})
+	defer op.End()
+
+	trip, err := s.tripRepo.GetByOrderID(ctx, in.OrderID)
+	if err != nil {
+		return PaymentUpdateResult{}, op.Fail(err)
+	}
+	if trip == nil {
+		op.Outcome("no_active_trip", nil)
+		return PaymentUpdateResult{Updated: false, Reason: "no_active_trip"}, nil
+	}
+
+	payment := paymentFromOrder(JavaOrder{
+		PaymentMethod: in.PaymentMethod,
+		GrandTotal:    in.GrandTotal,
+		Currency:      in.Currency,
+	})
+
+	if err := s.tripRepo.UpdatePayment(ctx, trip.TripID, payment); err != nil {
+		if errors.Is(err, repository.ErrTripTerminal) {
+			op.Outcome("trip_terminal", nil)
+			return PaymentUpdateResult{Updated: false, Reason: "trip_terminal"}, nil
+		}
+		return PaymentUpdateResult{}, op.Fail(err)
+	}
+
+	op.With("collect_cash", payment.CollectCash)
+	s.notifyDriverPaymentUpdated(ctx, trip, payment)
+	return PaymentUpdateResult{Updated: true}, nil
+}
+
+// notifyDriverPaymentUpdated sends the assigned rider a quiet heads-up so their
+// app re-polls and they don't (e.g.) ask for cash that's already been paid.
+//
+// It only fires when the rider is actively working the trip (accepted /
+// out_for_delivery) AND the cash requirement materially changed (collect_cash
+// flipped, or it's still COD but the amount changed). For created/assigned trips
+// the rider hasn't engaged yet, so the 10s polling backstop is sufficient — this
+// also avoids the loud order-assignment channel used for high-priority driver
+// pushes (this one is Normal priority → quiet default channel).
+func (s *TripService) notifyDriverPaymentUpdated(ctx context.Context, trip *models.Trip, payment *models.Payment) {
+	if s.notifier == nil || trip.DEID == "" {
+		return
+	}
+	if trip.Status != models.TripStatusAccepted && trip.Status != models.TripStatusOutForDelivery {
+		return
+	}
+
+	oldCollect := trip.Payment != nil && trip.Payment.CollectCash
+	oldAmount := 0.0
+	if trip.Payment != nil {
+		oldAmount = trip.Payment.AmountZMW
+	}
+	cashChanged := oldCollect != payment.CollectCash ||
+		(payment.CollectCash && oldAmount != payment.AmountZMW)
+	if !cashChanged {
+		return
+	}
+
+	shortOrder := trip.OrderID
+	if len(shortOrder) > 12 {
+		shortOrder = shortOrder[:12]
+	}
+	body := "Customer paid online for order " + shortOrder + " — no cash to collect."
+	if payment.CollectCash {
+		body = "Order " + shortOrder + " is now cash on delivery — collect K" +
+			strconv.FormatFloat(payment.AmountZMW, 'f', 2, 64) + "."
+	}
+
+	s.notifier.Send(ctx, models.NotificationSendRequest{
+		RecipientType: models.RecipientTypeDriver,
+		RecipientID:   trip.DEID,
+		EventType:     "PAYMENT_UPDATED",
+		Priority:      models.PriorityNormal,
+		Title:         "Payment updated",
+		Body:          body,
+		Data: map[string]string{
+			"type":         "PAYMENT_UPDATED",
+			"trip_id":      trip.TripID,
+			"order_id":     trip.OrderID,
+			"collect_cash": strconv.FormatBool(payment.CollectCash),
+		},
+	})
 }
 
 // GetCurrentTrip returns the active trip for the calling DE.

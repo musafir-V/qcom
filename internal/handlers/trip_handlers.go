@@ -299,6 +299,56 @@ func (h *TripHandlers) CancelTripByOrder(w http.ResponseWriter, r *http.Request)
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// POST /internal/v1/trips/payment/update
+// Body: { "order_id": "...", "payment_method": "AIRTEL_MONEY", "grand_total": 250.0, "currency": "ZMW" }
+// Called by Java order-service when an order's payment method changes (e.g. a COD
+// order is paid online). Re-snapshots the trip's payment and pushes the rider.
+// Responses:
+//   200 {"updated": true}                                 — trip payment updated
+//   200 {"updated": false, "reason": "no_active_trip"}    — no trip exists yet (no-op)
+//   409 {"updated": false, "reason": "trip_terminal"}     — trip already closed; not updated
+func (h *TripHandlers) UpdateTripPaymentByOrder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrderID       string  `json:"order_id"`
+		PaymentMethod string  `json:"payment_method"`
+		GrandTotal    float64 `json:"grand_total"`
+		Currency      string  `json:"currency"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.OrderID) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id is required")
+		return
+	}
+	if strings.TrimSpace(req.PaymentMethod) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "payment_method is required")
+		return
+	}
+
+	result, err := h.tripService.UpdateTripPayment(r.Context(), service.PaymentUpdateInput{
+		OrderID:       req.OrderID,
+		PaymentMethod: req.PaymentMethod,
+		GrandTotal:    req.GrandTotal,
+		Currency:      req.Currency,
+	})
+	if err != nil {
+		h.logger.WithError(err).WithField("order_id", req.OrderID).Error("UpdateTripPayment failed")
+		h.respondWithError(w, http.StatusInternalServerError, "PAYMENT_UPDATE_FAILED", "Failed to update trip payment")
+		return
+	}
+
+	status := http.StatusOK
+	if result.Reason == "trip_terminal" {
+		status = http.StatusConflict
+	}
+	h.respondWithJSON(w, status, map[string]interface{}{
+		"updated": result.Updated,
+		"reason":  result.Reason,
+	})
+}
+
 func (h *TripHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

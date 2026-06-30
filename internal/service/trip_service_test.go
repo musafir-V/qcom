@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
 )
 
@@ -266,18 +267,155 @@ func TestCancelTripByOrder_ActiveUnassignedTrip_CancelNoPN(t *testing.T) {
 	}
 }
 
+func TestUpdateTripPayment_NoTrip_NoOp(t *testing.T) {
+	repo := &stubTripRepo{trip: nil}
+	notifier := &stubNotifier{}
+	svc := newTestTripService(repo, notifier)
+
+	res, err := svc.UpdateTripPayment(context.Background(), PaymentUpdateInput{
+		OrderID: "ORD-001", PaymentMethod: "AIRTEL_MONEY", GrandTotal: 250,
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.Updated || res.Reason != "no_active_trip" {
+		t.Fatalf("expected no_active_trip no-op, got %+v", res)
+	}
+	if repo.updatePaymentCalled {
+		t.Fatal("must not call UpdatePayment when no trip exists")
+	}
+	if notifier.sent {
+		t.Fatal("must not push when no trip exists")
+	}
+}
+
+func TestUpdateTripPayment_ClearsCOD_PushesActiveRider(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "TRIP-1", OrderID: "ORD-002", DEID: "DE-9",
+		Status:  models.TripStatusOutForDelivery,
+		Payment: &models.Payment{CollectCash: true, AmountZMW: 250, Method: "COD"},
+	}}
+	notifier := &stubNotifier{}
+	svc := newTestTripService(repo, notifier)
+
+	res, err := svc.UpdateTripPayment(context.Background(), PaymentUpdateInput{
+		OrderID: "ORD-002", PaymentMethod: "AIRTEL_MONEY", GrandTotal: 250, Currency: "ZMW",
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !res.Updated || res.Reason != "" {
+		t.Fatalf("expected updated result, got %+v", res)
+	}
+	if repo.capturedPayment == nil || repo.capturedPayment.CollectCash {
+		t.Fatalf("expected collect_cash=false snapshot, got %+v", repo.capturedPayment)
+	}
+	if repo.capturedPayment.Method != "AIRTEL_MONEY" {
+		t.Fatalf("expected method AIRTEL_MONEY, got %q", repo.capturedPayment.Method)
+	}
+	if !notifier.sent {
+		t.Fatal("expected rider push")
+	}
+	if notifier.lastReq.EventType != "PAYMENT_UPDATED" || notifier.lastReq.Data["collect_cash"] != "false" {
+		t.Fatalf("expected PAYMENT_UPDATED push clearing cash, got %+v", notifier.lastReq)
+	}
+	if notifier.lastReq.Priority != models.PriorityNormal {
+		t.Fatalf("expected Normal priority (quiet channel), got %q", notifier.lastReq.Priority)
+	}
+	if notifier.lastReq.Title == "" || notifier.lastReq.Body == "" {
+		t.Fatalf("notifier requires non-empty title/body, got %+v", notifier.lastReq)
+	}
+}
+
+func TestUpdateTripPayment_TerminalTrip_Rejected(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID: "TRIP-2", OrderID: "ORD-003", DEID: "DE-9",
+			Status: models.TripStatusCompleted,
+		},
+		updatePaymentErr: repository.ErrTripTerminal,
+	}
+	notifier := &stubNotifier{}
+	svc := newTestTripService(repo, notifier)
+
+	res, err := svc.UpdateTripPayment(context.Background(), PaymentUpdateInput{
+		OrderID: "ORD-003", PaymentMethod: "AIRTEL_MONEY", GrandTotal: 250,
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.Updated || res.Reason != "trip_terminal" {
+		t.Fatalf("expected trip_terminal rejection, got %+v", res)
+	}
+	if notifier.sent {
+		t.Fatal("must not push when update rejected")
+	}
+}
+
+func TestUpdateTripPayment_AssignedTrip_UpdatesNoPush(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "TRIP-3", OrderID: "ORD-005", DEID: "DE-1",
+		Status:  models.TripStatusAssigned,
+		Payment: &models.Payment{CollectCash: true, AmountZMW: 100, Method: "COD"},
+	}}
+	notifier := &stubNotifier{}
+	svc := newTestTripService(repo, notifier)
+
+	res, err := svc.UpdateTripPayment(context.Background(), PaymentUpdateInput{
+		OrderID: "ORD-005", PaymentMethod: "MTN_MONEY", GrandTotal: 100,
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !res.Updated || !repo.updatePaymentCalled {
+		t.Fatalf("expected payment updated, got %+v", res)
+	}
+	// Rider hasn't engaged (assigned, not accepted) — polling backstop covers it.
+	if notifier.sent {
+		t.Fatal("must not push for a non-active (assigned) trip")
+	}
+}
+
+func TestUpdateTripPayment_ActiveNoCashChange_NoPush(t *testing.T) {
+	// Switching between two online methods on an active trip: collect_cash stays
+	// false, amount unchanged — nothing rider-relevant changed, so no push.
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "TRIP-4", OrderID: "ORD-006", DEID: "DE-2",
+		Status:  models.TripStatusOutForDelivery,
+		Payment: &models.Payment{CollectCash: false, AmountZMW: 100, Method: "AIRTEL_MONEY"},
+	}}
+	notifier := &stubNotifier{}
+	svc := newTestTripService(repo, notifier)
+
+	res, err := svc.UpdateTripPayment(context.Background(), PaymentUpdateInput{
+		OrderID: "ORD-006", PaymentMethod: "MTN_MONEY", GrandTotal: 100,
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !res.Updated {
+		t.Fatalf("expected updated, got %+v", res)
+	}
+	if notifier.sent {
+		t.Fatal("must not push when cash requirement did not change")
+	}
+}
+
 // --- test helpers ---
 
 // stubTripRepo satisfies tripRepoI. GetByOrderID and CancelByOrderID are used by
 // CancelTripByOrder. GetByID and CompleteTripAndFreeDE are used by UpdateTaskStatus
 // (drop path). updateTasksFn, if set, is called by UpdateTasks (pickup path).
 type stubTripRepo struct {
-	trip           *models.Trip
-	cancelCalled   bool
-	cancelTripID   string
-	cancelDEPhone  string
-	updateTasksFn  func(ctx context.Context, tripID string, tasks []models.Task) error
-	capturedTasks  []models.Task
+	trip                *models.Trip
+	cancelCalled        bool
+	cancelTripID        string
+	cancelDEPhone       string
+	updateTasksFn       func(ctx context.Context, tripID string, tasks []models.Task) error
+	capturedTasks       []models.Task
+	updatePaymentCalled bool
+	updatePaymentErr    error
+	capturedPayment     *models.Payment
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -318,6 +456,12 @@ func (s *stubTripRepo) Accept(_ context.Context, _, _ string) error {
 
 func (s *stubTripRepo) RejectToPool(_ context.Context, _, _, _, _ string) error {
 	panic("stubTripRepo.RejectToPool: unexpected call")
+}
+
+func (s *stubTripRepo) UpdatePayment(_ context.Context, _ string, payment *models.Payment) error {
+	s.updatePaymentCalled = true
+	s.capturedPayment = payment
+	return s.updatePaymentErr
 }
 
 // stubDERepo satisfies deRepoI for unit tests.

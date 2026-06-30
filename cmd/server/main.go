@@ -462,6 +462,7 @@ func setupRouter(
 	internal := router.PathPrefix("/internal/v1").Subrouter()
 	internal.HandleFunc("/notifications/send", notificationHandlers.SendNotification).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/cancel-by-order", tripHandlers.CancelTripByOrder).Methods("POST", "OPTIONS")
+	internal.HandleFunc("/trips/payment/update", tripHandlers.UpdateTripPaymentByOrder).Methods("POST", "OPTIONS")
 
 	// VoIP token endpoint — accepts both customer and DE JWTs (RequireAuth).
 	voice := api.PathPrefix("/voice").Subrouter()

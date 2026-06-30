@@ -38,6 +38,10 @@ type Payment struct {
 	CollectCash bool    `json:"collect_cash" dynamodbav:"collect_cash"`
 	AmountZMW   float64 `json:"amount_zmw" dynamodbav:"amount_zmw"`
 	Currency    string  `json:"currency,omitempty" dynamodbav:"currency,omitempty"`
+	// Method is the upstream (Java) payment method that produced this snapshot,
+	// e.g. "COD", "AIRTEL_MONEY". Stored for audit/debugging; the rider UI keys
+	// off CollectCash, not this field.
+	Method string `json:"method,omitempty" dynamodbav:"method,omitempty"`
 }
 
 type Task struct {

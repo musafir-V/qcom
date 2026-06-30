@@ -526,6 +526,7 @@ const paymentMethodCOD = "COD"
 // was already paid for online, so the driver collects nothing.
 var knownOnlinePaymentMethods = map[string]bool{
 	"AIRTEL_MONEY":  true,
+	"MTN_MONEY":     true,
 	"CARD":          true,
 	"BANK_TRANSFER": true,
 }
@@ -539,6 +540,7 @@ func paymentFromOrder(order JavaOrder) *models.Payment {
 		CollectCash: order.PaymentMethod == paymentMethodCOD,
 		AmountZMW:   order.GrandTotal,
 		Currency:    order.Currency,
+		Method:      order.PaymentMethod,
 	}
 }
 
