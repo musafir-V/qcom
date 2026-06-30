@@ -86,15 +86,25 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 		trip = nil
 	}
 
-	var otp, deName *string
+	// ETA is anchored on order creation time and is independent of the trip.
+	// It is suppressed once the order is terminal (DELIVERED/CANCELLED), or as a
+	// safety net when an existing trip is already terminal (handles the brief
+	// window before Java syncs the order status).
 	var eta *ETAPayload
-	if trip != nil {
-		terminal := trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled
-		if trip.CreatedAt != "" && !terminal {
-			eta = computeETA(trip.CreatedAt)
+	tripTerminal := trip != nil && (trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled)
+	if !orderTerminal(order) && !tripTerminal {
+		createdAt := orderCreatedAt(order)
+		if createdAt == "" {
+			h.logger.Warn("track: order createdAt missing; eta omitted")
+		} else if eta = computeETA(createdAt); eta == nil {
+			h.logger.WithField("created_at", createdAt).Warn("track: order createdAt unparseable; eta omitted")
 		}
-		// Driver and OTP are revealed only once the driver has committed
-		// (accepted/out_for_delivery) — never during the pending-accept window.
+	}
+
+	// Driver and OTP are revealed only once the driver has committed
+	// (accepted/out_for_delivery) — never during the pending-accept window.
+	var otp, deName *string
+	if trip != nil {
 		committed := trip.Status == models.TripStatusAccepted || trip.Status == models.TripStatusOutForDelivery
 		if committed && trip.DEPhone != "" {
 			de, derr := h.deRepo.GetByPhone(r.Context(), trip.DEPhone)
@@ -120,8 +130,42 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 	h.respondWithJSON(w, http.StatusOK, order)
 }
 
-// computeETA builds the ETA payload from trip.CreatedAt.
-// All time math uses Africa/Lusaka timezone.
+// orderCreatedAt extracts the order's creation timestamp (the "createdAt" field)
+// from the raw order payload. Returns "" when the field is absent or not a string.
+func orderCreatedAt(order map[string]json.RawMessage) string {
+	raw, ok := order["createdAt"]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
+}
+
+// orderTerminal reports whether the order's "status" field is a terminal state
+// (DELIVERED or CANCELLED) for which no ETA should be shown.
+func orderTerminal(order map[string]json.RawMessage) bool {
+	raw, ok := order["status"]
+	if !ok {
+		return false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "DELIVERED", "CANCELLED":
+		return true
+	default:
+		return false
+	}
+}
+
+// computeETA builds the ETA payload from the order's createdAt timestamp.
+// All time math uses Africa/Lusaka timezone. Returns nil when createdAt is
+// unparseable.
 func computeETA(createdAtUTC string) *ETAPayload {
 	createdAt, err := time.Parse(time.RFC3339, createdAtUTC)
 	if err != nil {

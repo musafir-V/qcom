@@ -252,7 +252,7 @@ referral_bonus_zmw      bonus for both DEs on referral completion
 | Term | Meaning |
 |---|---|
 | Finding Driver | No trip yet, or unassigned trip |
-| ETA | 15-minute countdown from trip creation (Zambia timezone) |
+| ETA | 15-minute countdown from order creation (Zambia timezone); independent of trip existence, suppressed once the order is DELIVERED/CANCELLED or the trip is terminal |
 | Delayed | ETA elapsed — show support message |
 | OTP | Shown to customer from drop task; hidden once drop task is `reached` |
 

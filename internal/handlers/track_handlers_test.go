@@ -49,6 +49,8 @@ func (f fakeDEResolver) GetByPhone(ctx context.Context, phone string) (*models.D
 // --- helpers ---
 
 func baseOrder() map[string]json.RawMessage {
+	// createdAt 5 minutes ago keeps the order-anchored ETA on-time by default.
+	createdAt := timezone.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
 	return map[string]json.RawMessage{
 		"orderNumber":   json.RawMessage(`"ORD1"`),
 		"status":        json.RawMessage(`"OUT_FOR_DELIVERY"`),
@@ -56,7 +58,20 @@ func baseOrder() map[string]json.RawMessage {
 		"items":         json.RawMessage(`[{"sku":"SKU-1","quantity":2}]`),
 		"delivery":      json.RawMessage(`{"address":"12 Cairo Rd","phone":"0971234567"}`),
 		"refundSummary": json.RawMessage(`null`),
+		"createdAt":     json.RawMessage(`"` + createdAt + `"`),
 	}
+}
+
+// orderWith returns baseOrder with the status and createdAt overridden.
+func orderWith(status, createdAt string) map[string]json.RawMessage {
+	o := baseOrder()
+	o["status"] = json.RawMessage(`"` + status + `"`)
+	if createdAt == "" {
+		delete(o, "createdAt")
+	} else {
+		o["createdAt"] = json.RawMessage(`"` + createdAt + `"`)
+	}
+	return o
 }
 
 func tripWith(status models.TripStatus, dropStatus models.TaskStatus, otp string) *models.Trip {
@@ -122,7 +137,7 @@ func TestTrack_OutForDelivery_ShowsOTPNameETAAndPreservesOrder(t *testing.T) {
 	}
 }
 
-func TestTrack_NoTrip_NullTrackingFields(t *testing.T) {
+func TestTrack_NoTrip_ETAPresentOTPNameNull(t *testing.T) {
 	of := fakeOrderFetcher{raw: baseOrder()}
 	tg := trackFakeTripGetter{trip: nil}
 	rec := doTrack(newTrackHandlers(of, tg, fakeDEResolver{}), "ORD1")
@@ -131,10 +146,15 @@ func TestTrack_NoTrip_NullTrackingFields(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := decodeBody(t, rec)
-	for _, k := range []string{"otp", "de_name", "eta"} {
+	// OTP/de_name remain trip-derived → null with no trip.
+	for _, k := range []string{"otp", "de_name"} {
 		if string(body[k]) != "null" {
 			t.Errorf("%s = %s, want null", k, body[k])
 		}
+	}
+	// ETA is order-anchored and independent of the trip → present.
+	if string(body["eta"]) == "null" || len(body["eta"]) == 0 {
+		t.Errorf("eta should be present from order createdAt even without a trip: %s", body["eta"])
 	}
 }
 
@@ -216,6 +236,51 @@ func TestTrack_Accepted_ShowsOTPNameETA(t *testing.T) {
 	}
 }
 
+func TestTrack_OrderDelivered_SuppressesETA(t *testing.T) {
+	createdAt := timezone.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	of := fakeOrderFetcher{raw: orderWith("DELIVERED", createdAt)}
+	tg := trackFakeTripGetter{trip: nil}
+	rec := doTrack(newTrackHandlers(of, tg, fakeDEResolver{}), "ORD1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := decodeBody(t, rec)
+	if string(body["eta"]) != "null" {
+		t.Errorf("eta should be null for a DELIVERED order: %s", body["eta"])
+	}
+}
+
+func TestTrack_OrderCancelled_SuppressesETA(t *testing.T) {
+	createdAt := timezone.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	of := fakeOrderFetcher{raw: orderWith("CANCELLED", createdAt)}
+	tg := trackFakeTripGetter{trip: nil}
+	rec := doTrack(newTrackHandlers(of, tg, fakeDEResolver{}), "ORD1")
+
+	body := decodeBody(t, rec)
+	if string(body["eta"]) != "null" {
+		t.Errorf("eta should be null for a CANCELLED order: %s", body["eta"])
+	}
+}
+
+func TestTrack_MissingCreatedAt_NullETA(t *testing.T) {
+	of := fakeOrderFetcher{raw: orderWith("OUT_FOR_DELIVERY", "")}
+	tg := trackFakeTripGetter{trip: tripWith(models.TripStatusOutForDelivery, models.TaskStatusCreated, "4321")}
+	rec := doTrack(newTrackHandlers(of, tg, fakeDEResolver{de: &models.DeliveryExecutive{Name: "John M."}}), "ORD1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := decodeBody(t, rec)
+	if string(body["eta"]) != "null" {
+		t.Errorf("eta should be null when order createdAt is missing: %s", body["eta"])
+	}
+	// OTP/de_name are unaffected by a missing createdAt.
+	if string(body["otp"]) != `"4321"` {
+		t.Errorf("otp = %s, want \"4321\"", body["otp"])
+	}
+}
+
 func TestTrack_OrderNotFound_404(t *testing.T) {
 	of := fakeOrderFetcher{raw: nil} // 404 maps to nil map
 	tg := trackFakeTripGetter{trip: nil}
@@ -248,10 +313,14 @@ func TestTrack_TripLookupError_DegradesTo200(t *testing.T) {
 	if string(body["orderNumber"]) != `"ORD1"` {
 		t.Errorf("order payload should still be present: %s", body["orderNumber"])
 	}
-	for _, k := range []string{"otp", "de_name", "eta"} {
+	// Trip-derived fields degrade to null; the order-anchored ETA still shows.
+	for _, k := range []string{"otp", "de_name"} {
 		if string(body[k]) != "null" {
 			t.Errorf("%s = %s, want null on degraded path", k, body[k])
 		}
+	}
+	if string(body["eta"]) == "null" || len(body["eta"]) == 0 {
+		t.Errorf("eta should still be present on degraded trip path: %s", body["eta"])
 	}
 }
 
