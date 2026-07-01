@@ -112,6 +112,10 @@ func (h *AdminDriverHandlers) GetDriver(w http.ResponseWriter, r *http.Request) 
 		"nrc_view_url":          h.docViewURL(r.Context(), de.NRCURL),
 		"driver_license_url":    de.DriverLicenseURL,
 		"driver_license_view_url": h.docViewURL(r.Context(), de.DriverLicenseURL),
+		"nrc_number":            de.NRCNumber,
+		"airtel_money_number":   de.AirtelMoneyNumber,
+		"bike_number":           de.BikeNumber,
+		"bike_brand":            de.BikeBrand,
 		"referral_code":         de.ReferralCode,
 		"current_store_id":      de.CurrentStoreID,
 		"current_order_id":      de.CurrentOrderID,
@@ -386,12 +390,16 @@ func (h *AdminDriverHandlers) PresignDriverDoc(w http.ResponseWriter, r *http.Re
 // by PresignDriverDoc.
 func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		PhoneNumber      string `json:"phone_number"`
-		Name             string `json:"name"`
-		ProfileURL       string `json:"profile_url"`
-		NRCURL           string `json:"nrc_url"`
-		DriverLicenseURL string `json:"driver_license_url"`
-		ReferralCode     string `json:"referral_code"`
+		PhoneNumber       string `json:"phone_number"`
+		Name              string `json:"name"`
+		ProfileURL        string `json:"profile_url"`
+		NRCURL            string `json:"nrc_url"`
+		DriverLicenseURL  string `json:"driver_license_url"`
+		NRCNumber         string `json:"nrc_number"`
+		AirtelMoneyNumber string `json:"airtel_money_number"`
+		BikeNumber        string `json:"bike_number"`
+		BikeBrand         string `json:"bike_brand"`
+		ReferralCode      string `json:"referral_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
@@ -419,14 +427,34 @@ func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Reques
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "driver_license_url is required")
 		return
 	}
+	if strings.TrimSpace(req.NRCNumber) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_number is required")
+		return
+	}
+	if strings.TrimSpace(req.AirtelMoneyNumber) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "airtel_money_number is required")
+		return
+	}
+	if strings.TrimSpace(req.BikeNumber) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "bike_number is required")
+		return
+	}
+	if strings.TrimSpace(req.BikeBrand) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "bike_brand is required")
+		return
+	}
 
 	de, err := h.deService.Register(r.Context(), service.RegisterDERequest{
-		PhoneNumber:      req.PhoneNumber,
-		Name:             req.Name,
-		ProfileURL:       req.ProfileURL,
-		NRCURL:           req.NRCURL,
-		DriverLicenseURL: req.DriverLicenseURL,
-		ReferralCode:     req.ReferralCode,
+		PhoneNumber:       req.PhoneNumber,
+		Name:              req.Name,
+		ProfileURL:        req.ProfileURL,
+		NRCURL:            req.NRCURL,
+		DriverLicenseURL:  req.DriverLicenseURL,
+		NRCNumber:         strings.TrimSpace(req.NRCNumber),
+		AirtelMoneyNumber: strings.TrimSpace(req.AirtelMoneyNumber),
+		BikeNumber:        strings.TrimSpace(req.BikeNumber),
+		BikeBrand:         strings.TrimSpace(req.BikeBrand),
+		ReferralCode:      req.ReferralCode,
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already registered") {
