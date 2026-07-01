@@ -38,8 +38,9 @@ var (
 	Address      = EntityType{Prefix: "AD", CounterKey: "COUNTER!ADDRESS"}
 	Dispute      = EntityType{Prefix: "DP", CounterKey: "COUNTER!DISPUTE"}
 	Earning      = EntityType{Prefix: "EA", CounterKey: "COUNTER!EARNING"}
-	Disbursement = EntityType{Prefix: "DB", CounterKey: "COUNTER!DISBURSEMENT"}
-	CashDeposit  = EntityType{Prefix: "CD", CounterKey: "COUNTER!DEPOSIT"}
+	Disbursement       = EntityType{Prefix: "DB", CounterKey: "COUNTER!DISBURSEMENT"}
+	CashDeposit        = EntityType{Prefix: "CD", CounterKey: "COUNTER!DEPOSIT"}
+	InKindDisbursement = EntityType{Prefix: "IK", CounterKey: "COUNTER!INKIND_DISBURSEMENT"}
 )
 
 func encodeOptimus(n int64) int64 { return ((n * optimusPrime) & maxID) ^ optimusXor }
