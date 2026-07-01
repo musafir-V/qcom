@@ -11,9 +11,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type earningsInKindDisbursementLister interface {
+	ListByDE(ctx context.Context, deID string) ([]*models.InKindDisbursement, error)
+}
+
 type EarningsHandlers struct {
 	earningsLedgerRepo earningsSummaryLedgerQuerier
 	disbursementRepo   earningsDisbursementLister
+	inKindDisbRepo     earningsInKindDisbursementLister
 	deRepo             earningsDEReader
 	logger             *logrus.Logger
 }
@@ -33,12 +38,14 @@ type earningsDEReader interface {
 func NewEarningsHandlers(
 	earningsLedgerRepo *repository.EarningsLedgerRepository,
 	disbursementRepo *repository.DisbursementRepository,
+	inKindDisbRepo *repository.InKindDisbursementRepository,
 	deRepo *repository.DERepository,
 	logger *logrus.Logger,
 ) *EarningsHandlers {
 	return &EarningsHandlers{
 		earningsLedgerRepo: earningsLedgerRepo,
 		disbursementRepo:   disbursementRepo,
+		inKindDisbRepo:     inKindDisbRepo,
 		deRepo:             deRepo,
 		logger:             logger,
 	}
@@ -83,6 +90,13 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	inKindItems, err := h.computeInKindSummary(r.Context(), deID)
+	if err != nil {
+		h.logger.WithError(err).Error("failed to compute in-kind summary")
+		h.respondWithError(w, http.StatusInternalServerError, "IN_KIND_SUMMARY_FAILED", "Failed to compute in-kind summary")
+		return
+	}
+
 	type lineItem struct {
 		EarningID   string  `json:"earning_id"`
 		Type        string  `json:"type"`
@@ -116,6 +130,7 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 		"bonus_total_zmw":         bonusTotal,
 		"line_items":              items,
 		"next_cursor":             nextCursor,
+		"in_kind_summary":         inKindItems,
 	})
 }
 
@@ -186,6 +201,75 @@ func (h *EarningsHandlers) computeBreakdown(ctx context.Context, deID, afterTime
 		lastKey = nextKey
 	}
 	return liveTotal, bonusTotal, outstandingTotal, nil
+}
+
+type inKindSummaryItem struct {
+	SKU         string `json:"sku"`
+	Label       string `json:"label"`
+	Earned      int    `json:"earned"`
+	Disbursed   int    `json:"disbursed"`
+	Outstanding int    `json:"outstanding"`
+}
+
+// computeInKindSummary returns a per-SKU breakdown of earned vs disbursed in-kind rewards.
+// Only SKUs with earned > 0 are included. Never returns nil — always an empty slice at minimum.
+func (h *EarningsHandlers) computeInKindSummary(ctx context.Context, deID string) ([]inKindSummaryItem, error) {
+	// Count all-time earned entries per earning type (afterTimestamp="" = all time)
+	earnedCounts := map[models.EarningType]int{}
+	var lastKey map[string]types.AttributeValue
+	for {
+		entries, nextKey, err := h.earningsLedgerRepo.QueryByDE(ctx, deID, "", 50, lastKey)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			switch e.Type {
+			case models.EarningTypeMealieBag, models.EarningTypeHouseholdItem:
+				earnedCounts[e.Type]++
+			}
+		}
+		if nextKey == nil {
+			break
+		}
+		lastKey = nextKey
+	}
+
+	// Sum quantity_disbursed per SKU from all in-kind disbursements
+	disbursedQty := map[models.InKindSKU]int{}
+	inKindDisbs, err := h.inKindDisbRepo.ListByDE(ctx, deID)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range inKindDisbs {
+		disbursedQty[d.SKU] += d.Quantity
+	}
+
+	// Build result — only include SKUs with at least one earned entry
+	skuDefs := []struct {
+		earningType models.EarningType
+		sku         models.InKindSKU
+		label       string
+	}{
+		{models.EarningTypeMealieBag, models.InKindSKUMealieBag, "Mealie Bag"},
+		{models.EarningTypeHouseholdItem, models.InKindSKUHouseholdItem, "Household Item"},
+	}
+
+	result := make([]inKindSummaryItem, 0)
+	for _, s := range skuDefs {
+		earned := earnedCounts[s.earningType]
+		if earned == 0 {
+			continue
+		}
+		d := disbursedQty[s.sku]
+		result = append(result, inKindSummaryItem{
+			SKU:         string(s.sku),
+			Label:       s.label,
+			Earned:      earned,
+			Disbursed:   d,
+			Outstanding: earned - d,
+		})
+	}
+	return result, nil
 }
 
 func (h *EarningsHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
