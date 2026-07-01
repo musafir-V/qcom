@@ -54,6 +54,7 @@ func main() {
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	earningsLedgerRepo := repository.NewEarningsLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	disbursementRepo := repository.NewDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	inKindDisbRepo := repository.NewInKindDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	vonageJWTRepo := repository.NewVonageJWTRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cashConfigRepo := repository.NewCashConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -148,8 +149,9 @@ func main() {
 	adminRulesHandlers := handlers.NewAdminRulesHandlers(ruleRepo, logger)
 	adminAuthHandlers := handlers.NewAdminAuthHandlers(adminUserService, jwtService, logger)
 	trackHandlers := handlers.NewTrackHandlers(tripRepo, deRepo, javaOrderClient, logger)
-	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, deRepo, logger)
+	earningsHandlers := handlers.NewEarningsHandlers(earningsLedgerRepo, disbursementRepo, inKindDisbRepo, deRepo, logger)
 	disbursementHandlers := handlers.NewDisbursementHandlers(disbursementRepo, deRepo, earningsLedgerRepo, logger)
+	inKindDisbHandlers := handlers.NewInKindDisbursementHandlers(inKindDisbRepo, earningsLedgerRepo, deRepo, notificationService, logger)
 	cashDepositHandlers := handlers.NewCashDepositHandlers(cashDepositService, logger)
 	adminDriverHandlers := handlers.NewAdminDriverHandlers(
 		deService,
@@ -161,6 +163,7 @@ func main() {
 		uploadService,
 		earningsHandlers,
 		referralHandlers,
+		inKindDisbHandlers,
 		cfg.S3.Bucket,
 		logger,
 	)
@@ -378,6 +381,8 @@ func setupRouter(
 	// Driver detail + sub-resources (specific paths before the generic /{phone}).
 	admin.HandleFunc("/drivers/{phone}/earnings", adminDriverHandlers.GetDriverEarnings).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/disbursements", adminDriverHandlers.GetDriverDisbursements).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/inkind-disbursements", adminDriverHandlers.RecordInKindDisbursement).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/inkind-disbursements", adminDriverHandlers.ListInKindDisbursements).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/referrals", adminDriverHandlers.GetDriverReferrals).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/cash-ledger", adminDriverHandlers.GetDriverCashLedger).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/pickup/complete", adminDriverHandlers.AdminCompletePickup).Methods("POST", "OPTIONS")

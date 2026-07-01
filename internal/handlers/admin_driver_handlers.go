@@ -31,6 +31,7 @@ type AdminDriverHandlers struct {
 	uploadService    *service.UploadService
 	earningsHandlers *EarningsHandlers
 	referralHandlers *ReferralHandlers
+	inKindHandlers   *InKindDisbursementHandlers
 	bucket           string
 	logger           *logrus.Logger
 }
@@ -45,6 +46,7 @@ func NewAdminDriverHandlers(
 	uploadService *service.UploadService,
 	earningsHandlers *EarningsHandlers,
 	referralHandlers *ReferralHandlers,
+	inKindHandlers *InKindDisbursementHandlers,
 	bucket string,
 	logger *logrus.Logger,
 ) *AdminDriverHandlers {
@@ -58,6 +60,7 @@ func NewAdminDriverHandlers(
 		uploadService:    uploadService,
 		earningsHandlers: earningsHandlers,
 		referralHandlers: referralHandlers,
+		inKindHandlers:   inKindHandlers,
 		bucket:           bucket,
 		logger:           logger,
 	}
@@ -474,6 +477,16 @@ func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Reques
 		"referral_code": de.ReferralCode,
 		"created_at":    de.CreatedAt,
 	})
+}
+
+// RecordInKindDisbursement handles POST /api/v1/admin/drivers/{phone}/inkind-disbursements
+func (h *AdminDriverHandlers) RecordInKindDisbursement(w http.ResponseWriter, r *http.Request) {
+	h.inKindHandlers.RecordInKindDisbursement(w, r)
+}
+
+// ListInKindDisbursements handles GET /api/v1/admin/drivers/{phone}/inkind-disbursements
+func (h *AdminDriverHandlers) ListInKindDisbursements(w http.ResponseWriter, r *http.Request) {
+	h.inKindHandlers.ListInKindDisbursements(w, r)
 }
 
 func (h *AdminDriverHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
