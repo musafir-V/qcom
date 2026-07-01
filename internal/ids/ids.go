@@ -31,13 +31,13 @@ type EntityType struct {
 }
 
 var (
-	User         = EntityType{Prefix: "US", CounterKey: "COUNTER!USER"}
-	DE           = EntityType{Prefix: "DE", CounterKey: "COUNTER!DE"}
-	Trip         = EntityType{Prefix: "TR", CounterKey: "COUNTER!TRIP"}
-	Task         = EntityType{Prefix: "TK", CounterKey: "COUNTER!TASK"}
-	Address      = EntityType{Prefix: "AD", CounterKey: "COUNTER!ADDRESS"}
-	Dispute      = EntityType{Prefix: "DP", CounterKey: "COUNTER!DISPUTE"}
-	Earning      = EntityType{Prefix: "EA", CounterKey: "COUNTER!EARNING"}
+	User               = EntityType{Prefix: "US", CounterKey: "COUNTER!USER"}
+	DE                 = EntityType{Prefix: "DE", CounterKey: "COUNTER!DE"}
+	Trip               = EntityType{Prefix: "TR", CounterKey: "COUNTER!TRIP"}
+	Task               = EntityType{Prefix: "TK", CounterKey: "COUNTER!TASK"}
+	Address            = EntityType{Prefix: "AD", CounterKey: "COUNTER!ADDRESS"}
+	Dispute            = EntityType{Prefix: "DP", CounterKey: "COUNTER!DISPUTE"}
+	Earning            = EntityType{Prefix: "EA", CounterKey: "COUNTER!EARNING"}
 	Disbursement       = EntityType{Prefix: "DB", CounterKey: "COUNTER!DISBURSEMENT"}
 	CashDeposit        = EntityType{Prefix: "CD", CounterKey: "COUNTER!DEPOSIT"}
 	InKindDisbursement = EntityType{Prefix: "IK", CounterKey: "COUNTER!INKIND_DISBURSEMENT"}
