@@ -104,6 +104,7 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 		Label       string  `json:"label,omitempty"`
 		CreatedAt   string  `json:"created_at"`
 		ReferenceID string  `json:"reference_id"`
+		DistanceKM  float64 `json:"distance_km,omitempty"`
 	}
 	items := make([]lineItem, 0, len(entries))
 	for _, e := range entries {
@@ -114,6 +115,7 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 			Label:       e.Label,
 			CreatedAt:   e.CreatedAt,
 			ReferenceID: e.ReferenceID,
+			DistanceKM:  e.DistanceKM,
 		})
 	}
 

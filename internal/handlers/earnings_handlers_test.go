@@ -195,3 +195,49 @@ func TestGetEarningsSummary_InKindSummary(t *testing.T) {
 		t.Errorf("household_item: earned=%d disbursed=%d outstanding=%d", houseItem.Earned, houseItem.Disbursed, houseItem.Outstanding)
 	}
 }
+
+func TestGetEarningsSummary_IncludesDistanceKMForTripEntries(t *testing.T) {
+	ledgerRepo := &stubEarningsLedgerRepo{
+		entries: []*models.EarningsLedger{
+			{EarningID: "e-trip", DEID: "de-1", Type: models.EarningTypeTrip, AmountZMW: 100, CreatedAt: "2026-06-22T08:00:00+02:00", ReferenceID: "trip-1", DistanceKM: 5.2},
+			{EarningID: "e-b1", DEID: "de-1", Type: models.EarningTypeB1DailyBonus, AmountZMW: 30, CreatedAt: "2026-06-22T09:00:00+02:00", ReferenceID: "2026-06-22"},
+		},
+	}
+	h := &EarningsHandlers{
+		earningsLedgerRepo: ledgerRepo,
+		disbursementRepo:   &stubEarningsDisbursementRepo{},
+		inKindDisbRepo:     &stubInKindDisbursementRepo{},
+		deRepo:             &stubEarningsDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971234567"}},
+		logger:             logrus.New(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/de/earnings/summary", nil)
+	req = req.WithContext(context.WithValue(req.Context(), "phone", "+260971234567"))
+	rec := httptest.NewRecorder()
+	h.GetEarningsSummary(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body struct {
+		LineItems []struct {
+			Type       string  `json:"type"`
+			DistanceKM float64 `json:"distance_km"`
+		} `json:"line_items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	distanceByType := map[string]float64{}
+	for _, item := range body.LineItems {
+		distanceByType[item.Type] = item.DistanceKM
+	}
+	if distanceByType[string(models.EarningTypeTrip)] != 5.2 {
+		t.Fatalf("trip distance_km = %v, want 5.2", distanceByType[string(models.EarningTypeTrip)])
+	}
+	if distanceByType[string(models.EarningTypeB1DailyBonus)] != 0 {
+		t.Fatalf("bonus distance_km = %v, want 0 (no distance for non-trip entries)", distanceByType[string(models.EarningTypeB1DailyBonus)])
+	}
+}
