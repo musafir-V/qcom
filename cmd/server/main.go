@@ -48,6 +48,7 @@ func main() {
 	etaCacheRepo := repository.NewETACacheRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	geocodeCacheRepo := repository.NewGeocodeCacheRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	deRepo := repository.NewDERepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	deStatusEventRepo := repository.NewDEStatusEventRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	referralRepo := repository.NewReferralRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	assignmentConfigRepo := repository.NewAssignmentConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -86,21 +87,22 @@ func main() {
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest)
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
-	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, logger)
+	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, logger)
+	presenceService := service.NewPresenceService(deStatusEventRepo, logger)
 	cashDepositService := service.NewCashDepositService(deRepo, cashConfigRepo, logger)
 
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
-	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, deStatusEventRepo, logger)
 	adminService := service.NewAdminService(tripRepo, deRepo, logger)
 	appCtx, appCancel := context.WithCancel(context.Background())
 	ruleCache := service.NewRuleCache(ruleRepo, 60*time.Second, logger)
 	ruleCache.Start(appCtx)
 	fareEngine := service.NewFareEngine(ruleCache)
 	rewardCron := service.NewRewardCron(deRepo, tripRepo, ruleRepo, earningsLedgerRepo, cronLockRepo, logger)
-	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, javaOrderClient, distanceService, fareEngine, notificationService, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, javaOrderClient, distanceService, fareEngine, notificationService, logger)
 
 	if err := service.SeedDefaults(appCtx, ruleRepo); err != nil {
 		logger.WithError(err).Fatal("Failed to seed default rules")
@@ -161,6 +163,7 @@ func main() {
 		cashConfigRepo,
 		cashDepositLedgerRepo,
 		uploadService,
+		presenceService,
 		earningsHandlers,
 		referralHandlers,
 		inKindDisbHandlers,
@@ -385,6 +388,7 @@ func setupRouter(
 	admin.HandleFunc("/drivers/{phone}/inkind-disbursements", adminDriverHandlers.ListInKindDisbursements).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/referrals", adminDriverHandlers.GetDriverReferrals).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/cash-ledger", adminDriverHandlers.GetDriverCashLedger).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/presence", adminDriverHandlers.GetDriverPresence).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/pickup/complete", adminDriverHandlers.AdminCompletePickup).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/drop/complete", adminDriverHandlers.AdminCompleteDrop).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip", adminDriverHandlers.GetDriverTrip).Methods("GET", "OPTIONS")

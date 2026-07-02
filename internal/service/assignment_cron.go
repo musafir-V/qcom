@@ -37,6 +37,7 @@ type AssignmentCron struct {
 	assignmentConfigRepo *repository.AssignmentConfigRepository
 	cashConfigRepo       *repository.CashConfigRepository
 	darkstoreRepo        *repository.DarkstoreRepository
+	statusEventRepo      *repository.DEStatusEventRepository
 	javaClient           *JavaOrderClient
 	distanceService      *DistanceService
 	fareEngine           *FareEngine
@@ -55,6 +56,7 @@ func NewAssignmentCron(
 	assignmentConfigRepo *repository.AssignmentConfigRepository,
 	cashConfigRepo *repository.CashConfigRepository,
 	darkstoreRepo *repository.DarkstoreRepository,
+	statusEventRepo *repository.DEStatusEventRepository,
 	javaClient *JavaOrderClient,
 	distanceService *DistanceService,
 	fareEngine *FareEngine,
@@ -69,6 +71,7 @@ func NewAssignmentCron(
 		assignmentConfigRepo: assignmentConfigRepo,
 		cashConfigRepo:       cashConfigRepo,
 		darkstoreRepo:        darkstoreRepo,
+		statusEventRepo:      statusEventRepo,
 		javaClient:           javaClient,
 		distanceService:      distanceService,
 		fareEngine:           fareEngine,
@@ -324,6 +327,15 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 			c.logger.WithFields(logrus.Fields{
 				"trip_id": trip.TripID, "de_id": de.DEID,
 			}).Info("assignment cron: trip assigned")
+			// Presence: assignment pauses the scan clock (eligible -> busy).
+			c.appendStatusEvent(ctx, &models.DEStatusEvent{
+				Phone:     de.PhoneNumber,
+				FromState: models.DEStatusEligible,
+				ToState:   models.DEStatusBusy,
+				Reason:    models.ReasonAssigned,
+				StoreID:   trip.StoreID,
+				TS:        now.UTC().Format(time.RFC3339),
+			})
 			// Best-effort push: never block the tick. Capture loop vars; use a
 			// detached context so cancellation of the tick can't kill the send.
 			assignedDE := de
@@ -345,6 +357,87 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 			}()
 			break
 		}
+	}
+
+	// 8. Presence sweep: auto-offline on-duty riders whose scan deadline passed.
+	c.sweepMissedScans(ctx, defaultStoreID, now)
+}
+
+// sweepMissedScans flips on-duty riders (eligible/free) offline once their scan
+// deadline has passed, appends a missed_scan event, and pushes them to re-scan.
+// It runs inside the cron's distributed lock so a single instance sweeps.
+func (c *AssignmentCron) sweepMissedScans(ctx context.Context, storeID string, now time.Time) {
+	onDuty, err := c.deRepo.FindOnDutyByStore(ctx, storeID)
+	if err != nil {
+		c.logger.WithError(err).Warn("assignment cron: presence sweep — failed to fetch on-duty DEs")
+		return
+	}
+
+	for _, de := range onDuty {
+		// busy is paused; a DE without a deadline is not being tracked.
+		if de.Status == models.DEStatusBusy || de.ScanDeadlineAt == "" {
+			continue
+		}
+		deadline, err := time.Parse(time.RFC3339, de.ScanDeadlineAt)
+		if err != nil {
+			c.logger.WithError(err).WithField("phone", de.PhoneNumber).
+				Warn("assignment cron: presence sweep — bad scan_deadline_at; skipping")
+			continue
+		}
+		if now.Before(deadline) {
+			continue
+		}
+
+		fromState := de.Status
+		if err := c.deRepo.MarkOfflineIfDeadlinePassed(ctx, de.PhoneNumber, de.ScanDeadlineAt); err != nil {
+			if errors.Is(err, repository.ErrScanDeadlineConflict) {
+				// Rider re-scanned or changed state between read and write — benign.
+				continue
+			}
+			c.logger.WithError(err).WithField("phone", de.PhoneNumber).
+				Warn("assignment cron: presence sweep — failed to mark offline")
+			continue
+		}
+
+		c.appendStatusEvent(ctx, &models.DEStatusEvent{
+			Phone:     de.PhoneNumber,
+			FromState: fromState,
+			ToState:   models.DEStatusOffline,
+			Reason:    models.ReasonMissedScan,
+			StoreID:   storeID,
+			TS:        now.UTC().Format(time.RFC3339),
+		})
+		c.logger.WithFields(logrus.Fields{
+			"phone": de.PhoneNumber, "de_id": de.DEID, "store_id": storeID,
+		}).Info("assignment cron: presence sweep — DE flipped offline (missed scan)")
+
+		// Best-effort push: never block the tick. Detached context.
+		offlineDE := de
+		go func() {
+			c.notifier.Send(context.Background(), models.NotificationSendRequest{
+				RecipientType: models.RecipientTypeDriver,
+				RecipientID:   offlineDE.DEID,
+				EventType:     "PRESENCE_OFFLINE",
+				Priority:      models.PriorityHigh,
+				Title:         "You're offline",
+				Body:          "Scan the store QR to get orders.",
+				Data: map[string]string{
+					"type":     "PRESENCE_OFFLINE",
+					"store_id": storeID,
+				},
+			})
+		}()
+	}
+}
+
+// appendStatusEvent writes a status-event best-effort; never fails the tick.
+func (c *AssignmentCron) appendStatusEvent(ctx context.Context, event *models.DEStatusEvent) {
+	if c.statusEventRepo == nil {
+		return
+	}
+	if err := c.statusEventRepo.Append(ctx, event); err != nil {
+		c.logger.WithError(err).WithField("phone", event.Phone).
+			Warn("assignment cron: failed to append DE status event")
 	}
 }
 

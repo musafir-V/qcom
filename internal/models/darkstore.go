@@ -1,5 +1,9 @@
 package models
 
+// defaultPresenceRadiusMeters is the tight per-store presence geofence used
+// when a darkstore has no explicit presence_radius_meters configured.
+const defaultPresenceRadiusMeters = 75.0
+
 // PolygonPoint is a single vertex of a darkstore's serviceable-area polygon.
 type PolygonPoint struct {
 	Lat float64 `json:"lat" dynamodbav:"lat"`
@@ -14,7 +18,11 @@ type Darkstore struct {
 	Latitude    float64        `json:"latitude" dynamodbav:"latitude"`
 	Longitude   float64        `json:"longitude" dynamodbav:"longitude"`
 	Polygon     []PolygonPoint `json:"polygon" dynamodbav:"polygon"`
-	IsActive    bool           `json:"is_active" dynamodbav:"is_active"`
+	// PresenceRadiusMeters is the tight pod geofence around Latitude/Longitude
+	// used for rider presence scans (default 75 when zero). This is NOT the
+	// serviceability Polygon (kilometres wide) — that stays for customers only.
+	PresenceRadiusMeters float64 `json:"presence_radius_meters,omitempty" dynamodbav:"presence_radius_meters,omitempty"`
+	IsActive             bool    `json:"is_active" dynamodbav:"is_active"`
 	OpensAt     string         `json:"opens_at" dynamodbav:"opens_at"`
 	ClosesAt    string         `json:"closes_at" dynamodbav:"closes_at"`
 	CreatedAt   string         `json:"created_at" dynamodbav:"created_at"`
@@ -32,6 +40,30 @@ func (d *Darkstore) GetSK() string {
 // Contains reports whether the given coordinate lies inside the darkstore's polygon.
 func (d *Darkstore) Contains(lat, lng float64) bool {
 	return PointInPolygon(lat, lng, d.Polygon)
+}
+
+// EffectivePresenceRadiusMeters returns the configured presence radius, or the
+// default (75 m) when unset/zero.
+func (d *Darkstore) EffectivePresenceRadiusMeters() float64 {
+	if d.PresenceRadiusMeters <= 0 {
+		return defaultPresenceRadiusMeters
+	}
+	return d.PresenceRadiusMeters
+}
+
+// DistanceMeters returns the great-circle (haversine) distance in metres from
+// the darkstore centre (Latitude/Longitude) to (lat, lng). Unlike PointInPolygon
+// this is spherical, which matters at the tens-of-metres presence scale.
+func (d *Darkstore) DistanceMeters(lat, lng float64) float64 {
+	return HaversineDistance(d.Latitude, d.Longitude, lat, lng)
+}
+
+// WithinPresence reports whether a location fix is inside the pod geofence,
+// giving the rider the benefit of their GPS error circle (accuracyM). A fix is
+// accepted when distance-to-centre minus the accuracy radius is within the
+// presence radius.
+func (d *Darkstore) WithinPresence(lat, lng, accuracyM float64) bool {
+	return d.DistanceMeters(lat, lng)-accuracyM <= d.EffectivePresenceRadiusMeters()
 }
 
 // PointInPolygon runs the ray-casting (even-odd) test. Coordinates are treated

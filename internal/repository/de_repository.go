@@ -23,6 +23,12 @@ import (
 // deposit_id was already applied (idempotent replay). Callers map this to 409.
 var ErrCashDepositConflict = errors.New("cash deposit conflict: balance changed or deposit_id already applied")
 
+// ErrScanDeadlineConflict is returned by MarkOfflineIfDeadlinePassed when the
+// conditional offline write is rejected — the DE is no longer eligible/free or
+// re-scanned (deadline changed) since the sweep read it. Callers treat this as
+// a benign no-op.
+var ErrScanDeadlineConflict = errors.New("scan deadline conflict: DE re-scanned or no longer on duty")
+
 type DERepository struct {
 	client    *dynamodb.Client
 	tableName string
@@ -134,10 +140,11 @@ func (r *DERepository) UpdateStatus(ctx context.Context, phone string, status mo
 
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Build duty_index_key for the DEDutyIndex GSI (used by assignment cron)
+	// Build duty_index_key for the DEDutyIndex GSI. On-duty = eligible OR free
+	// (both keep the DE queryable by store); busy/offline clear it.
 	dutyIndexKey := ""
-	if status == models.DEStatusEligible && storeID != "" {
-		dutyIndexKey = "DE_ELIGIBLE#" + storeID
+	if (status == models.DEStatusEligible || status == models.DEStatusFree) && storeID != "" {
+		dutyIndexKey = models.DutyIndexKeyOnDuty(storeID)
 	}
 
 	names := map[string]string{"#status": "status"}
@@ -168,7 +175,9 @@ func (r *DERepository) UpdateStatus(ctx context.Context, phone string, status mo
 		setItems = append(setItems, "duty_index_key = :duty_key")
 		values[":duty_key"] = &types.AttributeValueMemberS{Value: dutyIndexKey}
 	} else {
-		removeItems = append(removeItems, "duty_index_key")
+		// Not on-duty (busy/offline): clear the on-duty index and the stale
+		// scan deadline so the sweep never considers this DE.
+		removeItems = append(removeItems, "duty_index_key", "scan_deadline_at")
 	}
 
 	expr := "SET " + strings.Join(setItems, ", ")
@@ -225,18 +234,18 @@ func (r *DERepository) GetByReferralCode(ctx context.Context, code string) (*mod
 }
 
 // FindEligibleByStore returns all DEs with status=eligible at the given store.
-// Uses a table scan with filter — add DEDutyIndex GSI for production scale.
+// Uses a table scan with filter — prefer FindEligibleByStoreFIFO (GSI) at scale.
 func (r *DERepository) FindEligibleByStore(ctx context.Context, storeID string) ([]*models.DeliveryExecutive, error) {
 	op := logging.Start(ctx, r.logger, "FindEligibleByStore", logrus.Fields{"store_id": storeID})
 	defer op.End()
 
-	dutyKey := "DE_ELIGIBLE#" + storeID
-
 	result, err := r.client.Scan(ctx, &dynamodb.ScanInput{
-		TableName:        aws.String(r.tableName),
-		FilterExpression: aws.String("duty_index_key = :duty_key"),
+		TableName:                aws.String(r.tableName),
+		FilterExpression:         aws.String("duty_index_key = :duty_key AND #status = :eligible"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":duty_key": &types.AttributeValueMemberS{Value: dutyKey},
+			":duty_key": &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
+			":eligible": &types.AttributeValueMemberS{Value: string(models.DEStatusEligible)},
 		},
 	})
 	if err != nil {
@@ -257,20 +266,27 @@ func (r *DERepository) FindEligibleByStore(ctx context.Context, storeID string) 
 	return des, nil
 }
 
-// FindEligibleByStoreFIFO returns eligible DEs for a store sorted by updated_at ascending.
-// Uses the DEDutyIndex GSI (PK: duty_index_key).
+// FindEligibleByStoreFIFO returns eligible DEs for a store sorted by updated_at
+// ascending (FIFO). It queries the DEDutyIndex GSI on the shared on-duty
+// partition (DE_ONDUTY#{store}) and filters status=eligible, so free riders
+// (also on-duty) are visible to the sweep but skipped for assignment.
+//
+// NOTE: this filter requires the DEDutyIndex GSI to project the `status`
+// attribute. If status is not projected the filter drops every item; the safe
+// deploy order is to project status before repointing (see docs).
 func (r *DERepository) FindEligibleByStoreFIFO(ctx context.Context, storeID string) ([]*models.DeliveryExecutive, error) {
 	op := logging.Start(ctx, r.logger, "FindEligibleByStoreFIFO", logrus.Fields{"store_id": storeID})
 	defer op.End()
 
-	dutyKey := "DE_ELIGIBLE#" + storeID
-
 	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(r.tableName),
-		IndexName:              aws.String("DEDutyIndex"),
-		KeyConditionExpression: aws.String("duty_index_key = :duty_key"),
+		TableName:                aws.String(r.tableName),
+		IndexName:                aws.String("DEDutyIndex"),
+		KeyConditionExpression:   aws.String("duty_index_key = :duty_key"),
+		FilterExpression:         aws.String("#status = :eligible"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":duty_key": &types.AttributeValueMemberS{Value: dutyKey},
+			":duty_key": &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
+			":eligible": &types.AttributeValueMemberS{Value: string(models.DEStatusEligible)},
 		},
 		ScanIndexForward: aws.Bool(true), // ascending updated_at = FIFO
 	})
@@ -290,6 +306,126 @@ func (r *DERepository) FindEligibleByStoreFIFO(ctx context.Context, storeID stri
 
 	op.With("count", len(des))
 	return des, nil
+}
+
+// FindOnDutyByStore returns every on-duty DE at a store — status eligible OR
+// free — via the DEDutyIndex GSI on DE_ONDUTY#{store}. The sweep uses this to
+// find riders whose scan deadline has passed. busy/offline DEs are absent
+// because they clear duty_index_key.
+func (r *DERepository) FindOnDutyByStore(ctx context.Context, storeID string) ([]*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, r.logger, "FindOnDutyByStore", logrus.Fields{"store_id": storeID})
+	defer op.End()
+
+	var des []*models.DeliveryExecutive
+	var lastKey map[string]types.AttributeValue
+	for {
+		result, err := r.client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(r.tableName),
+			IndexName:              aws.String("DEDutyIndex"),
+			KeyConditionExpression: aws.String("duty_index_key = :duty_key"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":duty_key": &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
+			},
+			ScanIndexForward:  aws.Bool(true),
+			ExclusiveStartKey: lastKey,
+		})
+		if err != nil {
+			return nil, op.Fail(fmt.Errorf("failed to find on-duty DEs: %w", err))
+		}
+
+		for _, item := range result.Items {
+			var de models.DeliveryExecutive
+			if err := attributevalue.UnmarshalMap(item, &de); err != nil {
+				op.Logger().WithError(err).Warn("failed to unmarshal on-duty DE; skipping")
+				continue
+			}
+			des = append(des, &de)
+		}
+
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
+	}
+
+	op.With("count", len(des))
+	return des, nil
+}
+
+// MarkEligibleFromScan transitions a DE to eligible after a validated presence
+// scan: it stamps the store, the new scan deadline, and the last-scan location,
+// and sets duty_index_key = DE_ONDUTY#{store}. current_order_id is cleared.
+func (r *DERepository) MarkEligibleFromScan(ctx context.Context, phone, storeID, deadline string, lat, lng float64, scanAt string) error {
+	op := logging.Start(ctx, r.logger, "MarkEligibleFromScan", logrus.Fields{
+		"phone": phone, "store_id": storeID,
+	})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String(
+			"SET #status = :eligible, current_store_id = :store, duty_index_key = :duty, " +
+				"scan_deadline_at = :deadline, last_scan_lat = :lat, last_scan_lng = :lng, " +
+				"last_scan_at = :scan_at, updated_at = :now REMOVE current_order_id",
+		),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":eligible": &types.AttributeValueMemberS{Value: string(models.DEStatusEligible)},
+			":store":    &types.AttributeValueMemberS{Value: storeID},
+			":duty":     &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
+			":deadline": &types.AttributeValueMemberS{Value: deadline},
+			":lat":      &types.AttributeValueMemberN{Value: strconv.FormatFloat(lat, 'f', -1, 64)},
+			":lng":      &types.AttributeValueMemberN{Value: strconv.FormatFloat(lng, 'f', -1, 64)},
+			":scan_at":  &types.AttributeValueMemberS{Value: scanAt},
+			":now":      &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to mark DE eligible from scan: %w", err))
+	}
+	return nil
+}
+
+// MarkOfflineIfDeadlinePassed flips an on-duty DE offline, clearing the
+// duty_index_key and scan deadline. It is conditional: the DE must still be
+// eligible or free AND its scan_deadline_at must equal expectedDeadline, so a
+// rider who re-scanned (new deadline) between the sweep's read and write is not
+// wrongly offlined. Returns ErrScanDeadlineConflict when the guard fails.
+func (r *DERepository) MarkOfflineIfDeadlinePassed(ctx context.Context, phone, expectedDeadline string) error {
+	op := logging.Start(ctx, r.logger, "MarkOfflineIfDeadlinePassed", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:    aws.String("SET #status = :offline, updated_at = :now REMOVE duty_index_key, scan_deadline_at"),
+		ConditionExpression: aws.String("(#status = :eligible OR #status = :free) AND scan_deadline_at = :expected"),
+		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":offline":  &types.AttributeValueMemberS{Value: string(models.DEStatusOffline)},
+			":eligible": &types.AttributeValueMemberS{Value: string(models.DEStatusEligible)},
+			":free":     &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
+			":expected": &types.AttributeValueMemberS{Value: expectedDeadline},
+			":now":      &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return op.Outcome("conflict", ErrScanDeadlineConflict)
+		}
+		return op.Fail(fmt.Errorf("failed to mark DE offline: %w", err))
+	}
+	return nil
 }
 
 // ScanAll returns every DE metadata item in the table.

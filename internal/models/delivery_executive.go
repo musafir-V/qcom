@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type DEStatus string
 
 const (
@@ -8,6 +10,23 @@ const (
 	DEStatusBusy     DEStatus = "busy"
 	DEStatusFree     DEStatus = "free"
 )
+
+// ScanInterval is how long a presence scan (or delivery completion) keeps a DE
+// on-duty before the next store-QR scan is due. When the deadline passes the
+// sweep flips the DE offline. Applies to eligible and free (busy is paused).
+const ScanInterval = 15 * time.Minute
+
+// DutyIndexKeyOnDuty builds the DEDutyIndex partition value for an on-duty DE at
+// a store. It is set while the DE is eligible or free and cleared for busy/offline.
+func DutyIndexKeyOnDuty(storeID string) string {
+	return "DE_ONDUTY#" + storeID
+}
+
+// IsOnline reports whether a status counts as online for presence accounting:
+// eligible, busy, and free are all online; only offline is not.
+func (s DEStatus) IsOnline() bool {
+	return s == DEStatusEligible || s == DEStatusBusy || s == DEStatusFree
+}
 
 type DeliveryExecutive struct {
 	DEID        string   `json:"de_id" dynamodbav:"de_id"`
@@ -21,9 +40,19 @@ type DeliveryExecutive struct {
 	BikeNumber        string `json:"bike_number" dynamodbav:"bike_number"`
 	BikeBrand         string `json:"bike_brand" dynamodbav:"bike_brand"`
 	Status      DEStatus `json:"status" dynamodbav:"status"`
-	// Set to "DE_ELIGIBLE#{storeId}" when eligible, cleared otherwise.
-	// Used by DEDutyIndex GSI to let the assignment cron query eligible DEs by store.
+	// Set to "DE_ONDUTY#{storeId}" while the DE is eligible OR free (on-duty),
+	// cleared for busy/offline. Used by the DEDutyIndex GSI so both the
+	// assignment cron (filter status=eligible) and the presence sweep
+	// (eligible+free) can query on-duty DEs by store.
 	DutyIndexKey        string `json:"duty_index_key,omitempty" dynamodbav:"duty_index_key,omitempty"`
+	// Presence-tracking fields. ScanDeadlineAt is the RFC3339 UTC time by which
+	// the DE must re-scan the store QR or be flipped offline by the sweep; it is
+	// set on scan (eligible) and delivery completion (free), and cleared when
+	// busy/offline. LastScan* stamp the most recent validated presence scan.
+	ScanDeadlineAt string  `json:"scan_deadline_at,omitempty" dynamodbav:"scan_deadline_at,omitempty"`
+	LastScanLat    float64 `json:"last_scan_lat,omitempty" dynamodbav:"last_scan_lat,omitempty"`
+	LastScanLng    float64 `json:"last_scan_lng,omitempty" dynamodbav:"last_scan_lng,omitempty"`
+	LastScanAt     string  `json:"last_scan_at,omitempty" dynamodbav:"last_scan_at,omitempty"`
 	CurrentStoreID      string `json:"current_store_id,omitempty" dynamodbav:"current_store_id,omitempty"`
 	CurrentOrderID      string `json:"current_order_id,omitempty" dynamodbav:"current_order_id,omitempty"`
 	CurrentTripID       string `json:"current_trip_id,omitempty" dynamodbav:"current_trip_id,omitempty"`

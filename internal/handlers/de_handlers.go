@@ -149,7 +149,11 @@ func (h *DEHandlers) StartDuty(w http.ResponseWriter, r *http.Request) {
 	phone, _ := r.Context().Value("phone").(string)
 
 	var req struct {
-		QRCode string `json:"qr_code"`
+		QRCode    string  `json:"qr_code"`
+		Lat       float64 `json:"lat"`
+		Lng       float64 `json:"lng"`
+		AccuracyM float64 `json:"accuracy_m"`
+		IsMocked  bool    `json:"is_mocked"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
@@ -160,19 +164,32 @@ func (h *DEHandlers) StartDuty(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	storeID, err := h.deService.StartDuty(r.Context(), phone, req.QRCode)
+	storeID, err := h.deService.StartDuty(r.Context(), phone, req.QRCode, service.ScanLocation{
+		Lat:       req.Lat,
+		Lng:       req.Lng,
+		AccuracyM: req.AccuracyM,
+		IsMocked:  req.IsMocked,
+	})
 	if err != nil {
 		status := http.StatusBadRequest
 		code := "DUTY_START_FAILED"
-		if strings.Contains(err.Error(), "expired") {
+		errStr := err.Error()
+		switch {
+		case strings.Contains(errStr, "expired"):
 			code = "QR_EXPIRED"
-		} else if strings.Contains(err.Error(), "active delivery") || strings.Contains(err.Error(), "already on duty") {
+		case strings.Contains(errStr, "active delivery") || strings.Contains(errStr, "already on duty"):
 			code = "INVALID_STATE"
-		} else if strings.Contains(err.Error(), "in-hand cash limit") {
+		case strings.Contains(errStr, "mocked"):
+			code = "INVALID_LOCATION"
+		case strings.Contains(errStr, "accuracy"):
+			code = "LOCATION_INACCURATE"
+		case strings.Contains(errStr, "geofence"):
+			code = "OUTSIDE_GEOFENCE"
+		case strings.Contains(errStr, "in-hand cash limit"):
 			status = http.StatusConflict
 			code = "CASH_LIMIT_EXCEEDED"
 		}
-		h.respondWithError(w, status, code, err.Error())
+		h.respondWithError(w, status, code, errStr)
 		return
 	}
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -29,6 +30,7 @@ type AdminDriverHandlers struct {
 	cashConfigRepo   *repository.CashConfigRepository
 	cashLedgerRepo   *repository.CashDepositLedgerRepository
 	uploadService    *service.UploadService
+	presenceService  *service.PresenceService
 	earningsHandlers *EarningsHandlers
 	referralHandlers *ReferralHandlers
 	inKindHandlers   *InKindDisbursementHandlers
@@ -44,6 +46,7 @@ func NewAdminDriverHandlers(
 	cashConfigRepo *repository.CashConfigRepository,
 	cashLedgerRepo *repository.CashDepositLedgerRepository,
 	uploadService *service.UploadService,
+	presenceService *service.PresenceService,
 	earningsHandlers *EarningsHandlers,
 	referralHandlers *ReferralHandlers,
 	inKindHandlers *InKindDisbursementHandlers,
@@ -58,6 +61,7 @@ func NewAdminDriverHandlers(
 		cashConfigRepo:   cashConfigRepo,
 		cashLedgerRepo:   cashLedgerRepo,
 		uploadService:    uploadService,
+		presenceService:  presenceService,
 		earningsHandlers: earningsHandlers,
 		referralHandlers: referralHandlers,
 		inKindHandlers:   inKindHandlers,
@@ -320,6 +324,34 @@ func (h *AdminDriverHandlers) GetDriverCashLedger(w http.ResponseWriter, r *http
 		"in_hand_cash_zmw": de.InHandCashZMW,
 		"deposits":         items,
 	})
+}
+
+// GET /api/v1/admin/drivers/{phone}/presence?date=YYYY-MM-DD
+// Returns the driver's online segments and total online minutes for the given
+// Zambia day (defaults to today), computed from the status-event log.
+func (h *AdminDriverHandlers) GetDriverPresence(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	date := strings.TrimSpace(r.URL.Query().Get("date"))
+	if date != "" {
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_DATE", "date must be YYYY-MM-DD")
+			return
+		}
+	}
+
+	report, err := h.presenceService.GetDayPresence(r.Context(), phone, date)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to compute driver presence")
+		h.respondWithError(w, http.StatusInternalServerError, "PRESENCE_FETCH_FAILED", "Failed to compute presence")
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, report)
 }
 
 // uploadDocExt maps allowed MIME types to a canonical extension for onboarding docs.

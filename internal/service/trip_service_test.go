@@ -422,7 +422,7 @@ func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, 
 	return s.trip, nil
 }
 
-func (s *stubTripRepo) CancelByOrderID(_ context.Context, tripID, dePhone string) error {
+func (s *stubTripRepo) CancelByOrderID(_ context.Context, tripID, dePhone, _ string) error {
 	s.cancelCalled = true
 	s.cancelTripID = tripID
 	s.cancelDEPhone = dePhone
@@ -433,7 +433,7 @@ func (s *stubTripRepo) GetByID(_ context.Context, _ string) (*models.Trip, error
 	return s.trip, nil
 }
 
-func (s *stubTripRepo) CompleteTripAndFreeDE(_ context.Context, _, _ string, tasks []models.Task, _ float64) error {
+func (s *stubTripRepo) CompleteTripAndFreeDE(_ context.Context, _, _, _ string, tasks []models.Task, _ float64) error {
 	s.capturedTasks = make([]models.Task, len(tasks))
 	copy(s.capturedTasks, tasks)
 	return nil

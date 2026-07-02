@@ -37,12 +37,12 @@ var (
 type tripRepoI interface {
 	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
 	GetByID(ctx context.Context, tripID string) (*models.Trip, error)
-	CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone string, tasks []models.Task, codAmount float64) error
+	CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone, storeID string, tasks []models.Task, codAmount float64) error
 	UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error
 	UpdateStatus(ctx context.Context, tripID string, status models.TripStatus) error
 	Accept(ctx context.Context, tripID, deID string) error
 	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
-	CancelByOrderID(ctx context.Context, tripID, dePhone string) error
+	CancelByOrderID(ctx context.Context, tripID, dePhone, storeID string) error
 	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
 }
 
@@ -52,13 +52,19 @@ type deRepoI interface {
 	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
 }
 
+// statusEventAppender appends DE status-event log entries (presence timeline).
+type statusEventAppender interface {
+	Append(ctx context.Context, event *models.DEStatusEvent) error
+}
+
 type TripService struct {
-	tripRepo      tripRepoI
-	deRepo        deRepoI
-	javaClient    *JavaOrderClient
-	payoutService *PayoutService
-	notifier      NotificationService
-	logger        *logrus.Logger
+	tripRepo        tripRepoI
+	deRepo          deRepoI
+	javaClient      *JavaOrderClient
+	payoutService   *PayoutService
+	notifier        NotificationService
+	statusEventRepo statusEventAppender
+	logger          *logrus.Logger
 }
 
 func NewTripService(
@@ -67,15 +73,28 @@ func NewTripService(
 	javaClient *JavaOrderClient,
 	payoutService *PayoutService,
 	notifier NotificationService,
+	statusEventRepo *repository.DEStatusEventRepository,
 	logger *logrus.Logger,
 ) *TripService {
 	return &TripService{
-		tripRepo:      tripRepo,
-		deRepo:        deRepo,
-		javaClient:    javaClient,
-		payoutService: payoutService,
-		notifier:      notifier,
-		logger:        logger,
+		tripRepo:        tripRepo,
+		deRepo:          deRepo,
+		javaClient:      javaClient,
+		payoutService:   payoutService,
+		notifier:        notifier,
+		statusEventRepo: statusEventRepo,
+		logger:          logger,
+	}
+}
+
+// appendStatusEvent writes a status-event best-effort; never fails the caller.
+func (s *TripService) appendStatusEvent(ctx context.Context, event *models.DEStatusEvent) {
+	if s.statusEventRepo == nil {
+		return
+	}
+	if err := s.statusEventRepo.Append(ctx, event); err != nil {
+		s.logger.WithError(err).WithField("phone", event.Phone).
+			Warn("failed to append DE status event")
 	}
 }
 
@@ -103,8 +122,19 @@ func (s *TripService) CancelTripByOrder(ctx context.Context, orderID, reason str
 		return nil
 	}
 
-	if err := s.tripRepo.CancelByOrderID(ctx, trip.TripID, trip.DEPhone); err != nil {
+	if err := s.tripRepo.CancelByOrderID(ctx, trip.TripID, trip.DEPhone, trip.StoreID); err != nil {
 		return fmt.Errorf("CancelTripByOrder: db cancel failed: %w", err)
+	}
+
+	if trip.DEPhone != "" {
+		s.appendStatusEvent(ctx, &models.DEStatusEvent{
+			Phone:     trip.DEPhone,
+			FromState: models.DEStatusBusy,
+			ToState:   models.DEStatusFree,
+			Reason:    models.ReasonCancelled,
+			StoreID:   trip.StoreID,
+			TS:        timezone.Now().UTC().Format(time.RFC3339),
+		})
 	}
 
 	if trip.DEID != "" {
@@ -393,9 +423,17 @@ func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip
 	}
 
 	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
-		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, trip.TripID, de.PhoneNumber, trip.Tasks, codAccrualAmount(trip)); err != nil {
+		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, trip.TripID, de.PhoneNumber, trip.StoreID, trip.Tasks, codAccrualAmount(trip)); err != nil {
 			return err
 		}
+		s.appendStatusEvent(ctx, &models.DEStatusEvent{
+			Phone:     de.PhoneNumber,
+			FromState: models.DEStatusBusy,
+			ToState:   models.DEStatusFree,
+			Reason:    models.ReasonDelivered,
+			StoreID:   trip.StoreID,
+			TS:        timezone.Now().UTC().Format(time.RFC3339),
+		})
 		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
 		s.notifyCustomerOrderDelivered(trip.OrderID)
 		s.recordTripPayout(trip, de)

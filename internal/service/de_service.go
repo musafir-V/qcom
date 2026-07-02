@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
@@ -11,12 +12,18 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// maxScanAccuracyMeters rejects a presence scan whose GPS accuracy circle is
+// wider than this — the fix is too coarse to trust against the tight geofence.
+const maxScanAccuracyMeters = 150.0
+
 type DEService struct {
 	deRepo             *repository.DERepository
 	qrService          *QRService
 	referralService    *ReferralService
 	earningsLedgerRepo deEarningsLedgerReader
 	cashConfigRepo     *repository.CashConfigRepository
+	darkstoreRepo      *repository.DarkstoreRepository
+	statusEventRepo    *repository.DEStatusEventRepository
 	logger             *logrus.Logger
 }
 
@@ -24,8 +31,8 @@ type deEarningsLedgerReader interface {
 	SumPositiveCashByDEAfter(ctx context.Context, deID, afterTimestamp string) (float64, error)
 }
 
-func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo deEarningsLedgerReader, cashConfigRepo *repository.CashConfigRepository, logger *logrus.Logger) *DEService {
-	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, earningsLedgerRepo: earningsLedgerRepo, cashConfigRepo: cashConfigRepo, logger: logger}
+func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo deEarningsLedgerReader, cashConfigRepo *repository.CashConfigRepository, darkstoreRepo *repository.DarkstoreRepository, statusEventRepo *repository.DEStatusEventRepository, logger *logrus.Logger) *DEService {
+	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, earningsLedgerRepo: earningsLedgerRepo, cashConfigRepo: cashConfigRepo, darkstoreRepo: darkstoreRepo, statusEventRepo: statusEventRepo, logger: logger}
 }
 
 type RegisterDERequest struct {
@@ -99,9 +106,20 @@ func (s *DEService) GetTodayEarnings(ctx context.Context, deID string) (float64,
 	return s.earningsLedgerRepo.SumPositiveCashByDEAfter(ctx, deID, timezone.StartOfDayString())
 }
 
-// StartDuty validates the QR code and transitions the DE to eligible status.
-// Valid from: offline or free.
-func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string) (string, error) {
+// ScanLocation is the foreground GPS fix + anti-spoof signal the driver app
+// sends with a duty-start scan.
+type ScanLocation struct {
+	Lat       float64
+	Lng       float64
+	AccuracyM float64
+	IsMocked  bool
+}
+
+// StartDuty validates the store QR + a geofenced presence scan and transitions
+// the DE to eligible. Valid from: offline or free. On success it stamps the
+// next scan deadline (now + ScanInterval), the last-scan location, and appends
+// a status event (scan_start from offline, scan_return from free).
+func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc ScanLocation) (string, error) {
 	op := logging.Start(ctx, s.logger, "StartDuty", logrus.Fields{"phone": dePhone})
 	defer op.End()
 
@@ -137,12 +155,80 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string) (stri
 		return "", op.Fail(err)
 	}
 
-	if err := s.deRepo.UpdateStatus(ctx, dePhone, models.DEStatusEligible, storeID, ""); err != nil {
+	// Anti-spoof + geofence. Log every rejection with coords for fraud review.
+	if loc.IsMocked {
+		s.logRejectedScan(op, dePhone, storeID, loc, "mocked_location")
+		return "", op.Outcome("invalid_location", fmt.Errorf("location appears mocked; disable mock location to start duty"))
+	}
+	if loc.AccuracyM > maxScanAccuracyMeters {
+		s.logRejectedScan(op, dePhone, storeID, loc, "inaccurate_location")
+		return "", op.Outcome("location_inaccurate", fmt.Errorf("location accuracy too low; move outdoors and try again"))
+	}
+
+	ds, err := s.darkstoreRepo.GetByID(ctx, storeID)
+	if err != nil {
+		return "", op.Fail(fmt.Errorf("failed to fetch darkstore %s: %w", storeID, err))
+	}
+	if ds == nil {
+		return "", op.Outcome("store_not_found", fmt.Errorf("store %s not found", storeID))
+	}
+	if !ds.WithinPresence(loc.Lat, loc.Lng, loc.AccuracyM) {
+		s.logRejectedScan(op, dePhone, storeID, loc, "outside_geofence")
+		return "", op.Outcome("outside_geofence", fmt.Errorf("outside store geofence; move closer to the store and try again"))
+	}
+
+	fromState := de.Status
+	now := timezone.Now()
+	nowUTC := now.UTC().Format(time.RFC3339)
+	deadline := now.UTC().Add(models.ScanInterval).Format(time.RFC3339)
+
+	if err := s.deRepo.MarkEligibleFromScan(ctx, dePhone, storeID, deadline, loc.Lat, loc.Lng, nowUTC); err != nil {
 		return "", op.Fail(fmt.Errorf("failed to update DE status: %w", err))
 	}
 
+	reason := models.ReasonScanStart
+	if fromState == models.DEStatusFree {
+		reason = models.ReasonScanReturn
+	}
+	s.appendStatusEvent(ctx, &models.DEStatusEvent{
+		Phone:     dePhone,
+		FromState: fromState,
+		ToState:   models.DEStatusEligible,
+		Reason:    reason,
+		StoreID:   storeID,
+		Lat:       loc.Lat,
+		Lng:       loc.Lng,
+		AccuracyM: loc.AccuracyM,
+		TS:        nowUTC,
+	})
+
 	op.With("store_id", storeID)
 	return storeID, nil
+}
+
+// logRejectedScan records a failed presence scan for the fraud-review list.
+func (s *DEService) logRejectedScan(op *logging.Op, phone, storeID string, loc ScanLocation, reason string) {
+	op.Logger().WithFields(logrus.Fields{
+		"phone":      phone,
+		"store_id":   storeID,
+		"reason":     reason,
+		"lat":        loc.Lat,
+		"lng":        loc.Lng,
+		"accuracy_m": loc.AccuracyM,
+		"is_mocked":  loc.IsMocked,
+	}).Warn("presence scan rejected")
+}
+
+// appendStatusEvent writes a status-event log entry best-effort; a failure here
+// must not fail the duty transition (the timeline is a reporting aid).
+func (s *DEService) appendStatusEvent(ctx context.Context, event *models.DEStatusEvent) {
+	if s.statusEventRepo == nil {
+		return
+	}
+	if err := s.statusEventRepo.Append(ctx, event); err != nil {
+		s.logger.WithError(err).WithField("phone", event.Phone).
+			Warn("failed to append DE status event")
+	}
 }
 
 // EndDuty transitions the DE from eligible or free to offline.
@@ -165,8 +251,18 @@ func (s *DEService) EndDuty(ctx context.Context, dePhone string) error {
 		return op.Outcome("already_offline", fmt.Errorf("already offline"))
 	}
 
+	fromState := de.Status
 	if err := s.deRepo.UpdateStatus(ctx, dePhone, models.DEStatusOffline, "", ""); err != nil {
 		return op.Fail(fmt.Errorf("failed to update DE status: %w", err))
 	}
+
+	s.appendStatusEvent(ctx, &models.DEStatusEvent{
+		Phone:     dePhone,
+		FromState: fromState,
+		ToState:   models.DEStatusOffline,
+		Reason:    models.ReasonEndedDuty,
+		StoreID:   de.CurrentStoreID,
+		TS:        timezone.Now().UTC().Format(time.RFC3339),
+	})
 	return nil
 }
