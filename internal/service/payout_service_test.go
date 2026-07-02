@@ -134,3 +134,17 @@ func TestComputeCompletionPayout_OnTimeFalseWhenActualDurationUnavailable(t *tes
 		t.Fatal("expected on_time=false when actual delivery duration is unavailable")
 	}
 }
+
+func TestComputeCompletionPayout_CarriesDistanceKMThrough(t *testing.T) {
+	trip := &models.Trip{
+		DistanceKM:     7.3,
+		RateMultiplier: 1.0,
+		SLAMinutes:     30,
+	}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0}
+
+	got := computeCompletionPayout(trip, cfg)
+	if got.DistanceKM != 7.3 {
+		t.Fatalf("expected DistanceKM 7.3, got %.2f", got.DistanceKM)
+	}
+}

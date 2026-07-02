@@ -93,6 +93,7 @@ func (s *PayoutService) OnTripCompleted(ctx context.Context, trip *models.Trip, 
 		AmountZMW:   trip.TotalPayZMW,
 		CreatedAt:   now,
 		ReferenceID: trip.TripID,
+		DistanceKM:  trip.DistanceKM,
 	}
 	if err := s.earningsLedgerRepo.Append(ctx, tripEntry); err != nil {
 		s.logger.WithError(err).Error("payout: failed to write trip ledger entry")
