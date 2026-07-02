@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -250,4 +251,82 @@ func (r *DarkstoreRepository) listByScan(ctx context.Context, activeOnly bool) (
 // listActiveByScan scans the table for active darkstores only.
 func (r *DarkstoreRepository) listActiveByScan(ctx context.Context) ([]models.Darkstore, error) {
 	return r.listByScan(ctx, true)
+}
+
+// CreateDarkstoreInput carries the fields the admin API accepts. Kept as a
+// distinct struct (not *models.Darkstore) so the repository owns ID
+// generation, timestamps, and the is_active=false default.
+type CreateDarkstoreInput struct {
+	Name      string
+	Latitude  float64
+	Longitude float64
+	Polygon   []models.PolygonPoint // may be nil/empty — polygon is optional
+	OpensAt   string
+	ClosesAt  string
+}
+
+// Create allocates a new plain zero-padded darkstore ID (via the dedicated
+// COUNTER!DARKSTORE counter — see darkstore_id.go), writes the darkstore item,
+// and appends the new ID to the DARKSTORE/INDEX item so ListAll/ListActive
+// (servicability + assignment cron) pick it up immediately. is_active is
+// always false on create; ops flips it on later via a separate mechanism.
+func (r *DarkstoreRepository) Create(ctx context.Context, in CreateDarkstoreInput) (*models.Darkstore, error) {
+	op := logging.Start(ctx, r.logger, "Create", logrus.Fields{"name": in.Name})
+	defer op.End()
+
+	seq, err := nextDarkstoreCounter(ctx, r.client, r.tableName)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to allocate darkstore id: %w", err))
+	}
+	id := formatDarkstoreID(seq)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	ds := &models.Darkstore{
+		DarkstoreID: id,
+		Name:        in.Name,
+		Latitude:    in.Latitude,
+		Longitude:   in.Longitude,
+		Polygon:     in.Polygon,
+		IsActive:    false,
+		OpensAt:     in.OpensAt,
+		ClosesAt:    in.ClosesAt,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	item, err := attributevalue.MarshalMap(ds)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to marshal darkstore: %w", err))
+	}
+	item["PK"] = &types.AttributeValueMemberS{Value: ds.GetPK()}
+	item["SK"] = &types.AttributeValueMemberS{Value: ds.GetSK()}
+
+	if _, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(r.tableName),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+	}); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to create darkstore: %w", err))
+	}
+
+	// Index update is required, not best-effort: if it fails, surface the
+	// error so the caller can alert/retry, rather than silently returning
+	// success with a store that's invisible to ListAll's index path.
+	if _, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: darkstoreIndexPK},
+			"SK": &types.AttributeValueMemberS{Value: darkstoreIndexSK},
+		},
+		UpdateExpression: aws.String("ADD darkstore_ids :id SET updated_at = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":id":  &types.AttributeValueMemberSS{Value: []string{id}},
+			":now": &types.AttributeValueMemberS{Value: now},
+		},
+	}); err != nil {
+		return nil, op.Fail(fmt.Errorf("darkstore %s created but failed to update index: %w", id, err))
+	}
+
+	op.With("darkstore_id", id)
+	return ds, nil
 }

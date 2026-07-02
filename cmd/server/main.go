@@ -170,6 +170,7 @@ func main() {
 		cfg.S3.Bucket,
 		logger,
 	)
+	adminStoreHandlers := handlers.NewAdminStoreHandlers(darkstoreRepo, logger)
 	notificationHandlers := handlers.NewNotificationHandlers(notificationService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)
 
@@ -197,7 +198,7 @@ func main() {
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -306,6 +307,7 @@ func setupRouter(
 	adminRulesHandlers *handlers.AdminRulesHandlers,
 	adminAuthHandlers *handlers.AdminAuthHandlers,
 	adminDriverHandlers *handlers.AdminDriverHandlers,
+	adminStoreHandlers *handlers.AdminStoreHandlers,
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
@@ -380,6 +382,9 @@ func setupRouter(
 	// Driver onboarding: presign document upload, then create the driver.
 	admin.HandleFunc("/uploads/url", adminDriverHandlers.PresignDriverDoc).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers", adminDriverHandlers.CreateDriver).Methods("POST", "OPTIONS")
+
+	// Darkstore onboarding: create a new darkstore (create-only in v1; no list/edit).
+	admin.HandleFunc("/darkstores", adminStoreHandlers.CreateDarkstore).Methods("POST", "OPTIONS")
 
 	// Driver detail + sub-resources (specific paths before the generic /{phone}).
 	admin.HandleFunc("/drivers/{phone}/earnings", adminDriverHandlers.GetDriverEarnings).Methods("GET", "OPTIONS")
