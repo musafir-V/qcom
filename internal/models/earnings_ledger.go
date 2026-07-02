@@ -23,6 +23,7 @@ type EarningsLedger struct {
 	Label       string      `json:"label,omitempty" dynamodbav:"label,omitempty"`
 	CreatedAt   string      `json:"created_at" dynamodbav:"created_at"`
 	ReferenceID string      `json:"reference_id" dynamodbav:"reference_id"`
+	DistanceKM  float64     `json:"distance_km,omitempty" dynamodbav:"distance_km,omitempty"`
 }
 
 func (e *EarningsLedger) GetPK() string { return "EARN!" + e.DEID }
