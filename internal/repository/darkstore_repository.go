@@ -2,7 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -329,4 +332,156 @@ func (r *DarkstoreRepository) Create(ctx context.Context, in CreateDarkstoreInpu
 
 	op.With("darkstore_id", id)
 	return ds, nil
+}
+
+// UpdateDarkstoreInput carries a partial update: a nil field means "leave the
+// stored value unchanged". Mirrors CreateDarkstoreInput's field set minus
+// is_active (flip that via SetActive instead). Polygon uses
+// *[]models.PolygonPoint so "nil" (untouched) is distinguishable from
+// "non-nil empty slice" (explicitly clearing the polygon back to empty).
+type UpdateDarkstoreInput struct {
+	Name                 *string
+	Latitude             *float64
+	Longitude            *float64
+	Polygon              *[]models.PolygonPoint
+	OpensAt              *string
+	ClosesAt             *string
+	PresenceRadiusMeters *float64
+}
+
+// buildDarkstoreUpdateExpression is factored out as a pure function (no
+// DynamoDB client) so it's unit-testable without a live table.
+func buildDarkstoreUpdateExpression(in UpdateDarkstoreInput, now string) (expr string, values map[string]types.AttributeValue, names map[string]string, err error) {
+	setClauses := []string{"updated_at = :updated_at"}
+	values = map[string]types.AttributeValue{":updated_at": &types.AttributeValueMemberS{Value: now}}
+	names = map[string]string{}
+
+	if in.Name != nil {
+		// "name" is a DynamoDB reserved word — must alias via
+		// ExpressionAttributeNames or UpdateItem fails with a
+		// ValidationException: reserved keyword: name.
+		setClauses = append(setClauses, "#name = :name")
+		names["#name"] = "name"
+		values[":name"] = &types.AttributeValueMemberS{Value: *in.Name}
+	}
+	if in.Latitude != nil {
+		setClauses = append(setClauses, "latitude = :latitude")
+		values[":latitude"] = &types.AttributeValueMemberN{Value: strconv.FormatFloat(*in.Latitude, 'f', -1, 64)}
+	}
+	if in.Longitude != nil {
+		setClauses = append(setClauses, "longitude = :longitude")
+		values[":longitude"] = &types.AttributeValueMemberN{Value: strconv.FormatFloat(*in.Longitude, 'f', -1, 64)}
+	}
+	if in.Polygon != nil {
+		// MarshalList gracefully returns []types.AttributeValue{} (not NULL,
+		// not an error) for a nil/empty slice, so clearing the polygon back
+		// to empty works correctly.
+		list, merr := attributevalue.MarshalList(*in.Polygon)
+		if merr != nil {
+			return "", nil, nil, fmt.Errorf("failed to marshal polygon: %w", merr)
+		}
+		setClauses = append(setClauses, "polygon = :polygon")
+		values[":polygon"] = &types.AttributeValueMemberL{Value: list}
+	}
+	if in.OpensAt != nil {
+		setClauses = append(setClauses, "opens_at = :opens_at")
+		values[":opens_at"] = &types.AttributeValueMemberS{Value: *in.OpensAt}
+	}
+	if in.ClosesAt != nil {
+		setClauses = append(setClauses, "closes_at = :closes_at")
+		values[":closes_at"] = &types.AttributeValueMemberS{Value: *in.ClosesAt}
+	}
+	if in.PresenceRadiusMeters != nil {
+		setClauses = append(setClauses, "presence_radius_meters = :presence_radius_meters")
+		values[":presence_radius_meters"] = &types.AttributeValueMemberN{Value: strconv.FormatFloat(*in.PresenceRadiusMeters, 'f', -1, 64)}
+	}
+
+	return "SET " + strings.Join(setClauses, ", "), values, names, nil
+}
+
+// Update applies a partial update and returns the updated darkstore. Only
+// non-nil fields in `in` are modified; darkstore_id, is_active, created_at
+// are untouched. Returns (nil, nil) if the darkstore doesn't exist — mirrors
+// GetByID's not-found convention (not an error).
+func (r *DarkstoreRepository) Update(ctx context.Context, darkstoreID string, in UpdateDarkstoreInput) (*models.Darkstore, error) {
+	op := logging.Start(ctx, r.logger, "Update", logrus.Fields{"darkstore_id": darkstoreID})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	expr, values, names, err := buildDarkstoreUpdateExpression(in, now)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+
+	input := &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: darkstoreKeyPrefix + darkstoreID},
+			"SK": &types.AttributeValueMemberS{Value: darkstoreMetadataSK},
+		},
+		UpdateExpression:          aws.String(expr),
+		ExpressionAttributeValues: values,
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ReturnValues:              types.ReturnValueAllNew,
+	}
+	if len(names) > 0 {
+		input.ExpressionAttributeNames = names
+	}
+
+	result, err := r.client.UpdateItem(ctx, input)
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			op.With("found", false)
+			return nil, nil
+		}
+		return nil, op.Fail(fmt.Errorf("failed to update darkstore: %w", err))
+	}
+
+	var updated models.Darkstore
+	if err := attributevalue.UnmarshalMap(result.Attributes, &updated); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal updated darkstore: %w", err))
+	}
+	op.With("found", true)
+	return &updated, nil
+}
+
+// SetActive flips is_active and returns the updated darkstore, or (nil, nil)
+// if it doesn't exist. Does NOT enforce the activation-completeness gate —
+// that's models.Darkstore.ActivationBlockers(), checked by the handler
+// before calling SetActive(..., true). This method is a pure write.
+func (r *DarkstoreRepository) SetActive(ctx context.Context, darkstoreID string, active bool) (*models.Darkstore, error) {
+	op := logging.Start(ctx, r.logger, "SetActive", logrus.Fields{"darkstore_id": darkstoreID, "active": active})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: darkstoreKeyPrefix + darkstoreID},
+			"SK": &types.AttributeValueMemberS{Value: darkstoreMetadataSK},
+		},
+		UpdateExpression: aws.String("SET is_active = :active, updated_at = :updated_at"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":active":     &types.AttributeValueMemberBOOL{Value: active},
+			":updated_at": &types.AttributeValueMemberS{Value: now},
+		},
+		ConditionExpression: aws.String("attribute_exists(PK)"),
+		ReturnValues:        types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			op.With("found", false)
+			return nil, nil
+		}
+		return nil, op.Fail(fmt.Errorf("failed to set darkstore active state: %w", err))
+	}
+
+	var updated models.Darkstore
+	if err := attributevalue.UnmarshalMap(result.Attributes, &updated); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal darkstore: %w", err))
+	}
+	op.With("found", true)
+	return &updated, nil
 }

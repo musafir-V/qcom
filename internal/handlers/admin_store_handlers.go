@@ -7,13 +7,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gorilla/mux"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
 )
 
-// AdminStoreHandlers powers admin darkstore-onboarding flows. Create-only in
-// v1: no list/detail/edit endpoints. Sits behind RequireAdminAuth.
+// AdminStoreHandlers powers admin darkstore-onboarding flows. Supports
+// create, get, partial update, and activate/deactivate. Sits behind
+// RequireAdminAuth.
 type AdminStoreHandlers struct {
 	darkstoreRepo *repository.DarkstoreRepository
 	logger        *logrus.Logger
@@ -32,6 +34,39 @@ type createDarkstoreRequest struct {
 	Polygon  string `json:"polygon"`
 	OpensAt  string `json:"opens_at"`
 	ClosesAt string `json:"closes_at"`
+}
+
+type updateDarkstoreRequest struct {
+	Name      *string  `json:"name"`
+	Latitude  *float64 `json:"latitude"`
+	Longitude *float64 `json:"longitude"`
+	// Polygon: nil = leave unchanged; "" = explicitly clear it back to empty;
+	// non-empty = reparse via parsePolygonLines (same ≥3-point rule as create).
+	Polygon              *string  `json:"polygon"`
+	OpensAt              *string  `json:"opens_at"`
+	ClosesAt             *string  `json:"closes_at"`
+	PresenceRadiusMeters *float64 `json:"presence_radius_meters"`
+}
+
+// darkstoreDTO is the shared JSON response shape for all darkstore
+// read/write endpoints. Always includes activation_ready/activation_blockers
+// so the frontend never has to reimplement the activation gate.
+func darkstoreDTO(ds *models.Darkstore) map[string]interface{} {
+	return map[string]interface{}{
+		"darkstore_id":           ds.DarkstoreID,
+		"name":                   ds.Name,
+		"latitude":               ds.Latitude,
+		"longitude":              ds.Longitude,
+		"polygon":                ds.Polygon,
+		"presence_radius_meters": ds.EffectivePresenceRadiusMeters(),
+		"is_active":              ds.IsActive,
+		"opens_at":               ds.OpensAt,
+		"closes_at":              ds.ClosesAt,
+		"created_at":             ds.CreatedAt,
+		"updated_at":             ds.UpdatedAt,
+		"activation_ready":       ds.ReadyForActivation(),
+		"activation_blockers":    ds.ActivationBlockers(),
+	}
 }
 
 // POST /api/v1/admin/darkstores
@@ -105,6 +140,183 @@ func (h *AdminStoreHandlers) CreateDarkstore(w http.ResponseWriter, r *http.Requ
 		"name":         ds.Name,
 		"is_active":    ds.IsActive,
 	})
+}
+
+// GET /api/v1/admin/darkstores/{id}
+func (h *AdminStoreHandlers) GetDarkstore(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	ds, err := h.darkstoreRepo.GetByID(r.Context(), id)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to get darkstore")
+		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
+		return
+	}
+	if ds == nil {
+		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, darkstoreDTO(ds))
+}
+
+// PATCH /api/v1/admin/darkstores/{id}
+// Partial update: only fields present in the request body are changed.
+// Editing latitude/longitude/polygon is rejected while the store is active
+// (DARKSTORE_LOCATION_LOCKED) — deactivate first.
+func (h *AdminStoreHandlers) UpdateDarkstore(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+
+	current, err := h.darkstoreRepo.GetByID(r.Context(), id)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to load darkstore for update")
+		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
+		return
+	}
+	if current == nil {
+		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		return
+	}
+
+	var req updateDarkstoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if req.Name == nil && req.Latitude == nil && req.Longitude == nil && req.Polygon == nil &&
+		req.OpensAt == nil && req.ClosesAt == nil && req.PresenceRadiusMeters == nil {
+		h.respondWithError(w, http.StatusBadRequest, "EMPTY_UPDATE", "At least one field must be provided")
+		return
+	}
+
+	if (req.Latitude != nil || req.Longitude != nil || req.Polygon != nil) && current.IsActive {
+		h.respondWithError(w, http.StatusConflict, "DARKSTORE_LOCATION_LOCKED",
+			"Deactivate the darkstore before editing latitude, longitude, or polygon")
+		return
+	}
+
+	in := repository.UpdateDarkstoreInput{}
+
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name cannot be empty")
+			return
+		}
+		in.Name = &name
+	}
+	if req.Latitude != nil {
+		if *req.Latitude < -90 || *req.Latitude > 90 {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Latitude must be between -90 and 90")
+			return
+		}
+		in.Latitude = req.Latitude
+	}
+	if req.Longitude != nil {
+		if *req.Longitude < -180 || *req.Longitude > 180 {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Longitude must be between -180 and 180")
+			return
+		}
+		in.Longitude = req.Longitude
+	}
+	if req.Polygon != nil {
+		polygon, perr := parsePolygonLines(*req.Polygon)
+		if perr != nil {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_POLYGON", perr.Error())
+			return
+		}
+		in.Polygon = &polygon
+	}
+	if req.OpensAt != nil || req.ClosesAt != nil {
+		opens, closes := current.OpensAt, current.ClosesAt
+		if req.OpensAt != nil {
+			opens = strings.TrimSpace(*req.OpensAt)
+		}
+		if req.ClosesAt != nil {
+			closes = strings.TrimSpace(*req.ClosesAt)
+		}
+		probe := models.Darkstore{OpensAt: opens, ClosesAt: closes}
+		if !probe.ValidOperatingHours() {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_OPERATING_HOURS",
+				"opens_at/closes_at must be HH:MM and closes_at must be after opens_at")
+			return
+		}
+		if req.OpensAt != nil {
+			in.OpensAt = &opens
+		}
+		if req.ClosesAt != nil {
+			in.ClosesAt = &closes
+		}
+	}
+	if req.PresenceRadiusMeters != nil {
+		if *req.PresenceRadiusMeters < 0 {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_PRESENCE_RADIUS", "presence_radius_meters cannot be negative")
+			return
+		}
+		in.PresenceRadiusMeters = req.PresenceRadiusMeters
+	}
+
+	updated, err := h.darkstoreRepo.Update(r.Context(), id, in)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to update darkstore")
+		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_UPDATE_FAILED", "Failed to update darkstore")
+		return
+	}
+	if updated == nil {
+		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
+}
+
+// POST /api/v1/admin/darkstores/{id}/activate
+// Rejects with DARKSTORE_INCOMPLETE (409) if the store isn't ready per
+// models.Darkstore.ActivationBlockers().
+func (h *AdminStoreHandlers) ActivateDarkstore(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+
+	ds, err := h.darkstoreRepo.GetByID(r.Context(), id)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to load darkstore for activation")
+		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
+		return
+	}
+	if ds == nil {
+		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		return
+	}
+	if blockers := ds.ActivationBlockers(); len(blockers) > 0 {
+		h.respondWithError(w, http.StatusConflict, "DARKSTORE_INCOMPLETE",
+			"Darkstore is missing required fields: "+strings.Join(blockers, "; "))
+		return
+	}
+
+	updated, err := h.darkstoreRepo.SetActive(r.Context(), id, true)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to activate darkstore")
+		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_ACTIVATE_FAILED", "Failed to activate darkstore")
+		return
+	}
+	if updated == nil {
+		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
+}
+
+// POST /api/v1/admin/darkstores/{id}/deactivate
+// Unconditional — any active store can always be turned off, no gate.
+func (h *AdminStoreHandlers) DeactivateDarkstore(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	updated, err := h.darkstoreRepo.SetActive(r.Context(), id, false)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to deactivate darkstore")
+		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_DEACTIVATE_FAILED", "Failed to deactivate darkstore")
+		return
+	}
+	if updated == nil {
+		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
 }
 
 // parsePolygonLines parses one "lat,lng" pair per non-blank line. Empty input
