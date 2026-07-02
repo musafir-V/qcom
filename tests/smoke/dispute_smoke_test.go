@@ -137,7 +137,7 @@ type customerOrder struct {
 
 func fetchCustomerOrders(t *testing.T, customerID string, pageNum, pageSize int) []customerOrder {
 	t.Helper()
-	url := fmt.Sprintf("%s/api/v1/orders/customer/%s?pageNum=%d&pageSize=%d",
+	url := fmt.Sprintf("%s/order-service/api/v1/orders/customer/%s?pageNum=%d&pageSize=%d",
 		orderServiceURL, customerID, pageNum, pageSize)
 	resp, err := http.Get(url)
 	if err != nil {

@@ -114,7 +114,7 @@ func newTestJavaClient(serverURL string) *JavaOrderClient {
 func TestGetOrderRaw_ReturnsFullPayloadVerbatim(t *testing.T) {
 	const body = `{"orderNumber":"ORD123","status":"OUT_FOR_DELIVERY","grandTotal":42.5,"items":[{"sku":"SKU-1","quantity":2}],"delivery":{"address":"12 Cairo Rd","phone":"0971234567"}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/orders/ORD123" {
+		if r.URL.Path != "/order-service/api/v1/orders/ORD123" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusOK)

@@ -59,6 +59,10 @@ type JavaDelivery struct {
 	Name    string  `json:"name"`
 }
 
+// orderServicePathPrefix is prepended to every order-service request path.
+// The Java order-service is served behind this route prefix.
+const orderServicePathPrefix = "/order-service"
+
 type JavaOrderClient struct {
 	baseURL    string
 	httpClient *http.Client
@@ -86,8 +90,8 @@ func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID
 	pageSize := 50
 
 	for {
-		url := fmt.Sprintf("%s/api/v1/orders/store/%s?status=%s&pageNum=%d&pageSize=%d",
-			c.baseURL, storeID, eligibleOrderStatus, page, pageSize)
+		url := fmt.Sprintf("%s%s/api/v1/orders/store/%s?status=%s&pageNum=%d&pageSize=%d",
+			c.baseURL, orderServicePathPrefix, storeID, eligibleOrderStatus, page, pageSize)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -140,7 +144,7 @@ func (c *JavaOrderClient) GetNotificationTarget(ctx context.Context, orderRef st
 	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetNotificationTarget", logrus.Fields{"order_ref": orderRef})
 	defer op.End()
 
-	url := fmt.Sprintf("%s/internal/v1/orders/%s/notification-target", c.baseURL, orderRef)
+	url := fmt.Sprintf("%s%s/internal/v1/orders/%s/notification-target", c.baseURL, orderServicePathPrefix, orderRef)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, op.Fail(fmt.Errorf("failed to build request: %w", err))
@@ -174,7 +178,7 @@ func (c *JavaOrderClient) UpdateOrderStatus(ctx context.Context, orderID, status
 	})
 	defer op.End()
 
-	url := fmt.Sprintf("%s/api/v1/orders/%s/status", c.baseURL, orderID)
+	url := fmt.Sprintf("%s%s/api/v1/orders/%s/status", c.baseURL, orderServicePathPrefix, orderID)
 	body := fmt.Sprintf(`{"status":%q,"notes":"triggered by bunzo-qcom"}`, status)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
@@ -202,7 +206,7 @@ func (c *JavaOrderClient) GetOrderStatus(ctx context.Context, orderID string) (s
 	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetOrderStatus", logrus.Fields{"order_id": orderID})
 	defer op.End()
 
-	url := fmt.Sprintf("%s/api/v1/orders/%s", c.baseURL, orderID)
+	url := fmt.Sprintf("%s%s/api/v1/orders/%s", c.baseURL, orderServicePathPrefix, orderID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", op.Fail(fmt.Errorf("failed to build request: %w", err))
@@ -236,7 +240,7 @@ func (c *JavaOrderClient) GetOrderRaw(ctx context.Context, orderID string) (map[
 	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetOrderRaw", logrus.Fields{"order_id": orderID})
 	defer op.End()
 
-	url := fmt.Sprintf("%s/api/v1/orders/%s", c.baseURL, orderID)
+	url := fmt.Sprintf("%s%s/api/v1/orders/%s", c.baseURL, orderServicePathPrefix, orderID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, op.Fail(fmt.Errorf("failed to build request: %w", err))
