@@ -383,11 +383,12 @@ func setupRouter(
 	admin.HandleFunc("/uploads/url", adminDriverHandlers.PresignDriverDoc).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers", adminDriverHandlers.CreateDriver).Methods("POST", "OPTIONS")
 
-	// Darkstore onboarding: create a new darkstore (create-only in v1; no list/edit).
-	// Darkstore onboarding + management: create, look up, partial-edit, and
-	// activate/deactivate. Specific-before-generic ordering kept for consistency
-	// with the /drivers/{phone}/... convention above (no actual ambiguity here
-	// since mux matches by literal path segment + method).
+	// Darkstore onboarding + management: list, create, look up, partial-edit,
+	// and activate/deactivate. Specific-before-generic ordering kept for
+	// consistency with the /drivers/{phone}/... convention above (no actual
+	// ambiguity here since mux matches by literal path segment + method).
+	// GET /darkstores lists active stores (?all=true includes inactive).
+	admin.HandleFunc("/darkstores", adminStoreHandlers.ListDarkstores).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/darkstores", adminStoreHandlers.CreateDarkstore).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/darkstores/{id}/activate", adminStoreHandlers.ActivateDarkstore).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/darkstores/{id}/deactivate", adminStoreHandlers.DeactivateDarkstore).Methods("POST", "OPTIONS")

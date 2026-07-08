@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -13,11 +15,24 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// darkstoreStore is the subset of *repository.DarkstoreRepository the admin
+// handlers depend on. Declared as an interface so the HTTP layer (filtering,
+// sorting, response shaping) is unit-testable with a fake, without a live
+// DynamoDB table. *repository.DarkstoreRepository satisfies it.
+type darkstoreStore interface {
+	GetByID(ctx context.Context, darkstoreID string) (*models.Darkstore, error)
+	Create(ctx context.Context, in repository.CreateDarkstoreInput) (*models.Darkstore, error)
+	Update(ctx context.Context, darkstoreID string, in repository.UpdateDarkstoreInput) (*models.Darkstore, error)
+	SetActive(ctx context.Context, darkstoreID string, active bool) (*models.Darkstore, error)
+	ListAll(ctx context.Context) ([]models.Darkstore, error)
+	ListActive(ctx context.Context) ([]models.Darkstore, error)
+}
+
 // AdminStoreHandlers powers admin darkstore-onboarding flows. Supports
-// create, get, partial update, and activate/deactivate. Sits behind
+// create, list, get, partial update, and activate/deactivate. Sits behind
 // RequireAdminAuth.
 type AdminStoreHandlers struct {
-	darkstoreRepo *repository.DarkstoreRepository
+	darkstoreRepo darkstoreStore
 	logger        *logrus.Logger
 }
 
@@ -140,6 +155,43 @@ func (h *AdminStoreHandlers) CreateDarkstore(w http.ResponseWriter, r *http.Requ
 		"name":         ds.Name,
 		"is_active":    ds.IsActive,
 	})
+}
+
+// GET /api/v1/admin/darkstores
+// Returns active darkstores by default. Pass ?all=true (case-insensitive) to
+// include inactive ones too — any other value falls back to the active-only
+// default (lenient, never errors on a bad param). Results are sorted by
+// darkstore_id ascending so the admin list order is stable across refreshes.
+func (h *AdminStoreHandlers) ListDarkstores(w http.ResponseWriter, r *http.Request) {
+	includeAll := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("all")), "true")
+
+	var (
+		darkstores []models.Darkstore
+		err        error
+	)
+	if includeAll {
+		darkstores, err = h.darkstoreRepo.ListAll(r.Context())
+	} else {
+		darkstores, err = h.darkstoreRepo.ListActive(r.Context())
+	}
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to list darkstores")
+		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORES_LIST_FAILED", "Failed to list darkstores")
+		return
+	}
+
+	sort.Slice(darkstores, func(i, j int) bool {
+		return darkstores[i].DarkstoreID < darkstores[j].DarkstoreID
+	})
+
+	// Always emit a non-nil slice so the JSON is {"darkstores": []} rather
+	// than {"darkstores": null} when there are no stores.
+	items := make([]map[string]interface{}, 0, len(darkstores))
+	for i := range darkstores {
+		items = append(items, darkstoreDTO(&darkstores[i]))
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"darkstores": items})
 }
 
 // GET /api/v1/admin/darkstores/{id}
