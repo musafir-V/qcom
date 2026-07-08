@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,6 +125,7 @@ func (h *AdminDriverHandlers) GetDriver(w http.ResponseWriter, r *http.Request) 
 		"bike_number":           de.BikeNumber,
 		"bike_brand":            de.BikeBrand,
 		"referral_code":         de.ReferralCode,
+		"assigned_store_id":     de.AssignedStoreID,
 		"current_store_id":      de.CurrentStoreID,
 		"current_order_id":      de.CurrentOrderID,
 		"current_trip_id":       de.CurrentTripID,
@@ -434,6 +436,7 @@ func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Reques
 		AirtelMoneyNumber string `json:"airtel_money_number"`
 		BikeNumber        string `json:"bike_number"`
 		BikeBrand         string `json:"bike_brand"`
+		AssignedStoreID   string `json:"assigned_store_id"`
 		ReferralCode      string `json:"referral_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -478,6 +481,10 @@ func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Reques
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "bike_brand is required")
 		return
 	}
+	if strings.TrimSpace(req.AssignedStoreID) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "assigned_store_id is required")
+		return
+	}
 
 	de, err := h.deService.Register(r.Context(), service.RegisterDERequest{
 		PhoneNumber:       req.PhoneNumber,
@@ -489,11 +496,16 @@ func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Reques
 		AirtelMoneyNumber: strings.TrimSpace(req.AirtelMoneyNumber),
 		BikeNumber:        strings.TrimSpace(req.BikeNumber),
 		BikeBrand:         strings.TrimSpace(req.BikeBrand),
+		AssignedStoreID:   strings.TrimSpace(req.AssignedStoreID),
 		ReferralCode:      req.ReferralCode,
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already registered") {
 			h.respondWithError(w, http.StatusConflict, "DE_ALREADY_EXISTS", err.Error())
+			return
+		}
+		if strings.Contains(err.Error(), "not found") {
+			h.respondWithError(w, http.StatusBadRequest, "STORE_NOT_FOUND", err.Error())
 			return
 		}
 		h.logger.WithError(err).Error("admin: failed to register driver")
@@ -508,6 +520,118 @@ func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Reques
 		"status":        de.Status,
 		"referral_code": de.ReferralCode,
 		"created_at":    de.CreatedAt,
+	})
+}
+
+// defaultDriverListLimit / maxDriverListLimit bound the list endpoint's page size.
+const (
+	defaultDriverListLimit = 50
+	maxDriverListLimit     = 100
+)
+
+// GET /api/v1/admin/drivers?assigned_store_id=&name=&cursor=&limit=
+// Lists drivers assigned to a darkstore (or the Unassigned bucket), ordered by
+// name, with optional case-insensitive name prefix filter and cursor pagination.
+// Pass assigned_store_id="UNASSIGNED" (or empty) for unassigned drivers.
+func (h *AdminDriverHandlers) ListDrivers(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if _, ok := q["assigned_store_id"]; !ok {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "assigned_store_id is required (use UNASSIGNED for unassigned drivers)")
+		return
+	}
+	storeID := strings.TrimSpace(q.Get("assigned_store_id"))
+	if strings.EqualFold(storeID, models.UnassignedStoreSentinel) {
+		storeID = ""
+	}
+	namePrefix := strings.TrimSpace(q.Get("name"))
+	cursor := strings.TrimSpace(q.Get("cursor"))
+
+	limit := int32(defaultDriverListLimit)
+	if raw := strings.TrimSpace(q.Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			if n > maxDriverListLimit {
+				n = maxDriverListLimit
+			}
+			limit = int32(n)
+		}
+	}
+
+	des, nextCursor, err := h.deService.ListDriversByStore(r.Context(), storeID, namePrefix, cursor, limit)
+	if err != nil {
+		if strings.Contains(err.Error(), "invalid cursor") {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_CURSOR", "Invalid pagination cursor")
+			return
+		}
+		h.logger.WithError(err).Error("admin: failed to list drivers")
+		h.respondWithError(w, http.StatusInternalServerError, "DRIVER_LIST_FAILED", "Failed to list drivers")
+		return
+	}
+
+	type driverSummary struct {
+		DEID            string `json:"de_id"`
+		PhoneNumber     string `json:"phone_number"`
+		Name            string `json:"name"`
+		Status          string `json:"status"`
+		ProfileURL      string `json:"profile_url"`
+		ProfileViewURL  string `json:"profile_view_url"`
+		AssignedStoreID string `json:"assigned_store_id"`
+	}
+	items := make([]driverSummary, 0, len(des))
+	for _, de := range des {
+		items = append(items, driverSummary{
+			DEID:            de.DEID,
+			PhoneNumber:     de.PhoneNumber,
+			Name:            de.Name,
+			Status:          string(de.Status),
+			ProfileURL:      de.ProfileURL,
+			ProfileViewURL:  h.docViewURL(r.Context(), de.ProfileURL),
+			AssignedStoreID: de.AssignedStoreID,
+		})
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"drivers":     items,
+		"next_cursor": nextCursor,
+	})
+}
+
+// PATCH /api/v1/admin/drivers/{phone}/assigned-store
+// Body: { "assigned_store_id": "221" }  (empty string unassigns).
+// Reassigns a driver's permanent home darkstore. The store must exist (inactive
+// allowed). Active duty is not disturbed.
+func (h *AdminDriverHandlers) UpdateAssignedStore(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	var req struct {
+		AssignedStoreID string `json:"assigned_store_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	storeID := strings.TrimSpace(req.AssignedStoreID)
+
+	if err := h.deService.ReassignStore(r.Context(), phone, storeID); err != nil {
+		errStr := err.Error()
+		switch {
+		case strings.Contains(errStr, "delivery executive not found"):
+			h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		case strings.Contains(errStr, "not found"):
+			h.respondWithError(w, http.StatusBadRequest, "STORE_NOT_FOUND", errStr)
+		default:
+			h.logger.WithError(err).Error("admin: failed to reassign driver store")
+			h.respondWithError(w, http.StatusInternalServerError, "REASSIGN_FAILED", "Failed to update assigned store")
+		}
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"phone_number":      phone,
+		"assigned_store_id": storeID,
 	})
 }
 

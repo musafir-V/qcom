@@ -45,12 +45,21 @@ type RegisterDERequest struct {
 	AirtelMoneyNumber string
 	BikeNumber        string
 	BikeBrand         string
+	AssignedStoreID   string // permanent home darkstore; empty = unassigned
 	ReferralCode      string // optional — code of the DE that referred this one
 }
 
 func (s *DEService) Register(ctx context.Context, req RegisterDERequest) (*models.DeliveryExecutive, error) {
 	op := logging.Start(ctx, s.logger, "Register", logrus.Fields{"phone": req.PhoneNumber})
 	defer op.End()
+
+	// A permanent home darkstore must reference a real store. Self-service
+	// registration leaves this empty (unassigned); admin onboarding requires it.
+	if req.AssignedStoreID != "" {
+		if err := s.validateStoreExists(ctx, req.AssignedStoreID); err != nil {
+			return nil, op.Fail(err)
+		}
+	}
 
 	// Generate a unique referral code for this new DE
 	referralCode, err := s.referralService.GenerateUniqueCode(ctx)
@@ -68,6 +77,7 @@ func (s *DEService) Register(ctx context.Context, req RegisterDERequest) (*model
 		AirtelMoneyNumber: req.AirtelMoneyNumber,
 		BikeNumber:        req.BikeNumber,
 		BikeBrand:         req.BikeBrand,
+		AssignedStoreID:   req.AssignedStoreID,
 		Status:            models.DEStatusOffline,
 		ReferralCode:      referralCode,
 	}
@@ -84,6 +94,56 @@ func (s *DEService) Register(ctx context.Context, req RegisterDERequest) (*model
 	}
 
 	return de, nil
+}
+
+// validateStoreExists confirms a darkstore ID references a real store. Inactive
+// stores are allowed (a temporarily-deactivated store is still a valid home for
+// a rider); only unknown IDs are rejected. The "darkstore ... not found" wording
+// is matched by handlers to return a STORE_NOT_FOUND 400.
+func (s *DEService) validateStoreExists(ctx context.Context, storeID string) error {
+	ds, err := s.darkstoreRepo.GetByID(ctx, storeID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch darkstore %s: %w", storeID, err)
+	}
+	if ds == nil {
+		return fmt.Errorf("darkstore %s not found", storeID)
+	}
+	return nil
+}
+
+// ReassignStore sets (or, with an empty storeID, clears) a DE's permanent home
+// darkstore. The store must exist (inactive allowed). Active duty is untouched:
+// the change only gates the DE's next duty-start scan.
+func (s *DEService) ReassignStore(ctx context.Context, phone, storeID string) error {
+	op := logging.Start(ctx, s.logger, "ReassignStore", logrus.Fields{
+		"phone": phone, "assigned_store_id": storeID,
+	})
+	defer op.End()
+
+	if storeID != "" {
+		if err := s.validateStoreExists(ctx, storeID); err != nil {
+			return op.Fail(err)
+		}
+	}
+	if err := s.deRepo.UpdateAssignedStore(ctx, phone, storeID); err != nil {
+		return op.Fail(err)
+	}
+	return nil
+}
+
+// ListDriversByStore returns a page of DEs assigned to a store, ordered by name.
+// storeID may be empty to list unassigned drivers. namePrefix is an optional
+// case-insensitive name prefix filter. cursor/limit drive pagination.
+func (s *DEService) ListDriversByStore(ctx context.Context, storeID, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error) {
+	op := logging.Start(ctx, s.logger, "ListDriversByStore", logrus.Fields{"store_id": storeID})
+	defer op.End()
+
+	indexKey := models.AssignedStoreIndexKeyFor(storeID)
+	des, next, err := s.deRepo.ListByAssignedStore(ctx, indexKey, models.NameLower(namePrefix), cursor, limit)
+	if err != nil {
+		return nil, "", op.Fail(err)
+	}
+	return des, next, nil
 }
 
 func (s *DEService) GetDE(ctx context.Context, phone string) (*models.DeliveryExecutive, error) {
@@ -153,6 +213,15 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc S
 
 	if err := s.qrService.ValidateQRCode(qrCode, storeID); err != nil {
 		return "", op.Fail(err)
+	}
+
+	// Assigned-darkstore enforcement: a DE may only start duty at their permanent
+	// home store. Unassigned DEs are blocked entirely until an admin assigns one.
+	if de.AssignedStoreID == "" {
+		return "", op.Outcome("no_assigned_store", fmt.Errorf("no assigned darkstore; contact admin to be assigned to a store before starting duty"))
+	}
+	if de.AssignedStoreID != storeID {
+		return "", op.Outcome("store_mismatch", fmt.Errorf("assigned darkstore mismatch: you are assigned to store %s; scan in at your assigned darkstore", de.AssignedStoreID))
 	}
 
 	// Anti-spoof + geofence. Log every rejection with coords for fraud review.

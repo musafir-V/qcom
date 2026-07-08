@@ -76,7 +76,33 @@ func registerDE(t *testing.T, phone string) string {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("registerDE(%s): expected 201, got %d: %v", phone, resp.StatusCode, result)
 	}
+	// Self-registration leaves the DE unassigned, but duty-start now requires a
+	// matching assigned darkstore. Assign the test store so duty-start tests work.
+	assignDEStore(t, phone, testStoreID)
 	return result["de_id"].(string)
+}
+
+// assignDEStore directly sets a DE's permanent assigned darkstore in DynamoDB,
+// keeping the AssignedStoreIndex key in sync. Bypasses the admin API so test
+// setup stays lightweight (no admin token needed).
+func assignDEStore(t *testing.T, phone, storeID string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := dynamoClient.UpdateItem(context.Background(), &dynamodb.UpdateItemInput{
+		TableName: aws.String(testTableName),
+		Key: map[string]dynamodbtypes.AttributeValue{
+			"PK": &dynamodbtypes.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &dynamodbtypes.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String("SET assigned_store_id = :store, assigned_store_index_key = :store, updated_at = :now"),
+		ExpressionAttributeValues: map[string]dynamodbtypes.AttributeValue{
+			":store": &dynamodbtypes.AttributeValueMemberS{Value: storeID},
+			":now":   &dynamodbtypes.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		t.Fatalf("assignDEStore(%s, %s): %v", phone, storeID, err)
+	}
 }
 
 // authenticateDE registers (if needed) and logs in a DE, returning tokens.

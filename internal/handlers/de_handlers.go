@@ -185,6 +185,10 @@ func (h *DEHandlers) StartDuty(w http.ResponseWriter, r *http.Request) {
 			code = "LOCATION_INACCURATE"
 		case strings.Contains(errStr, "geofence"):
 			code = "OUTSIDE_GEOFENCE"
+		case strings.Contains(errStr, "no assigned darkstore"):
+			code = "NO_ASSIGNED_STORE"
+		case strings.Contains(errStr, "assigned darkstore mismatch"):
+			code = "STORE_MISMATCH"
 		case strings.Contains(errStr, "in-hand cash limit"):
 			status = http.StatusConflict
 			code = "CASH_LIMIT_EXCEEDED"

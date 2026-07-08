@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -17,6 +19,50 @@ import (
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
+
+// encodeCursor serializes a DynamoDB LastEvaluatedKey into an opaque, URL-safe
+// pagination token. The AssignedStoreIndex keys (table PK/SK + GSI hash/sort)
+// are all string attributes, so we flatten to a string map before encoding.
+// Returns "" for an empty/absent key (i.e. the last page).
+func encodeCursor(lastKey map[string]types.AttributeValue) (string, error) {
+	if len(lastKey) == 0 {
+		return "", nil
+	}
+	flat := make(map[string]string, len(lastKey))
+	for k, v := range lastKey {
+		s, ok := v.(*types.AttributeValueMemberS)
+		if !ok {
+			return "", fmt.Errorf("unexpected non-string key attribute %q in cursor", k)
+		}
+		flat[k] = s.Value
+	}
+	raw, err := json.Marshal(flat)
+	if err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(raw), nil
+}
+
+// decodeCursor reverses encodeCursor. An empty token yields a nil start key
+// (first page).
+func decodeCursor(cursor string) (map[string]types.AttributeValue, error) {
+	if strings.TrimSpace(cursor) == "" {
+		return nil, nil
+	}
+	raw, err := base64.URLEncoding.DecodeString(cursor)
+	if err != nil {
+		return nil, err
+	}
+	var flat map[string]string
+	if err := json.Unmarshal(raw, &flat); err != nil {
+		return nil, err
+	}
+	key := make(map[string]types.AttributeValue, len(flat))
+	for k, v := range flat {
+		key[k] = &types.AttributeValueMemberS{Value: v}
+	}
+	return key, nil
+}
 
 // ErrCashDepositConflict is returned when a cash-deposit transaction is
 // cancelled — either the in-hand balance changed since it was read, or the
@@ -48,6 +94,12 @@ func (r *DERepository) Create(ctx context.Context, de *models.DeliveryExecutive)
 	de.CreatedAt = now
 	de.UpdatedAt = now
 	de.Status = models.DEStatusOffline
+
+	// Keep the AssignedStoreIndex attributes consistent with the assigned store
+	// and name so the DE is queryable by store (or the Unassigned bucket) and by
+	// name prefix from the moment it is created.
+	de.AssignedStoreIndexKey = models.AssignedStoreIndexKeyFor(de.AssignedStoreID)
+	de.NameLower = models.NameLower(de.Name)
 
 	if de.DEID == "" {
 		id, err := r.idGen.NextID(ctx, ids.DE)
@@ -127,6 +179,124 @@ func (r *DERepository) Exists(ctx context.Context, phone string) (bool, error) {
 	found := result.Item != nil
 	op.With("found", found)
 	return found, nil
+}
+
+// ErrDENotFound is returned when an update targets a DE that does not exist.
+var ErrDENotFound = errors.New("delivery executive not found")
+
+// UpdateAssignedStore sets (or clears) the DE's permanent home darkstore and
+// keeps the AssignedStoreIndex hash key in sync. Pass an empty assignedStoreID
+// to unassign (the index key falls back to the UNASSIGNED sentinel). This does
+// NOT touch current_store_id / duty_index_key / status — an on-duty rider stays
+// on duty; the new assignment only gates their next duty-start scan. Returns
+// ErrDENotFound if the DE does not exist.
+func (r *DERepository) UpdateAssignedStore(ctx context.Context, phone, assignedStoreID string) error {
+	op := logging.Start(ctx, r.logger, "UpdateAssignedStore", logrus.Fields{
+		"phone": phone, "assigned_store_id": assignedStoreID,
+	})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	indexKey := models.AssignedStoreIndexKeyFor(assignedStoreID)
+
+	setItems := []string{"assigned_store_index_key = :idx", "updated_at = :now"}
+	values := map[string]types.AttributeValue{
+		":idx": &types.AttributeValueMemberS{Value: indexKey},
+		":now": &types.AttributeValueMemberS{Value: now},
+	}
+	var removeItems []string
+	if strings.TrimSpace(assignedStoreID) == "" {
+		removeItems = append(removeItems, "assigned_store_id")
+	} else {
+		setItems = append(setItems, "assigned_store_id = :store")
+		values[":store"] = &types.AttributeValueMemberS{Value: assignedStoreID}
+	}
+
+	expr := "SET " + strings.Join(setItems, ", ")
+	if len(removeItems) > 0 {
+		expr += " REMOVE " + strings.Join(removeItems, ", ")
+	}
+
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:          aws.String(expr),
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ExpressionAttributeValues: values,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return op.Outcome("not_found", ErrDENotFound)
+		}
+		return op.Fail(fmt.Errorf("failed to update assigned store: %w", err))
+	}
+	return nil
+}
+
+// ListByAssignedStore returns a page of DEs whose permanent home darkstore is
+// indexKey (a store ID, or models.UnassignedStoreSentinel), ordered by name
+// via the AssignedStoreIndex GSI. namePrefix (already lowercased by the caller)
+// applies a begins_with on the name_lower sort key. cursor is an opaque token
+// from a previous call; pass "" for the first page. Returns the page and the
+// next cursor ("" when exhausted).
+func (r *DERepository) ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error) {
+	op := logging.Start(ctx, r.logger, "ListByAssignedStore", logrus.Fields{
+		"index_key": indexKey, "name_prefix": namePrefix,
+	})
+	defer op.End()
+
+	keyCond := "assigned_store_index_key = :idx"
+	values := map[string]types.AttributeValue{
+		":idx": &types.AttributeValueMemberS{Value: indexKey},
+	}
+	if namePrefix != "" {
+		keyCond += " AND begins_with(name_lower, :prefix)"
+		values[":prefix"] = &types.AttributeValueMemberS{Value: namePrefix}
+	}
+
+	startKey, err := decodeCursor(cursor)
+	if err != nil {
+		return nil, "", op.Outcome("bad_cursor", fmt.Errorf("invalid cursor: %w", err))
+	}
+
+	input := &dynamodb.QueryInput{
+		TableName:                 aws.String(r.tableName),
+		IndexName:                 aws.String("AssignedStoreIndex"),
+		KeyConditionExpression:    aws.String(keyCond),
+		ExpressionAttributeValues: values,
+		ScanIndexForward:          aws.Bool(true),
+		ExclusiveStartKey:         startKey,
+	}
+	if limit > 0 {
+		input.Limit = aws.Int32(limit)
+	}
+
+	result, err := r.client.Query(ctx, input)
+	if err != nil {
+		return nil, "", op.Fail(fmt.Errorf("failed to query DEs by assigned store: %w", err))
+	}
+
+	des := make([]*models.DeliveryExecutive, 0, len(result.Items))
+	for _, item := range result.Items {
+		var de models.DeliveryExecutive
+		if err := attributevalue.UnmarshalMap(item, &de); err != nil {
+			op.Logger().WithError(err).Warn("failed to unmarshal DE; skipping")
+			continue
+		}
+		des = append(des, &de)
+	}
+
+	nextCursor, err := encodeCursor(result.LastEvaluatedKey)
+	if err != nil {
+		return nil, "", op.Fail(fmt.Errorf("failed to encode cursor: %w", err))
+	}
+
+	op.With("count", len(des))
+	return des, nextCursor, nil
 }
 
 // UpdateStatus transitions the DE to a new status and updates related fields.

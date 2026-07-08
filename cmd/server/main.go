@@ -382,6 +382,8 @@ func setupRouter(
 	// Driver onboarding: presign document upload, then create the driver.
 	admin.HandleFunc("/uploads/url", adminDriverHandlers.PresignDriverDoc).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers", adminDriverHandlers.CreateDriver).Methods("POST", "OPTIONS")
+	// List drivers by assigned darkstore (or Unassigned), name-searchable.
+	admin.HandleFunc("/drivers", adminDriverHandlers.ListDrivers).Methods("GET", "OPTIONS")
 
 	// Darkstore onboarding + management: list, create, look up, partial-edit,
 	// and activate/deactivate. Specific-before-generic ordering kept for
@@ -406,6 +408,7 @@ func setupRouter(
 	admin.HandleFunc("/drivers/{phone}/trip/pickup/complete", adminDriverHandlers.AdminCompletePickup).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/drop/complete", adminDriverHandlers.AdminCompleteDrop).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip", adminDriverHandlers.GetDriverTrip).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/assigned-store", adminDriverHandlers.UpdateAssignedStore).Methods("PATCH", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}", adminDriverHandlers.GetDriver).Methods("GET", "OPTIONS")
 
 	// Ops cash-deposit + disbursement recording (now gated under /admin).

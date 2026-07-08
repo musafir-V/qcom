@@ -1,6 +1,15 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// UnassignedStoreSentinel is the assigned_store_index_key value for a DE that
+// has no permanent home darkstore yet. Keeping a sentinel (rather than an empty
+// key) keeps every DE present in the AssignedStoreIndex GSI so admins can query
+// the "Unassigned" bucket to find and assign them.
+const UnassignedStoreSentinel = "UNASSIGNED"
 
 type DEStatus string
 
@@ -22,6 +31,23 @@ func DutyIndexKeyOnDuty(storeID string) string {
 	return "DE_ONDUTY#" + storeID
 }
 
+// AssignedStoreIndexKeyFor builds the AssignedStoreIndex partition value for a
+// DE's permanent home darkstore: the raw store ID when assigned, or the
+// UNASSIGNED sentinel when the DE has no assigned store yet. This keeps the GSI
+// non-sparse so the "Unassigned" bucket is queryable.
+func AssignedStoreIndexKeyFor(assignedStoreID string) string {
+	if strings.TrimSpace(assignedStoreID) == "" {
+		return UnassignedStoreSentinel
+	}
+	return assignedStoreID
+}
+
+// NameLower normalizes a name for the AssignedStoreIndex sort key, giving
+// case-insensitive ordering and begins_with prefix search.
+func NameLower(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
 // IsOnline reports whether a status counts as online for presence accounting:
 // eligible, busy, and free are all online; only offline is not.
 func (s DEStatus) IsOnline() bool {
@@ -40,6 +66,19 @@ type DeliveryExecutive struct {
 	BikeNumber        string `json:"bike_number" dynamodbav:"bike_number"`
 	BikeBrand         string `json:"bike_brand" dynamodbav:"bike_brand"`
 	Status      DEStatus `json:"status" dynamodbav:"status"`
+	// AssignedStoreID is the DE's permanent "home" darkstore, set by an admin at
+	// onboarding (and editable later). Unlike CurrentStoreID (ephemeral live-duty
+	// location) this persists across duty sessions. A DE may only start duty by
+	// scanning the QR of this store. Empty means unassigned.
+	AssignedStoreID string `json:"assigned_store_id,omitempty" dynamodbav:"assigned_store_id,omitempty"`
+	// AssignedStoreIndexKey is the AssignedStoreIndex GSI hash key: the assigned
+	// store ID, or the UNASSIGNED sentinel when no store is assigned. Always kept
+	// in sync with AssignedStoreID so every DE is queryable by store (or the
+	// Unassigned bucket).
+	AssignedStoreIndexKey string `json:"assigned_store_index_key,omitempty" dynamodbav:"assigned_store_index_key,omitempty"`
+	// NameLower is the lowercased Name, used as the AssignedStoreIndex sort key
+	// for case-insensitive name ordering and begins_with prefix search.
+	NameLower string `json:"name_lower,omitempty" dynamodbav:"name_lower,omitempty"`
 	// Set to "DE_ONDUTY#{storeId}" while the DE is eligible OR free (on-duty),
 	// cleared for busy/offline. Used by the DEDutyIndex GSI so both the
 	// assignment cron (filter status=eligible) and the presence sweep

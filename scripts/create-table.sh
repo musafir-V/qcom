@@ -158,6 +158,15 @@ create_gsi "ReferralCodeIndex" \
   '[{"Create":{"IndexName":"ReferralCodeIndex","KeySchema":[{"AttributeName":"referral_code","KeyType":"HASH"}],"Projection":{"ProjectionType":"ALL"}}}]' \
   "AttributeName=referral_code,AttributeType=S"
 
+# AssignedStoreIndex — admin: list drivers by permanent home darkstore, ordered
+# by name (name_lower) for case-insensitive begins_with prefix search. Every DE
+# sets assigned_store_index_key (the store ID or the UNASSIGNED sentinel) so the
+# index is non-sparse and the Unassigned bucket is queryable.
+create_gsi "AssignedStoreIndex" \
+  '[{"Create":{"IndexName":"AssignedStoreIndex","KeySchema":[{"AttributeName":"assigned_store_index_key","KeyType":"HASH"},{"AttributeName":"name_lower","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]' \
+  "AttributeName=assigned_store_index_key,AttributeType=S" \
+  "AttributeName=name_lower,AttributeType=S"
+
 echo "All GSIs provisioned."
 
 # Enable TTL on the table
