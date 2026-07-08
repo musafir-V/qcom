@@ -339,7 +339,7 @@ func setupServer() (*httptest.Server, error) {
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	uploadService := service.NewUploadService(s3c, &cfg.S3, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
-	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, testGeocoder, testETAService, logger, false)
+	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, testGeocoder, testETAService, logger, false, nil)
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
 	javaOrderClient := service.NewJavaOrderClient("http://localhost:9", logger)

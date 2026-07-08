@@ -21,6 +21,13 @@ const (
 	ReasonOutsideDeliveryZone = "outside_delivery_zone"
 	ReasonStoreInactive       = "store_inactive"
 	ReasonStoreClosed         = "store_closed"
+
+	// bypassDarkstoreID is the fixed dummy store returned for allowlisted users
+	// (SERVICEABILITY_BYPASS_USER_IDS) whose polygon check is skipped.
+	bypassDarkstoreID = "100"
+	// bypassETAMinutes is the hardcoded ETA returned on the bypass path (there
+	// is no real darkstore behind bypassDarkstoreID to compute one from).
+	bypassETAMinutes = 7
 )
 
 // OperatingHours is the daily schedule surfaced to the customer app.
@@ -57,6 +64,10 @@ type ServiceabilityService struct {
 	etaService     ETAProvider
 	logger         *logrus.Logger
 	isTest         bool
+	// bypassUserIDs is the set of JWT entity_ids that skip the polygon check and
+	// always receive a serviceable result for bypassDarkstoreID. Lookups are
+	// case-sensitive (keys are stored verbatim).
+	bypassUserIDs map[string]struct{}
 }
 
 func NewServiceabilityService(
@@ -66,7 +77,14 @@ func NewServiceabilityService(
 	etaService ETAProvider,
 	logger *logrus.Logger,
 	isTest bool,
+	bypassUserIDs []string,
 ) *ServiceabilityService {
+	bypass := make(map[string]struct{}, len(bypassUserIDs))
+	for _, id := range bypassUserIDs {
+		if id != "" {
+			bypass[id] = struct{}{}
+		}
+	}
 	return &ServiceabilityService{
 		darkstoreRepo:  darkstoreRepo,
 		addressService: addressService,
@@ -74,6 +92,32 @@ func NewServiceabilityService(
 		etaService:     etaService,
 		logger:         logger,
 		isTest:         isTest,
+		bypassUserIDs:  bypass,
+	}
+}
+
+// isBypassUser reports whether userID is in the serviceability bypass allowlist.
+// Empty user ids (e.g. guests) never match.
+func (s *ServiceabilityService) isBypassUser(userID string) bool {
+	if userID == "" {
+		return false
+	}
+	_, ok := s.bypassUserIDs[userID]
+	return ok
+}
+
+// newBypassResult builds the base synthetic serviceable result for an
+// allowlisted user: always serviceable, fixed dummy store, operational, with a
+// hardcoded ETA. The resolved address is filled in separately by the caller so
+// this stays a pure, dependency-free builder (used directly by unit tests).
+func newBypassResult() *ServiceabilityResult {
+	isOp := true
+	eta := bypassETAMinutes
+	return &ServiceabilityResult{
+		Serviceable:   true,
+		DarkstoreID:   bypassDarkstoreID,
+		IsOperational: &isOp,
+		ETAMinutes:    &eta,
 	}
 }
 
@@ -86,6 +130,29 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 		"lng":     lng,
 	})
 	defer op.End()
+
+	// Allowlisted users bypass the polygon check entirely and always get a
+	// serviceable result for the fixed dummy store. Runs before any darkstore
+	// lookup so it is independent of DDB / IS_TEST. The address is still
+	// resolved through the normal saved-address -> geocode path.
+	if s.isBypassUser(userID) {
+		op.Logger().Warn("user in serviceability bypass allowlist; skipping polygon check")
+		op.With("serviceable", true).
+			With("darkstore_id", bypassDarkstoreID).
+			With("bypass", true)
+		result := newBypassResult()
+
+		resolved, err := s.resolveFromSavedAddress(ctx, userID, lat, lng)
+		if err != nil {
+			return nil, op.Fail(err)
+		}
+		if resolved != nil {
+			result.ResolvedAddress = resolved
+			return result, nil
+		}
+		result.ResolvedAddress = s.resolveFromGeocode(ctx, lat, lng)
+		return result, nil
+	}
 
 	darkstores, err := s.darkstoreRepo.ListAll(ctx)
 	if err != nil {

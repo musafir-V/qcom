@@ -21,6 +21,7 @@ type Config struct {
 	Firebase FirebaseConfig
 	Dispute  DisputeConfig
 	VonageVoice VoiceConfig
+	Serviceability ServiceabilityConfig
 	IsTest   bool
 }
 
@@ -91,6 +92,15 @@ type DisputeConfig struct {
 	EligibleOrderStatuses []string
 }
 
+type ServiceabilityConfig struct {
+	// BypassUserIDs is the allowlist of JWT entity_ids for which the polygon
+	// serviceability check is skipped and a fixed dummy store is returned.
+	// Populated from SERVICEABILITY_BYPASS_USER_IDS (comma-separated); empty
+	// disables the feature. Matching is case-sensitive, so entries are NOT
+	// uppercased (unlike DISPUTE_ELIGIBLE_ORDER_STATUSES).
+	BypassUserIDs []string
+}
+
 func loadVoiceConfig() VoiceConfig {
 	return VoiceConfig{
 		AppID:           getEnv("VONAGE_VOICE_APP_ID", ""),
@@ -148,6 +158,9 @@ func Load() (*Config, error) {
 			EligibleOrderStatuses: splitAndTrim(getEnv("DISPUTE_ELIGIBLE_ORDER_STATUSES", "DELIVERED")),
 		},
 		VonageVoice: loadVoiceConfig(),
+		Serviceability: ServiceabilityConfig{
+			BypassUserIDs: splitAndTrimPreserveCase(getEnv("SERVICEABILITY_BYPASS_USER_IDS", "")),
+		},
 		// IS_TEST (or IS_TRUE): skip polygon check; use first active darkstore from DDB.
 		IsTest: envBool("IS_TEST") || envBool("IS_TRUE"),
 	}
@@ -213,6 +226,21 @@ func splitAndTrim(csv string) []string {
 	for _, p := range parts {
 		if t := strings.TrimSpace(p); t != "" {
 			out = append(out, strings.ToUpper(t))
+		}
+	}
+	return out
+}
+
+// splitAndTrimPreserveCase splits a comma-separated string, trims whitespace
+// from each element, and drops empty entries WITHOUT changing case. Used for
+// values matched verbatim (e.g. JWT entity_ids) where uppercasing would break
+// the comparison.
+func splitAndTrimPreserveCase(csv string) []string {
+	parts := strings.Split(csv, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
 		}
 	}
 	return out

@@ -84,7 +84,7 @@ func main() {
 		logger,
 	)
 	etaService := service.NewETAService(etaCacheRepo, cfg.Google.MapsAPIKey, logger)
-	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest)
+	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest, cfg.Serviceability.BypassUserIDs)
 	qrService := service.NewQRService(logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
 	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, logger)
