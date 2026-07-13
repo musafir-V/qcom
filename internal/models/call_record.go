@@ -1,6 +1,6 @@
 package models
 
-const CallCapPerDirection = 10
+const CallCapPerDirection = 100
 
 // CallRecord persists per-call lifecycle data, keyed under the trip.
 // PK = "TRIP!" + TripID, SK = "CALL!" + CallID.
