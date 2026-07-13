@@ -43,6 +43,15 @@ put '{
   "allowed_entity_types": {"L": [{"S": "customer"}]}
 }'
 
+put '{
+  "PK": {"S": "CONFIG"}, "SK": {"S": "UPLOAD_USECASE!picker_photo"},
+  "use_case": {"S": "picker_photo"}, "bucket": {"S": "'"$BUCKET"'"},
+  "key_prefix": {"S": "picker"},
+  "allowed_mime_types": {"L": [{"S": "image/jpeg"}, {"S": "image/png"}, {"S": "image/heic"}]},
+  "max_file_size": {"N": "10485760"},
+  "allowed_entity_types": {"L": [{"S": "picker"}]}
+}'
+
 # --- Dispute dispositions (Help & Support screen) ---
 # args: code title subtitle photos_required photo_min description_required display_order
 disposition() {

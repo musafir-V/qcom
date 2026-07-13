@@ -4,9 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/qcom/qcom/internal/service"
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	pickerUploadUseCase    = "picker_photo"
+	pickerUploadEntityType = "picker"
 )
 
 type UploadHandlers struct {
@@ -20,6 +26,13 @@ func NewUploadHandlers(uploadService *service.UploadService, logger *logrus.Logg
 
 type GenerateUploadURLRequest struct {
 	UseCase  string `json:"use_case"`
+	FileName string `json:"file_name"`
+	FileType string `json:"file_type"`
+	FileSize int64  `json:"file_size"`
+}
+
+type InternalPickerUploadURLRequest struct {
+	EntityID string `json:"entity_id"`
 	FileName string `json:"file_name"`
 	FileType string `json:"file_type"`
 	FileSize int64  `json:"file_size"`
@@ -69,6 +82,75 @@ func (h *UploadHandlers) GetViewURL(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status, code := classifyUploadError(err)
 		h.logger.WithError(err).WithField("use_case", useCase).Warn("upload view presign failed")
+		msg := err.Error()
+		if status >= 500 {
+			msg = "Something went wrong, please try again"
+		}
+		h.respondWithError(w, status, code, msg)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(GenerateViewURLResponse{
+		ViewURL:          result.ViewURL,
+		ObjectKey:        objectKey,
+		ExpiresInSeconds: result.ExpiresInSeconds,
+	})
+}
+
+// GenerateInternalPickerUploadURL is an unauthenticated, service-to-service presign
+// endpoint locked to pickers. It forces use_case=picker_photo and entity_type=picker;
+// the picker id is supplied by the trusted internal caller (order-service).
+func (h *UploadHandlers) GenerateInternalPickerUploadURL(w http.ResponseWriter, r *http.Request) {
+	var req InternalPickerUploadURLRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.EntityID) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "entity_id is required")
+		return
+	}
+
+	result, err := h.uploadService.GeneratePresignedURL(r.Context(), pickerUploadUseCase, pickerUploadEntityType, req.EntityID, req.FileName, req.FileType, req.FileSize)
+	if err != nil {
+		status, code := classifyUploadError(err)
+		h.logger.WithError(err).WithField("use_case", pickerUploadUseCase).Warn("upload presign failed")
+		msg := err.Error()
+		if status >= 500 {
+			msg = "Something went wrong, please try again"
+		}
+		h.respondWithError(w, status, code, msg)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(GenerateUploadURLResponse{
+		FileID:           result.FileID,
+		UploadURL:        result.UploadURL,
+		ObjectKey:        result.ObjectKey,
+		ExpiresInSeconds: result.ExpiresInSeconds,
+		MaxFileSize:      result.MaxFileSize,
+	})
+}
+
+// GetInternalPickerViewURL is an unauthenticated, service-to-service presigned GET
+// endpoint locked to pickers. It forces use_case=picker_photo and entity_type=picker;
+// the picker id is supplied by the trusted internal caller (order-service).
+func (h *UploadHandlers) GetInternalPickerViewURL(w http.ResponseWriter, r *http.Request) {
+	entityID := r.URL.Query().Get("entity_id")
+	objectKey := r.URL.Query().Get("object_key")
+	if strings.TrimSpace(entityID) == "" || strings.TrimSpace(objectKey) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "entity_id and object_key query params are required")
+		return
+	}
+
+	result, err := h.uploadService.GeneratePresignedViewURL(r.Context(), pickerUploadUseCase, pickerUploadEntityType, entityID, objectKey)
+	if err != nil {
+		status, code := classifyUploadError(err)
+		h.logger.WithError(err).WithField("use_case", pickerUploadUseCase).Warn("upload view presign failed")
 		msg := err.Error()
 		if status >= 500 {
 			msg = "Something went wrong, please try again"

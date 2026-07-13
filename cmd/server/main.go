@@ -489,6 +489,10 @@ func setupRouter(
 	internal.HandleFunc("/notifications/send", notificationHandlers.SendNotification).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/cancel-by-order", tripHandlers.CancelTripByOrder).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/payment/update", tripHandlers.UpdateTripPaymentByOrder).Methods("POST", "OPTIONS")
+	// Picker-locked, unauthenticated, service-to-service upload endpoints
+	// (order-service proxies picker uploads; relies on network isolation).
+	internal.HandleFunc("/uploads/url", uploadHandlers.GenerateInternalPickerUploadURL).Methods("POST", "OPTIONS")
+	internal.HandleFunc("/uploads/view-url", uploadHandlers.GetInternalPickerViewURL).Methods("GET", "OPTIONS")
 
 	// VoIP token endpoint — accepts both customer and DE JWTs (RequireAuth).
 	voice := api.PathPrefix("/voice").Subrouter()
