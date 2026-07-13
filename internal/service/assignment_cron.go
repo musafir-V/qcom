@@ -16,7 +16,6 @@ import (
 )
 
 const (
-	defaultStoreID  = "221"
 	cronInterval    = 10 * time.Second
 	cronLockTTLSecs = 30
 
@@ -151,7 +150,8 @@ func (c *AssignmentCron) runTick() {
 }
 
 func (c *AssignmentCron) tick(ctx context.Context) {
-	// 1. Fetch payout config (used for base_pay computation)
+	// 1. Fetch config shared across all stores (used for base_pay, accept window,
+	// and cash-limit checks).
 	cfg, err := c.payoutConfigRepo.Get(ctx)
 	if err != nil {
 		c.logger.WithError(err).Error("assignment cron: failed to fetch payout config — skipping tick")
@@ -165,20 +165,6 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 	}
 	autoRejectSecs := acfg.EffectiveAutoRejectSeconds()
 
-	// 2. Fetch READY_FOR_DELIVERY orders from Java
-	orders, err := c.javaClient.GetReadyForDeliveryOrders(ctx, defaultStoreID)
-	if err != nil {
-		c.logger.WithError(err).Error("assignment cron: failed to fetch READY_FOR_DELIVERY orders — skipping tick")
-		return
-	}
-
-	// 3. Fetch eligible DEs (FIFO)
-	eligibleDEs, err := c.deRepo.FindEligibleByStoreFIFO(ctx, defaultStoreID)
-	if err != nil {
-		c.logger.WithError(err).Error("assignment cron: failed to fetch eligible DEs — skipping tick")
-		return
-	}
-
 	cashCfg, err := c.cashConfigRepo.Get(ctx)
 	if err != nil {
 		c.logger.WithError(err).Error("assignment cron: failed to fetch cash config — skipping tick")
@@ -186,7 +172,51 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 	}
 	cashLimit := cashCfg.EffectiveLimitZMW()
 
-	// 4. For each READY_FOR_DELIVERY order: check trip existence in parallel
+	// 2. Fetch every active darkstore and run the assignment pipeline for each
+	// one independently, so a failure for one store is logged and skipped rather
+	// than starving the others.
+	stores, err := c.darkstoreRepo.ListActive(ctx)
+	if err != nil {
+		c.logger.WithError(err).Error("assignment cron: failed to list active darkstores — skipping tick")
+		return
+	}
+
+	now := timezone.Now()
+	for _, store := range stores {
+		c.processStore(ctx, store.DarkstoreID, cfg, autoRejectSecs, cashLimit, now)
+	}
+}
+
+// processStore runs the order→trip→DE assignment pipeline for a single
+// darkstore: fetch its READY_FOR_DELIVERY orders and eligible DEs, create any
+// missing trips, assign pooled trips FIFO, and sweep missed scans. Errors are
+// logged with the store id and cause only this store to be skipped; other
+// active stores in the same tick are unaffected.
+func (c *AssignmentCron) processStore(
+	ctx context.Context,
+	storeID string,
+	cfg *models.PayoutConfig,
+	autoRejectSecs int,
+	cashLimit float64,
+	now time.Time,
+) {
+	// Fetch READY_FOR_DELIVERY orders from Java for this store.
+	orders, err := c.javaClient.GetReadyForDeliveryOrders(ctx, storeID)
+	if err != nil {
+		c.logger.WithError(err).WithField("store_id", storeID).
+			Error("assignment cron: failed to fetch READY_FOR_DELIVERY orders — skipping store")
+		return
+	}
+
+	// Fetch eligible DEs (FIFO) for this store.
+	eligibleDEs, err := c.deRepo.FindEligibleByStoreFIFO(ctx, storeID)
+	if err != nil {
+		c.logger.WithError(err).WithField("store_id", storeID).
+			Error("assignment cron: failed to fetch eligible DEs — skipping store")
+		return
+	}
+
+	// For each READY_FOR_DELIVERY order: check trip existence in parallel
 	type orderResult struct {
 		order       JavaOrder
 		trip        *models.Trip
@@ -215,13 +245,12 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 	}
 	wg.Wait()
 
-	// 5. Detect cancellations: check active trips whose order is no longer READY_FOR_DELIVERY
+	// Detect cancellations: check active trips whose order is no longer READY_FOR_DELIVERY
 	c.detectCancellations(ctx, orders)
 
-	// 5b. Auto-reject trips whose accept window expired — revert to pool so the
+	// Auto-reject trips whose accept window expired — revert to pool so the
 	// assign step below re-offers them (to a different DE, since the rejecter is
 	// now in rejected_de_ids).
-	now := timezone.Now()
 	for i := range results {
 		t := results[i].trip
 		if t == nil || !isAcceptExpired(t, now) {
@@ -258,7 +287,7 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 		wg.Add(1)
 		go func(o JavaOrder) {
 			defer wg.Done()
-			trip, err := c.createTrip(ctx, o, cfg)
+			trip, err := c.createTrip(ctx, o, cfg, storeID)
 			createCh <- createResult{trip: trip, err: err}
 		}(r.order)
 	}
@@ -359,8 +388,8 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 		}
 	}
 
-	// 8. Presence sweep: auto-offline on-duty riders whose scan deadline passed.
-	c.sweepMissedScans(ctx, defaultStoreID, now)
+	// Presence sweep: auto-offline on-duty riders whose scan deadline passed.
+	c.sweepMissedScans(ctx, storeID, now)
 }
 
 // sweepMissedScans flips on-duty riders (eligible/free) offline once their scan
@@ -459,16 +488,18 @@ func stampAssignmentDecision(trip *models.Trip, cfg *models.PayoutConfig, assign
 	trip.RateFlatZMW = decision.FlatZMW
 }
 
-func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *models.PayoutConfig) (*models.Trip, error) {
+func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *models.PayoutConfig, fallbackStoreID string) (*models.Trip, error) {
 	orderID := order.EffectiveOrderID()
 	if orderID == "" {
 		return nil, fmt.Errorf("order has no orderId or orderNumber")
 	}
 	order.OrderID = orderID
 
+	// The order should carry its own store, but Java may send it empty; fall
+	// back to the store this tick is currently processing.
 	storeID := order.StoreID
 	if storeID == "" {
-		storeID = defaultStoreID
+		storeID = fallbackStoreID
 	}
 
 	ds, err := c.darkstoreRepo.GetByID(ctx, storeID)

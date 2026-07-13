@@ -18,7 +18,7 @@ type JavaOrder struct {
 	OrderNumber string          `json:"orderNumber"`
 	Status      string          `json:"status"`
 	Delivery    JavaDelivery    `json:"delivery"`
-	StoreID     string          `json:"storeId"` // may be empty; cron defaults to defaultStoreID
+	StoreID     string          `json:"storeId"` // may be empty; cron falls back to the store it is processing
 	Items       []JavaOrderItem `json:"items"`
 
 	PaymentMethod string  `json:"paymentMethod"`

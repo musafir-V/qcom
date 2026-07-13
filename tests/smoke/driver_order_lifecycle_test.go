@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// assignmentStoreID matches internal/service/assignment_cron.go defaultStoreID.
-// The DE must start duty at this store for the cron to offer READY_FOR_DELIVERY orders.
+// assignmentStoreID is the active darkstore this smoke test drives. The
+// assignment cron now processes every active darkstore each tick; the DE must
+// start duty at this store for the cron to offer its READY_FOR_DELIVERY orders.
 const assignmentStoreID = "221"
 
 const (
