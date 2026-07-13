@@ -169,3 +169,40 @@ func TestGetOrderRaw_ServerErrorReturnsError(t *testing.T) {
 		t.Fatal("expected error for 500, got nil")
 	}
 }
+
+// The order-service serializes storeId as a JSON number (it's a Java Long), or
+// omits it entirely. Decoding must not fail on the number, and every returned
+// order must be stamped with the store the cron queried — since the per-store
+// endpoint only ever returns orders for that store.
+func TestGetReadyForDeliveryOrders_StampsStoreIDAndToleratesNumericStoreId(t *testing.T) {
+	const body = `{
+		"content": [
+			{"orderNumber": "ORD1037370658", "status": "READY_FOR_DELIVERY", "storeId": 100,
+			 "delivery": {"address": "1 Main", "latitude": -15.4, "longitude": 28.3, "phone": "0970000000"},
+			 "items": []}
+		],
+		"meta": {"last": true}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/order-service/api/v1/orders/store/100"; got != want {
+			t.Errorf("unexpected path %q, want %q", got, want)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	orders, err := newTestJavaClient(srv.URL).GetReadyForDeliveryOrders(context.Background(), "100")
+	if err != nil {
+		t.Fatalf("GetReadyForDeliveryOrders error (numeric storeId must not break decode): %v", err)
+	}
+	if len(orders) != 1 {
+		t.Fatalf("expected 1 order, got %d", len(orders))
+	}
+	if got, want := orders[0].StoreID, "100"; got != want {
+		t.Errorf("StoreID not stamped from queried store: got %q, want %q", got, want)
+	}
+	if got, want := orders[0].EffectiveOrderID(), "ORD1037370658"; got != want {
+		t.Errorf("order id = %q, want %q", got, want)
+	}
+}

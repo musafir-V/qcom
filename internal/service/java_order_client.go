@@ -18,7 +18,11 @@ type JavaOrder struct {
 	OrderNumber string          `json:"orderNumber"`
 	Status      string          `json:"status"`
 	Delivery    JavaDelivery    `json:"delivery"`
-	StoreID     string          `json:"storeId"` // may be empty; cron falls back to the store it is processing
+	// StoreID is intentionally not decoded from the order-service response: the
+	// payload either omits it or serializes it as a number, and every order
+	// returned by the per-store query belongs to that store anyway. It is
+	// populated from the store the cron queried — see GetReadyForDeliveryOrders.
+	StoreID string `json:"-"`
 	Items       []JavaOrderItem `json:"items"`
 
 	PaymentMethod string  `json:"paymentMethod"`
@@ -120,6 +124,9 @@ func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID
 
 		for i := range paged.Content {
 			paged.Content[i].normalizeOrderID()
+			// The order-service response doesn't carry a (string) storeId, but we
+			// queried this specific store, so every order in it belongs to storeID.
+			paged.Content[i].StoreID = storeID
 		}
 		allOrders = append(allOrders, paged.Content...)
 		if paged.Meta.Last {
