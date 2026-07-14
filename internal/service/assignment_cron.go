@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/qcom/qcom/internal/metrics"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/timezone"
@@ -185,6 +186,9 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 	for _, store := range stores {
 		c.processStore(ctx, store.DarkstoreID, cfg, autoRejectSecs, cashLimit, now)
 	}
+
+	// Stamp cron liveness after processing every active store this tick.
+	metrics.MarkCronRun()
 }
 
 // processStore runs the order→trip→DE assignment pipeline for a single
@@ -203,6 +207,7 @@ func (c *AssignmentCron) processStore(
 	// Fetch READY_FOR_DELIVERY orders from Java for this store.
 	orders, err := c.javaClient.GetReadyForDeliveryOrders(ctx, storeID)
 	if err != nil {
+		metrics.IncCronStoreError(storeID, "fetch_orders")
 		c.logger.WithError(err).WithField("store_id", storeID).
 			Error("assignment cron: failed to fetch READY_FOR_DELIVERY orders — skipping store")
 		return
@@ -211,9 +216,21 @@ func (c *AssignmentCron) processStore(
 	// Fetch eligible DEs (FIFO) for this store.
 	eligibleDEs, err := c.deRepo.FindEligibleByStoreFIFO(ctx, storeID)
 	if err != nil {
+		metrics.IncCronStoreError(storeID, "fetch_des")
 		c.logger.WithError(err).WithField("store_id", storeID).
 			Error("assignment cron: failed to fetch eligible DEs — skipping store")
 		return
+	}
+
+	// On-duty (present) rider count for the riders_at_pod gauge. Best-effort:
+	// on failure we record an error and leave the previous gauge value rather
+	// than reporting a false zero — the assignment pipeline still proceeds.
+	if onDuty, odErr := c.deRepo.FindOnDutyByStore(ctx, storeID); odErr != nil {
+		metrics.IncCronStoreError(storeID, "fetch_onduty")
+		c.logger.WithError(odErr).WithField("store_id", storeID).
+			Warn("assignment cron: failed to fetch on-duty riders for metrics")
+	} else {
+		metrics.SetCronRidersAtPod(storeID, len(onDuty))
 	}
 
 	// For each READY_FOR_DELIVERY order: check trip existence in parallel
@@ -294,6 +311,9 @@ func (c *AssignmentCron) processStore(
 	wg.Wait()
 	close(createCh)
 
+	// distanceFailedCount tracks orders that createTrip persisted as
+	// distance_failed — the only path that returns (nil, nil).
+	distanceFailedCount := 0
 	for cr := range createCh {
 		if cr.err != nil {
 			c.logger.WithError(cr.err).Warn("assignment cron: failed to create trip — will retry next tick")
@@ -301,6 +321,8 @@ func (c *AssignmentCron) processStore(
 		}
 		if cr.trip != nil {
 			newTrips = append(newTrips, cr.trip)
+		} else {
+			distanceFailedCount++
 		}
 	}
 
@@ -319,6 +341,7 @@ func (c *AssignmentCron) processStore(
 	// Assign each unassigned trip to the first eligible DE that has not already
 	// rejected it and is not already taken this tick.
 	usedDE := make(map[string]bool)
+	assignedCount := 0
 	for _, trip := range unassigned {
 		for _, de := range eligibleDEs {
 			if usedDE[de.DEID] || trip.HasRejected(de.DEID) || de.CashExceeds(cashLimit) {
@@ -353,6 +376,7 @@ func (c *AssignmentCron) processStore(
 				continue
 			}
 			usedDE[de.DEID] = true
+			assignedCount++
 			c.logger.WithFields(logrus.Fields{
 				"trip_id": trip.TripID, "de_id": de.DEID,
 			}).Info("assignment cron: trip assigned")
@@ -387,6 +411,18 @@ func (c *AssignmentCron) processStore(
 			break
 		}
 	}
+
+	// trips_left_out: trips that were candidates for assignment this tick but
+	// still have no rider afterwards (no eligible/free rider, all rejected, or
+	// cash-blocked).
+	leftOut := 0
+	for _, trip := range unassigned {
+		if trip.DEID == "" {
+			leftOut++
+		}
+	}
+
+	metrics.RecordCronStore(storeID, len(orders), len(eligibleDEs), leftOut, len(newTrips), assignedCount, distanceFailedCount)
 
 	// Presence sweep: auto-offline on-duty riders whose scan deadline passed.
 	c.sweepMissedScans(ctx, storeID, now)

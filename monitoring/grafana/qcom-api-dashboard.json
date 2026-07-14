@@ -92,6 +92,25 @@
         "regex": "",
         "sort": 1,
         "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "definition": "label_values(assignment_cron_orders_ready{env=~\"$env\"}, store)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Store",
+        "multi": true,
+        "name": "store",
+        "options": [],
+        "query": {
+          "query": "label_values(assignment_cron_orders_ready{env=~\"$env\"}, store)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
       }
     ]
   },
@@ -697,6 +716,232 @@
         }
       ],
       "title": "Top 10 endpoints by error rate (5xx)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 },
+      "id": 15,
+      "title": "Assignment Cron (per store)",
+      "type": "row",
+      "panels": []
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Cron liveness: seconds since the assignment cron last completed a tick. Should stay near 0 (cron runs every 10s).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 30 }, { "color": "red", "value": 60 } ] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 43 },
+      "id": 16,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "11.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "time() - max(assignment_cron_last_run_timestamp_seconds{env=~\"$env\"})",
+          "legendFormat": "since last run",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cron liveness (s since last run)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "READY_FOR_DELIVERY orders returned by the order service, per store (latest tick).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisPlacement": "auto", "drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "stepAfter", "lineWidth": 2, "showPoints": "never" },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 9, "x": 6, "y": 43 },
+      "id": 17,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "max by (store) (assignment_cron_orders_ready{env=~\"$env\", store=~\"$store\"})",
+          "legendFormat": "{{store}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Orders ready (from order service)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Unassigned trips remaining after each tick's assign loop (backlog), per store.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisPlacement": "auto", "drawStyle": "line", "fillOpacity": 20, "lineInterpolation": "stepAfter", "lineWidth": 2, "showPoints": "never" },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 9, "x": 15, "y": 43 },
+      "id": 18,
+      "options": {
+        "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "max by (store) (assignment_cron_trips_left_out{env=~\"$env\", store=~\"$store\"})",
+          "legendFormat": "{{store}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Trips left out (unassigned backlog)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Riders present at the store (on-duty) vs eligible (FIFO-assignable), per store.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisPlacement": "auto", "drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "stepAfter", "lineWidth": 2, "showPoints": "never" },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*eligible.*" }, "properties": [ { "id": "custom.lineStyle", "value": { "dash": [8, 4], "fill": "dash" } } ] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 50 },
+      "id": 19,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "max by (store) (assignment_cron_riders_at_pod{env=~\"$env\", store=~\"$store\"})",
+          "legendFormat": "{{store}} at-pod",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "max by (store) (assignment_cron_eligible_riders{env=~\"$env\", store=~\"$store\"})",
+          "legendFormat": "{{store}} eligible",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Riders at pod vs eligible",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Trips created and successfully assigned by the cron, per store (per minute).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisPlacement": "auto", "drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 2, "showPoints": "never" },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*created.*" }, "properties": [ { "id": "custom.lineStyle", "value": { "dash": [8, 4], "fill": "dash" } } ] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 50 },
+      "id": 20,
+      "options": {
+        "legend": { "calcs": ["mean", "sum"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "60 * sum by (store) (rate(assignment_cron_trips_created_total{env=~\"$env\", store=~\"$store\"}[5m]))",
+          "legendFormat": "{{store}} created/min",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "60 * sum by (store) (rate(assignment_cron_trips_assigned_total{env=~\"$env\", store=~\"$store\"}[5m]))",
+          "legendFormat": "{{store}} assigned/min",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Trips created vs assigned (per min)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "description": "Distance-failed trip persists and per-stage cron errors, per store (per minute). Should normally be ~0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisPlacement": "auto", "drawStyle": "line", "fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 2, "showPoints": "auto" },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 58 },
+      "id": 21,
+      "options": {
+        "legend": { "calcs": ["sum", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "60 * sum by (store) (rate(assignment_cron_trips_distance_failed_total{env=~\"$env\", store=~\"$store\"}[5m]))",
+          "legendFormat": "{{store}} distance_failed/min",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "editorMode": "code",
+          "expr": "60 * sum by (store, stage) (rate(assignment_cron_store_errors_total{env=~\"$env\", store=~\"$store\"}[5m]))",
+          "legendFormat": "{{store}} error:{{stage}}/min",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Cron errors & distance-failed (per min)",
       "type": "timeseries"
     }
   ]
