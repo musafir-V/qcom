@@ -29,6 +29,10 @@ type ServerConfig struct {
 	Port         string
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+	// MetricsPort is the port for the internal, localhost-only Prometheus
+	// metrics server (/metrics). It is intentionally separate from Port so the
+	// public ALB never routes to it.
+	MetricsPort string
 }
 
 type DynamoDBConfig struct {
@@ -116,6 +120,7 @@ func Load() (*Config, error) {
 			Port:         getEnv("PORT", "8080"),
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
+			MetricsPort:  getEnv("METRICS_PORT", "2112"),
 		},
 		DynamoDB: DynamoDBConfig{
 			Endpoint:  getEnv("DYNAMODB_ENDPOINT", ""),

@@ -237,4 +237,20 @@ else
   echo "CloudWatch agent started — log group /qcom/production"
 fi
 
+# --- Grafana Alloy (scrapes 127.0.0.1:2112/metrics → Grafana Cloud) -----------
+# Installs and starts Alloy so this instance ships qcom API metrics to Grafana
+# Cloud. Credentials are read from SSM (/qcom/prod/GRAFANA_CLOUD_*) by the
+# installer. Non-fatal: a monitoring failure must not stop the instance from
+# serving traffic or pass/fail the ASG health check.
+set +e
+QCOM_ENV=production AWS_REGION="${REGION}" \
+  "${APP_DIR}/monitoring/alloy/install-alloy.sh"
+ALLOY_EXIT=$?
+set -e
+if [[ "${ALLOY_EXIT}" -ne 0 ]]; then
+  echo "WARNING: Grafana Alloy setup failed (exit ${ALLOY_EXIT}); continuing bootstrap"
+else
+  echo "Grafana Alloy started — remote-writing to Grafana Cloud (env=production)"
+fi
+
 echo "=== qcom bootstrap complete at $(date) ==="

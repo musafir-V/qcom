@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/qcom/qcom/internal/config"
 	"github.com/qcom/qcom/internal/handlers"
+	"github.com/qcom/qcom/internal/metrics"
 	"github.com/qcom/qcom/internal/middleware"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
@@ -207,10 +208,27 @@ func main() {
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
 
+	// Internal metrics server, bound to loopback only so /metrics is never
+	// reachable via the ALB/public API. Grafana Alloy scrapes it locally.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", metrics.Handler())
+	metricsAddr := "127.0.0.1:" + cfg.Server.MetricsPort
+	metricsSrv := &http.Server{
+		Addr:    metricsAddr,
+		Handler: metricsMux,
+	}
+
 	go func() {
 		logger.WithField("port", cfg.Server.Port).Info("Starting server")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.WithError(err).Fatal("Server failed to start")
+		}
+	}()
+
+	go func() {
+		logger.WithField("addr", metricsAddr).Info("Starting metrics server")
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.WithError(err).Error("Metrics server failed")
 		}
 	}()
 
@@ -228,6 +246,10 @@ func main() {
 
 	logger.Info("Stopping assignment cron...")
 	assignmentCron.Stop()
+
+	if err := metricsSrv.Shutdown(ctx); err != nil {
+		logger.WithError(err).Error("Metrics server forced to shutdown")
+	}
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.WithError(err).Fatal("Server forced to shutdown")
@@ -325,6 +347,7 @@ func setupRouter(
 	router.Use(middleware.CORSMiddleware)
 	router.Use(middleware.TraceIDMiddleware)
 	router.Use(middleware.LoggingMiddleware(logger))
+	router.Use(middleware.MetricsMiddleware)
 
 	webhooks := router.PathPrefix("/webhooks").Subrouter()
 	webhooks.HandleFunc("/outbound-whatsapp-message-status", webhookHandlers.OutboundWhatsAppMessageStatus).Methods("POST", "OPTIONS")

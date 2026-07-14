@@ -1,0 +1,35 @@
+// qcom Grafana Alloy configuration.
+//
+// Runs on each qcom host (staging box + every prod ASG instance). It scrapes
+// the qcom internal metrics endpoint on loopback and remote-writes the samples
+// to Grafana Cloud. Secrets and the environment name are supplied via
+// environment variables in /etc/default/alloy (populated from SSM at install
+// time by install-alloy.sh) — never hard-coded here.
+
+prometheus.scrape "qcom" {
+  targets = [
+    {
+      __address__ = "127.0.0.1:2112",
+      job         = "qcom",
+      // env distinguishes staging vs production in the shared Grafana Cloud
+      // stack; instance identifies the specific host/ASG box.
+      env      = sys.env("QCOM_ENV"),
+      instance = constants.hostname,
+    },
+  ]
+
+  scrape_interval = "15s"
+  metrics_path    = "/metrics"
+  forward_to      = [prometheus.remote_write.grafanacloud.receiver]
+}
+
+prometheus.remote_write "grafanacloud" {
+  endpoint {
+    url = sys.env("GRAFANA_CLOUD_PROM_URL")
+
+    basic_auth {
+      username = sys.env("GRAFANA_CLOUD_PROM_USER")
+      password = sys.env("GRAFANA_CLOUD_PROM_API_KEY")
+    }
+  }
+}
