@@ -129,9 +129,12 @@ func TestHandleScan_BotStillRedirectsFlaggedNotUnique(t *testing.T) {
 		campaign:  &models.QRCampaign{CampaignID: "QC1", Enabled: true},
 	}
 	s := newSvc(store)
-	dest, _ := s.HandleScan(context.Background(), "abc", "WhatsApp/2.23", "")
+	dest, unique := s.HandleScan(context.Background(), "abc", "WhatsApp/2.23", "")
 	if dest != WebFallbackURL {
 		t.Errorf("bot UA is 'other' platform → web fallback, got %q", dest)
+	}
+	if unique {
+		t.Error("bot scan must not be counted unique")
 	}
 	if len(store.recorded) != 1 || !store.recorded[0].isBot {
 		t.Errorf("bot scan should be recorded with is_bot=true: %+v", store.recorded)

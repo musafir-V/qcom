@@ -220,6 +220,7 @@ func (r *QRRepository) CreatePlacement(ctx context.Context, p *models.QRPlacemen
 			":s":   &types.AttributeValueMemberSS{Value: []string{p.Slug}},
 			":now": &types.AttributeValueMemberS{Value: now},
 		},
+		ConditionExpression: aws.String("attribute_exists(PK)"),
 	})
 	if err != nil {
 		return op.Fail(fmt.Errorf("failed to register slug on campaign: %w", err))
@@ -420,25 +421,33 @@ func (r *QRRepository) QueryScanEvents(ctx context.Context, slug, fromISO, toISO
 	op := logging.Start(ctx, r.logger, "QRRepository.QueryScanEvents", logrus.Fields{"slug": slug})
 	defer op.End()
 
-	res, err := r.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(r.tableName),
-		KeyConditionExpression: aws.String("PK = :pk AND SK BETWEEN :from AND :to"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":pk":   &types.AttributeValueMemberS{Value: models.QRPlacementPKPrefix + slug},
-			":from": &types.AttributeValueMemberS{Value: models.ScanEventSKPrefix + fromISO},
-			":to":   &types.AttributeValueMemberS{Value: models.ScanEventSKPrefix + toISO + "~"},
-		},
-	})
-	if err != nil {
-		return nil, op.Fail(fmt.Errorf("failed to query scan events: %w", err))
-	}
 	var out []*models.QRScanEvent
-	for _, it := range res.Items {
-		var e models.QRScanEvent
-		if err := attributevalue.UnmarshalMap(it, &e); err != nil {
-			continue
+	var startKey map[string]types.AttributeValue
+	for {
+		res, err := r.client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(r.tableName),
+			KeyConditionExpression: aws.String("PK = :pk AND SK BETWEEN :from AND :to"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":pk":   &types.AttributeValueMemberS{Value: models.QRPlacementPKPrefix + slug},
+				":from": &types.AttributeValueMemberS{Value: models.ScanEventSKPrefix + fromISO},
+				":to":   &types.AttributeValueMemberS{Value: models.ScanEventSKPrefix + toISO + "~"},
+			},
+			ExclusiveStartKey: startKey,
+		})
+		if err != nil {
+			return nil, op.Fail(fmt.Errorf("failed to query scan events: %w", err))
 		}
-		out = append(out, &e)
+		for _, it := range res.Items {
+			var e models.QRScanEvent
+			if err := attributevalue.UnmarshalMap(it, &e); err != nil {
+				continue
+			}
+			out = append(out, &e)
+		}
+		if res.LastEvaluatedKey == nil {
+			break
+		}
+		startKey = res.LastEvaluatedKey
 	}
 	op.With("count", len(out))
 	return out, nil

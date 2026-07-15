@@ -58,10 +58,6 @@ func (h *QRHandlers) Redirect(w http.ResponseWriter, r *http.Request) {
 
 // --- Admin: campaigns ---
 
-type campaignResponse struct {
-	*models.QRCampaign
-}
-
 func (h *QRHandlers) CreateCampaign(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name        string `json:"name"`
@@ -170,6 +166,10 @@ func (h *QRHandlers) AddPlacement(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.WithError(err).Error("qr: add placement failed")
 		h.respondError(w, http.StatusInternalServerError, "ADD_FAILED", "Failed to add placement")
+		return
+	}
+	if p == nil {
+		h.respondError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
 		return
 	}
 	h.respondJSON(w, http.StatusCreated, placementView{QRPlacement: p, URL: h.svc.PlacementURL(p.Slug)})

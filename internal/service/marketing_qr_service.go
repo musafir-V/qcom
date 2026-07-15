@@ -120,7 +120,7 @@ func (s *MarketingQRService) HandleScan(ctx context.Context, slug, userAgent, vi
 		return WebFallbackURL, false
 	}
 
-	unique := visitorCookie == ""
+	unique := !isBot && visitorCookie == ""
 	if err := s.repo.RecordScan(ctx, slug, platform, isBot, unique, userAgent); err != nil {
 		s.logger.WithError(err).WithField("slug", slug).Warn("qr: failed to record scan; still redirecting")
 		return dest, false
@@ -169,7 +169,8 @@ func (s *MarketingQRService) AddPlacement(ctx context.Context, campaignID, name,
 		return nil, err
 	}
 	if c == nil {
-		return nil, op.Outcome("campaign_not_found", fmt.Errorf("campaign %q not found", campaignID))
+		op.Outcome("campaign_not_found", fmt.Errorf("campaign %q not found", campaignID))
+		return nil, nil
 	}
 
 	slug, err := s.generateUniqueSlug(ctx)
