@@ -41,6 +41,7 @@ var (
 	Disbursement       = EntityType{Prefix: "DB", CounterKey: "COUNTER!DISBURSEMENT"}
 	CashDeposit        = EntityType{Prefix: "CD", CounterKey: "COUNTER!DEPOSIT"}
 	InKindDisbursement = EntityType{Prefix: "IK", CounterKey: "COUNTER!INKIND_DISBURSEMENT"}
+	QRCampaign         = EntityType{Prefix: "QC", CounterKey: "COUNTER!QR_CAMPAIGN"}
 )
 
 func encodeOptimus(n int64) int64 { return ((n * optimusPrime) & maxID) ^ optimusXor }
