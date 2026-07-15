@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/config"
 	"github.com/qcom/qcom/internal/logging"
+	"github.com/qcom/qcom/internal/metrics"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
 )
@@ -50,7 +51,7 @@ func NewVonageService(cfg *config.VonageConfig, jwtRepo *repository.VonageJWTRep
 		privateKeyB64: cfg.PrivateKeyB64,
 		whatsAppFrom:  cfg.WhatsAppFrom,
 		jwtRepo:       jwtRepo,
-		httpClient:    &http.Client{Timeout: vonageHTTPTimeout},
+		httpClient:    metrics.NewInstrumentedClient("vonage_messages", vonageHTTPTimeout),
 		logger:        logger,
 		messagesURL:   vonageMessagesURL,
 	}

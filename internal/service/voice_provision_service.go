@@ -14,6 +14,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/qcom/qcom/internal/metrics"
 	"github.com/sirupsen/logrus"
 )
 
@@ -48,7 +49,7 @@ func NewVoiceProvisionService(
 		vonageBaseURL: vonageBaseURL,
 		appID:         appID,
 		privateKeyB64: privateKeyB64,
-		httpClient:    &http.Client{Timeout: 10 * time.Second},
+		httpClient:    metrics.NewInstrumentedClient("vonage_voice", 10*time.Second),
 		logger:        logger,
 	}
 }

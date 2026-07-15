@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qcom/qcom/internal/logging"
+	"github.com/qcom/qcom/internal/metrics"
 	"github.com/sirupsen/logrus"
 )
 
@@ -75,11 +76,9 @@ type JavaOrderClient struct {
 
 func NewJavaOrderClient(baseURL string, logger *logrus.Logger) *JavaOrderClient {
 	return &JavaOrderClient{
-		baseURL: baseURL,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		logger: logger,
+		baseURL:    baseURL,
+		httpClient: metrics.NewInstrumentedClient("java_order_service", 10*time.Second),
+		logger:     logger,
 	}
 }
 

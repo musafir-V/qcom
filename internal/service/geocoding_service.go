@@ -14,6 +14,7 @@ import (
 	h3 "github.com/uber/h3-go/v4"
 
 	"github.com/qcom/qcom/internal/logging"
+	"github.com/qcom/qcom/internal/metrics"
 	"github.com/sirupsen/logrus"
 )
 
@@ -46,7 +47,7 @@ type GoogleGeocoder struct {
 func NewGoogleGeocoder(apiKey string, logger *logrus.Logger) *GoogleGeocoder {
 	return &GoogleGeocoder{
 		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		httpClient: metrics.NewInstrumentedClient("google_geocode", 5*time.Second),
 		logger:     logger,
 	}
 }

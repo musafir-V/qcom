@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qcom/qcom/internal/logging"
+	"github.com/qcom/qcom/internal/metrics"
 	"github.com/sirupsen/logrus"
 )
 
@@ -32,12 +33,10 @@ type DistanceService struct {
 
 func NewDistanceService(apiKey string, logger *logrus.Logger) *DistanceService {
 	return &DistanceService{
-		apiKey:  apiKey,
-		baseURL: distanceMatrixBaseURL,
-		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
-		},
-		logger: logger,
+		apiKey:     apiKey,
+		baseURL:    distanceMatrixBaseURL,
+		httpClient: metrics.NewInstrumentedClient("google_distance", 5*time.Second),
+		logger:     logger,
 	}
 }
 

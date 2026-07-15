@@ -13,6 +13,7 @@ import (
 	h3 "github.com/uber/h3-go/v4"
 
 	"github.com/qcom/qcom/internal/logging"
+	"github.com/qcom/qcom/internal/metrics"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -50,7 +51,7 @@ func NewETAService(etaRepo ETACacheStore, apiKey string, logger *logrus.Logger) 
 	return &ETAService{
 		etaRepo:               etaRepo,
 		apiKey:                apiKey,
-		httpClient:            &http.Client{Timeout: 5 * time.Second},
+		httpClient:            metrics.NewInstrumentedClient("google_eta", 5*time.Second),
 		logger:                logger,
 		distanceMatrixBaseURL: googleDistanceMatrixURL,
 	}
