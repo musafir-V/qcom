@@ -51,6 +51,7 @@ func main() {
 	deRepo := repository.NewDERepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	deStatusEventRepo := repository.NewDEStatusEventRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	referralRepo := repository.NewReferralRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	qrRepo := repository.NewQRRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	payoutConfigRepo := repository.NewPayoutConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	assignmentConfigRepo := repository.NewAssignmentConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripRepo := repository.NewTripRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -87,6 +88,7 @@ func main() {
 	etaService := service.NewETAService(etaCacheRepo, cfg.Google.MapsAPIKey, logger)
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest, cfg.Serviceability.BypassUserIDs)
 	qrService := service.NewQRService(logger)
+	marketingQRService := service.NewMarketingQRService(qrRepo, logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
 	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, logger)
 	presenceService := service.NewPresenceService(deStatusEventRepo, logger)
@@ -174,6 +176,7 @@ func main() {
 	adminStoreHandlers := handlers.NewAdminStoreHandlers(darkstoreRepo, logger)
 	notificationHandlers := handlers.NewNotificationHandlers(notificationService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)
+	qrHandlers := handlers.NewQRHandlers(marketingQRService, logger)
 
 	voiceTokenSvc := service.NewVoiceTokenService(cfg.VonageVoice, logger)
 	voiceProvisionSvc := service.NewVoiceProvisionService(
@@ -199,7 +202,7 @@ func main() {
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -339,6 +342,7 @@ func setupRouter(
 	disputeHandlers *handlers.DisputeHandlers,
 	adminDisputeHandlers *handlers.AdminDisputeHandlers,
 	voiceHandlers *handlers.VoiceHandlers,
+	qrHandlers *handlers.QRHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -361,6 +365,9 @@ func setupRouter(
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	}).Methods("GET", "OPTIONS")
+
+	// Public marketing QR redirect — no auth. Encodes device-aware app-download links.
+	router.HandleFunc("/q/{slug}", qrHandlers.Redirect).Methods("GET", "OPTIONS")
 
 	api := router.PathPrefix("/api/v1").Subrouter()
 
@@ -450,6 +457,15 @@ func setupRouter(
 	admin.HandleFunc("/disputes", adminDisputeHandlers.List).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/disputes/{id}", adminDisputeHandlers.UpdateStatus).Methods("PATCH", "OPTIONS")
 	admin.HandleFunc("/disputes/{id}", adminDisputeHandlers.Get).Methods("GET", "OPTIONS")
+
+	// Dynamic QR marketing campaigns (admin).
+	admin.HandleFunc("/qr/campaigns", qrHandlers.ListCampaigns).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/qr/campaigns", qrHandlers.CreateCampaign).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/qr/campaigns/{campaignId}/analytics", qrHandlers.Analytics).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/qr/campaigns/{campaignId}/placements", qrHandlers.AddPlacement).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/qr/campaigns/{campaignId}/placements/{slug}", qrHandlers.UpdatePlacement).Methods("PATCH", "OPTIONS")
+	admin.HandleFunc("/qr/campaigns/{campaignId}", qrHandlers.GetCampaign).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/qr/campaigns/{campaignId}", qrHandlers.UpdateCampaign).Methods("PATCH", "OPTIONS")
 
 	// Protected customer endpoints
 	protected := api.PathPrefix("/").Subrouter()
