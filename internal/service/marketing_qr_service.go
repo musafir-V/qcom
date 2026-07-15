@@ -261,7 +261,11 @@ func (s *MarketingQRService) Analytics(ctx context.Context, campaignID, fromISO,
 		return nil, nil
 	}
 
-	res := &AnalyticsResult{CampaignID: campaignID}
+	res := &AnalyticsResult{
+		CampaignID: campaignID,
+		Placements: []PlacementAnalytics{},
+		Daily:      []DailyBucket{},
+	}
 	dayCounts := map[string]int64{}
 	for _, p := range placements {
 		res.TotalScans += p.ScanCount
@@ -306,7 +310,7 @@ func buildDailyBuckets(dayCounts map[string]int64, fromISO, toISO string) []Dail
 	to, errT := time.Parse(time.RFC3339, toISO)
 	if errF != nil || errT != nil {
 		// Fallback: emit whatever days we saw, sorted.
-		var out []DailyBucket
+		out := make([]DailyBucket, 0)
 		for d, n := range dayCounts {
 			out = append(out, DailyBucket{Date: d, Scans: n})
 		}
