@@ -159,6 +159,10 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 		return nil, op.Fail(err)
 	}
 
+	// Store 100 is the synthetic bypass dummy; non-allowlisted users must never
+	// match it, including under IS_TEST where matchDarkstore picks darkstores[0].
+	darkstores = excludeDarkstoreID(darkstores, bypassDarkstoreID)
+
 	matched := s.matchDarkstore(op, darkstores, lat, lng)
 	if matched == nil {
 		op.With("serviceable", false).With("reason", ReasonOutsideDeliveryZone)
@@ -253,6 +257,17 @@ func operatingHoursFromDarkstore(ds *models.Darkstore) *OperatingHours {
 		ClosesAt: ds.ClosesAt,
 		Timezone: models.OperatingHoursTimezone,
 	}
+}
+
+// excludeDarkstoreID returns a copy of stores with the given ID removed.
+func excludeDarkstoreID(stores []models.Darkstore, id string) []models.Darkstore {
+	filtered := make([]models.Darkstore, 0, len(stores))
+	for _, ds := range stores {
+		if ds.DarkstoreID != id {
+			filtered = append(filtered, ds)
+		}
+	}
+	return filtered
 }
 
 // matchDarkstore picks the darkstore for this request. When IS_TEST/IS_TRUE is set,

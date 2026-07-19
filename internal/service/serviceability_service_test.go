@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
 	"io"
 	"testing"
 
+	"github.com/qcom/qcom/internal/logging"
+	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
 
@@ -85,5 +88,37 @@ func TestNewBypassResult(t *testing.T) {
 	// The base builder leaves the address to the caller.
 	if result.ResolvedAddress != nil {
 		t.Error("base bypass result must not set resolved_address")
+	}
+}
+
+func TestExcludeDarkstoreID(t *testing.T) {
+	stores := []models.Darkstore{
+		{DarkstoreID: "100"},
+		{DarkstoreID: "221"},
+		{DarkstoreID: "100"},
+	}
+	filtered := excludeDarkstoreID(stores, bypassDarkstoreID)
+	if len(filtered) != 1 || filtered[0].DarkstoreID != "221" {
+		t.Fatalf("excludeDarkstoreID() = %+v, want only store 221", filtered)
+	}
+}
+
+func TestMatchDarkstore_ISTestUsesFirstNonBypassStore(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	svc := NewServiceabilityService(nil, nil, nil, nil, logger, true, nil)
+
+	stores := []models.Darkstore{
+		{DarkstoreID: bypassDarkstoreID, IsActive: true},
+		{DarkstoreID: "221", IsActive: true},
+	}
+	filtered := excludeDarkstoreID(stores, bypassDarkstoreID)
+
+	op := logging.Start(context.Background(), logger, "TestMatchDarkstore", nil)
+	defer op.End()
+
+	matched := svc.matchDarkstore(op, filtered, 12.97, 77.71)
+	if matched == nil || matched.DarkstoreID != "221" {
+		t.Fatalf("matchDarkstore() = %v, want store 221", matched)
 	}
 }
