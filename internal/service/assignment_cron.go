@@ -26,7 +26,7 @@ const (
 
 	// recipientFallback is used for the drop task when the order has no
 	// delivery name yet (Java may send it absent/empty for now).
-	recipientFallback = "Shivang Awasthi"
+	recipientFallback = "Customer"
 )
 
 type AssignmentCron struct {

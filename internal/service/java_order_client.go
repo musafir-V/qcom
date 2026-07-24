@@ -61,7 +61,7 @@ type JavaDelivery struct {
 	Lat     float64 `json:"latitude"`
 	Lng     float64 `json:"longitude"`
 	Phone   string  `json:"phone"`
-	Name    string  `json:"name"`
+	Name    string  `json:"recipientName"`
 }
 
 // orderServicePathPrefix is prepended to every order-service request path.
