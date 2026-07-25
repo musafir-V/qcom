@@ -19,6 +19,9 @@ const (
 	ReasonEndedDuty DEStatusEventReason = "ended_duty"
 	// ReasonCancelled: busy -> free/eligible when a trip is cancelled.
 	ReasonCancelled DEStatusEventReason = "cancelled"
+	// ReasonReassigned: busy -> free for the outgoing rider and
+	// eligible/free -> busy for the incoming rider on an admin reassignment.
+	ReasonReassigned DEStatusEventReason = "reassigned"
 )
 
 // DEStatusEvent is one status transition for a DE, stored as an append-only
