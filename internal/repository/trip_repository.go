@@ -23,6 +23,12 @@ import (
 // been collected and accrued to the DE.
 var ErrTripTerminal = errors.New("trip is in a terminal state; payment cannot be updated")
 
+// ErrReassignConflict is returned by Reassign when the transaction is
+// cancelled — the trip moved off fromDEID, the outgoing rider was no longer
+// busy on it, or the incoming rider became unavailable, all since the caller
+// read them. Callers map this to 409.
+var ErrReassignConflict = errors.New("reassign conflict")
+
 type TripRepository struct {
 	client    *dynamodb.Client
 	tableName string
@@ -830,6 +836,17 @@ func (r *TripRepository) Reassign(
 	})
 	defer op.End()
 
+	// The transaction below keys the outgoing and incoming DE updates by
+	// phone (PK "DE!{phone}"). Two transact items with the same key make
+	// DynamoDB raise ValidationException, not a clean conflict — so this
+	// must be caught here, defensively, even though the sole caller today
+	// (AdminService.ReassignTrip) already guards it upstream.
+	if fromDEPhone == toDEPhone {
+		return op.Outcome("same_driver", fmt.Errorf(
+			"reassign: fromDEPhone and toDEPhone are identical (%s); refusing to build a transaction with duplicate keys",
+			fromDEPhone))
+	}
+
 	entryAttr, err := attributevalue.MarshalMap(entry)
 	if err != nil {
 		return op.Fail(fmt.Errorf("failed to marshal reassignment entry: %w", err))
@@ -939,7 +956,7 @@ func (r *TripRepository) Reassign(
 		var txErr *types.TransactionCanceledException
 		if errors.As(err, &txErr) {
 			return op.Outcome("conflict", fmt.Errorf(
-				"reassign conflict: trip moved, outgoing rider not busy on it, or incoming rider unavailable"))
+				"%w: trip moved, outgoing rider not busy on it, or incoming rider unavailable", ErrReassignConflict))
 		}
 		return op.Fail(fmt.Errorf("failed to reassign trip: %w", err))
 	}

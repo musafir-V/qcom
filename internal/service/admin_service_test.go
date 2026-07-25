@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
 )
 
@@ -336,6 +338,26 @@ func TestReassignTrip_TripNotFound(t *testing.T) {
 	}
 }
 
+// A lost race on the repository transaction (e.g. the assignment cron won
+// first) must surface as the service-level ErrReassignConflict so the handler
+// classifies it as 409 REASSIGN_CONFLICT, not a generic 500. This is the
+// error-table requirement from the spec: transaction conflict -> 409
+// REASSIGN_CONFLICT.
+func TestReassignTrip_RepoConflict_PropagatesAsReassignConflict(t *testing.T) {
+	tr, de := repoWithB(inFlightTrip(models.TripStatusOutForDelivery), riderB(models.DEStatusFree))
+	tr.reassignErr = fmt.Errorf("%w: trip moved, outgoing rider not busy on it, or incoming rider unavailable",
+		repository.ErrReassignConflict)
+	svc := newTestAdminService(tr, de)
+
+	err := svc.ReassignTrip(context.Background(), "T1", "+260B", "bike_breakdown", "", "ops_jane")
+	if !tr.reassignCalled {
+		t.Fatal("expected repo.Reassign to be called")
+	}
+	if !errors.Is(err, ErrReassignConflict) {
+		t.Fatalf("expected errors.Is(err, ErrReassignConflict) to hold, got %v", err)
+	}
+}
+
 // The cash cap is display-only for reassignment: a customer is already waiting,
 // so an over-cap rider must still be selectable.
 func TestReassignTrip_OverCashLimitTargetAllowed(t *testing.T) {
@@ -410,5 +432,27 @@ func TestReassignCandidates_FiltersAndFlags(t *testing.T) {
 	}
 	if byID["DE-B"].PreviouslyHeld {
 		t.Fatal("DE-B never held this trip")
+	}
+}
+
+// Only the UI must not be the sole guard against listing candidates for a
+// trip that can no longer be moved — completed/cancelled trips must be
+// rejected server-side too.
+func TestReassignCandidates_RejectsNonReassignableStatus(t *testing.T) {
+	for _, status := range []models.TripStatus{models.TripStatusCompleted, models.TripStatusCancelled} {
+		trip := inFlightTrip(status)
+		tr := &fakeReassignTripRepo{trip: trip}
+		de := &fakeReassignDERepo{onDuty: []*models.DeliveryExecutive{
+			{DEID: "DE-B", PhoneNumber: "+260B", Name: "Bwalya", Status: models.DEStatusFree},
+		}}
+		svc := newTestAdminService(tr, de)
+
+		got, err := svc.ReassignCandidates(context.Background(), "T1")
+		if !errors.Is(err, ErrTripNotReassignable) {
+			t.Fatalf("status %s: expected ErrTripNotReassignable, got %v", status, err)
+		}
+		if got != nil {
+			t.Fatalf("status %s: expected nil candidates, got %+v", status, got)
+		}
 	}
 }

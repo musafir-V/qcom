@@ -21,6 +21,11 @@ var (
 	ErrSameDriver          = errors.New("trip is already assigned to this driver")
 	ErrDriverWrongStore    = errors.New("driver is not on duty at this trip's store")
 	ErrInvalidReasonCode   = errors.New("invalid reassignment reason code")
+	// ErrReassignConflict surfaces a lost race on the reassign transaction —
+	// the trip, outgoing rider, or incoming rider changed underneath the
+	// request (e.g. the assignment cron won first). Callers map this to 409;
+	// the correct client action is refresh and retry, not "the system is broken".
+	ErrReassignConflict = errors.New("reassign conflict: refresh and retry")
 )
 
 // adminTripRepo is the subset of TripRepository AdminService uses. Narrowing to
@@ -138,6 +143,10 @@ func (s *AdminService) ReassignCandidates(ctx context.Context, tripID string) ([
 	}
 	if trip == nil {
 		return nil, op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTripNotFound, tripID))
+	}
+	if !isReassignableStatus(trip.Status) {
+		return nil, op.Outcome("not_reassignable", fmt.Errorf(
+			"%w: status=%s (use POST /admin/assign for pooled trips)", ErrTripNotReassignable, trip.Status))
 	}
 
 	des, err := s.deRepo.FindOnDutyByStore(ctx, trip.StoreID)
@@ -262,10 +271,19 @@ func (s *AdminService) ReassignTrip(ctx context.Context, tripID, toDEPhone, reas
 	if err := s.tripRepo.Reassign(ctx, trip.TripID, trip.DEPhone, trip.DEID,
 		toDE.DEID, toDE.PhoneNumber, trip.OrderID, trip.StoreID,
 		fromStatus == models.TripStatusAssigned, entry); err != nil {
+		if errors.Is(err, repository.ErrReassignConflict) {
+			return op.Outcome("conflict", fmt.Errorf("%w: %v", ErrReassignConflict, err))
+		}
 		return op.Fail(err)
 	}
 
-	fromDE, _ := s.deRepo.GetByPhone(ctx, trip.DEPhone)
+	// Detached context: this runs after the transaction has committed. If the
+	// admin's browser disconnects right now, ctx is cancelled and fromDE would
+	// come back nil — degrading rider B's critical push to "the previous
+	// rider" and dropping the one fact (who to collect from) it exists to
+	// convey. Best-effort lookups after the commit point use
+	// context.Background(), matching afterReassign's own detached sends.
+	fromDE, _ := s.deRepo.GetByPhone(context.Background(), trip.DEPhone)
 	s.afterReassign(trip, fromDE, toDE, eventTS)
 	return nil
 }

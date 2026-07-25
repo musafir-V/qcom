@@ -119,8 +119,13 @@ func (h *AdminHandlers) ReassignTrip(w http.ResponseWriter, r *http.Request) {
 	// Set by RequireAdminAuth; same pattern as the dispute handlers.
 	adminUsername, _ := r.Context().Value("entity_id").(string)
 
+	// note is persisted onto the trip item, which riders poll on every
+	// GetCurrentTrip — bound it so an admin can't balloon that payload.
+	// Truncate by rune, not byte, so a multi-byte character isn't split.
+	note := truncateRunes(strings.TrimSpace(req.Note), reassignNoteMaxRunes)
+
 	if err := h.adminService.ReassignTrip(
-		r.Context(), tripID, phone, strings.TrimSpace(req.ReasonCode), req.Note, adminUsername,
+		r.Context(), tripID, phone, strings.TrimSpace(req.ReasonCode), note, adminUsername,
 	); err != nil {
 		status, code := classifyReassignError(err)
 		if status == http.StatusInternalServerError {
@@ -151,9 +156,26 @@ func classifyReassignError(err error) (status int, code string) {
 		return http.StatusBadRequest, "SAME_DRIVER"
 	case errors.Is(err, service.ErrInvalidReasonCode):
 		return http.StatusBadRequest, "INVALID_REASON_CODE"
+	case errors.Is(err, service.ErrReassignConflict):
+		return http.StatusConflict, "REASSIGN_CONFLICT"
 	default:
 		return http.StatusInternalServerError, "REASSIGN_FAILED"
 	}
+}
+
+// reassignNoteMaxRunes bounds the reassignment note. The trip item carrying
+// it is polled by riders on every GetCurrentTrip, so an unbounded admin-typed
+// note must not be allowed to bloat that payload.
+const reassignNoteMaxRunes = 500
+
+// truncateRunes truncates s to at most n runes, splitting on rune boundaries
+// so a multi-byte character is never cut in half.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
 }
 
 func (h *AdminHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
