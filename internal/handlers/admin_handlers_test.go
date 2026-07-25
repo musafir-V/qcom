@@ -34,3 +34,39 @@ func TestClassifyAdminAssignError(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyReassignError(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"trip missing", service.ErrTripNotFound, http.StatusNotFound, "TRIP_NOT_FOUND"},
+		{"driver missing", service.ErrDENotFound, http.StatusNotFound, "DRIVER_NOT_FOUND"},
+		{"bad status", service.ErrTripNotReassignable, http.StatusConflict, "TRIP_NOT_REASSIGNABLE"},
+		{"driver busy", service.ErrDENotEligible, http.StatusConflict, "DRIVER_NOT_ELIGIBLE"},
+		{"wrong store", service.ErrDriverWrongStore, http.StatusConflict, "DRIVER_WRONG_STORE"},
+		{"same driver", service.ErrSameDriver, http.StatusBadRequest, "SAME_DRIVER"},
+		{"bad reason", service.ErrInvalidReasonCode, http.StatusBadRequest, "INVALID_REASON_CODE"},
+		{"unknown", errors.New("boom"), http.StatusInternalServerError, "REASSIGN_FAILED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, code := classifyReassignError(tc.err)
+			if status != tc.wantStatus || code != tc.wantCode {
+				t.Fatalf("got (%d, %q), want (%d, %q)", status, code, tc.wantStatus, tc.wantCode)
+			}
+		})
+	}
+}
+
+// Wrapped errors must classify the same as bare ones — the service wraps every
+// sentinel with %w plus context, so classification must use errors.Is, not ==.
+func TestClassifyReassignError_Wrapped(t *testing.T) {
+	wrapped := fmt.Errorf("%w: DE-A", service.ErrSameDriver)
+	status, code := classifyReassignError(wrapped)
+	if status != http.StatusBadRequest || code != "SAME_DRIVER" {
+		t.Fatalf("got (%d, %q), want (400, SAME_DRIVER)", status, code)
+	}
+}

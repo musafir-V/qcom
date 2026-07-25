@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/gorilla/mux"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/sirupsen/logrus"
 )
@@ -61,6 +62,97 @@ func classifyAdminAssignError(err error) (status int, code string) {
 		return http.StatusConflict, "DRIVER_NOT_ELIGIBLE"
 	default:
 		return http.StatusInternalServerError, "ASSIGN_FAILED"
+	}
+}
+
+// GET /api/v1/admin/trips/{trip_id}/reassign-candidates
+// Riders on duty at the trip's store who could take it over.
+func (h *AdminHandlers) ReassignCandidates(w http.ResponseWriter, r *http.Request) {
+	tripID := strings.TrimSpace(mux.Vars(r)["trip_id"])
+	if tripID == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "trip_id is required")
+		return
+	}
+
+	candidates, err := h.adminService.ReassignCandidates(r.Context(), tripID)
+	if err != nil {
+		status, code := classifyReassignError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("admin: failed to list reassign candidates")
+			h.respondWithError(w, status, code, "Failed to list candidates")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"candidates": candidates})
+}
+
+// POST /api/v1/admin/trips/{trip_id}/reassign
+// Body: { "to_de_phone": "+2609...", "reason_code": "bike_breakdown", "note": "" }
+func (h *AdminHandlers) ReassignTrip(w http.ResponseWriter, r *http.Request) {
+	tripID := strings.TrimSpace(mux.Vars(r)["trip_id"])
+	if tripID == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "trip_id is required")
+		return
+	}
+
+	var req struct {
+		ToDEPhone  string `json:"to_de_phone"`
+		ReasonCode string `json:"reason_code"`
+		Note       string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	phone := strings.TrimSpace(req.ToDEPhone)
+	if phone != "" && !strings.HasPrefix(phone, "+") {
+		phone = "+" + phone
+	}
+	if phone == "" || strings.TrimSpace(req.ReasonCode) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "to_de_phone and reason_code are required")
+		return
+	}
+
+	// Set by RequireAdminAuth; same pattern as the dispute handlers.
+	adminUsername, _ := r.Context().Value("entity_id").(string)
+
+	if err := h.adminService.ReassignTrip(
+		r.Context(), tripID, phone, strings.TrimSpace(req.ReasonCode), req.Note, adminUsername,
+	); err != nil {
+		status, code := classifyReassignError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("admin: trip reassignment failed")
+			h.respondWithError(w, status, code, "Failed to reassign trip")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "reassigned"})
+}
+
+func classifyReassignError(err error) (status int, code string) {
+	switch {
+	case errors.Is(err, service.ErrTripNotFound):
+		return http.StatusNotFound, "TRIP_NOT_FOUND"
+	case errors.Is(err, service.ErrDENotFound):
+		return http.StatusNotFound, "DRIVER_NOT_FOUND"
+	case errors.Is(err, service.ErrTripNotReassignable):
+		return http.StatusConflict, "TRIP_NOT_REASSIGNABLE"
+	case errors.Is(err, service.ErrDENotEligible):
+		return http.StatusConflict, "DRIVER_NOT_ELIGIBLE"
+	case errors.Is(err, service.ErrDriverWrongStore):
+		return http.StatusConflict, "DRIVER_WRONG_STORE"
+	case errors.Is(err, service.ErrSameDriver):
+		return http.StatusBadRequest, "SAME_DRIVER"
+	case errors.Is(err, service.ErrInvalidReasonCode):
+		return http.StatusBadRequest, "INVALID_REASON_CODE"
+	default:
+		return http.StatusInternalServerError, "REASSIGN_FAILED"
 	}
 }
 

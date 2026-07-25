@@ -408,6 +408,8 @@ func setupRouter(
 	admin.HandleFunc("/users/{username}/password", adminAuthHandlers.ChangePassword).Methods("POST", "OPTIONS")
 
 	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/trips/{trip_id}/reassign-candidates", adminHandlers.ReassignCandidates).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/trips/{trip_id}/reassign", adminHandlers.ReassignTrip).Methods("POST", "OPTIONS")
 
 	// Driver onboarding: presign document upload, then create the driver.
 	admin.HandleFunc("/uploads/url", adminDriverHandlers.PresignDriverDoc).Methods("POST", "OPTIONS")
