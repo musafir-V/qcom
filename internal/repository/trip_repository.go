@@ -804,3 +804,144 @@ func (r *TripRepository) AdminAssign(ctx context.Context, tripID, orderID, deID,
 	}
 	return nil
 }
+
+// Reassign atomically moves an in-flight trip from one DE to another:
+// the trip's de_id/de_phone switch to the incoming DE, the outgoing DE is
+// released to free (on duty, must re-scan to become eligible), and the
+// incoming DE goes busy — all in one transaction, so the trip can never be
+// left half-moved.
+//
+// Tasks, payout stamps and every other trip attribute are untouched.
+// promoteToAccepted is true only when the trip was still `assigned`; accepted
+// and out_for_delivery keep their status. accept_deadline is always removed so
+// the assignment cron's expiry sweep cannot bounce a rescued trip to the pool.
+//
+// Conditions: the trip is still held by fromDEID and is in one of the three
+// reassignable states; the outgoing DE is busy on this trip; the incoming DE is
+// eligible or free with no current trip.
+func (r *TripRepository) Reassign(
+	ctx context.Context,
+	tripID, fromDEPhone, fromDEID, toDEID, toDEPhone, orderID, storeID string,
+	promoteToAccepted bool,
+	entry models.TripReassignment,
+) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.Reassign", logrus.Fields{
+		"trip_id": tripID, "from_de_id": fromDEID, "to_de_id": toDEID,
+	})
+	defer op.End()
+
+	entryAttr, err := attributevalue.MarshalMap(entry)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to marshal reassignment entry: %w", err))
+	}
+
+	nowT := time.Now().UTC()
+	now := nowT.Format(time.RFC3339)
+	deadline := nowT.Add(models.ScanInterval).Format(time.RFC3339)
+
+	tripSet := "SET de_id = :to_de_id, de_phone = :to_de_phone, " +
+		"reassignments = list_append(if_not_exists(reassignments, :empty), :entry), " +
+		"rejected_de_ids = list_append(if_not_exists(rejected_de_ids, :empty), :from_list), " +
+		"updated_at = :now"
+	if promoteToAccepted {
+		tripSet += ", #status = :accepted"
+	}
+	tripSet += " REMOVE accept_deadline"
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression: aws.String(tripSet),
+					ConditionExpression: aws.String(
+						"de_id = :from_de_id AND (#status = :assigned OR #status = :accepted OR #status = :ofd)",
+					),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":to_de_id":    &types.AttributeValueMemberS{Value: toDEID},
+						":to_de_phone": &types.AttributeValueMemberS{Value: toDEPhone},
+						":from_de_id":  &types.AttributeValueMemberS{Value: fromDEID},
+						":assigned":    &types.AttributeValueMemberS{Value: string(models.TripStatusAssigned)},
+						":accepted":    &types.AttributeValueMemberS{Value: string(models.TripStatusAccepted)},
+						":ofd":         &types.AttributeValueMemberS{Value: string(models.TripStatusOutForDelivery)},
+						":empty":       &types.AttributeValueMemberL{Value: []types.AttributeValue{}},
+						":entry":       &types.AttributeValueMemberL{Value: []types.AttributeValue{&types.AttributeValueMemberM{Value: entryAttr}}},
+						":from_list":   &types.AttributeValueMemberL{Value: []types.AttributeValue{&types.AttributeValueMemberS{Value: fromDEID}}},
+						":now":         &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+			{
+				// Outgoing rider: released to free and on duty at the trip's store,
+				// with a fresh scan deadline. free is deliberate — the assignment
+				// cron matches eligible only, so they get no new order until they
+				// return to a store and scan the QR.
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "DE!" + fromDEPhone},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression: aws.String(
+						"SET #status = :free, current_store_id = :store, duty_index_key = :duty, " +
+							"scan_deadline_at = :deadline, updated_at = :now " +
+							"REMOVE current_order_id, current_trip_id",
+					),
+					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":free":     &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
+						":busy":     &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+						":store":    &types.AttributeValueMemberS{Value: storeID},
+						":duty":     &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
+						":deadline": &types.AttributeValueMemberS{Value: deadline},
+						":tid":      &types.AttributeValueMemberS{Value: tripID},
+						":now":      &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+			{
+				// Incoming rider: straight to busy, no accept window.
+				Update: &types.Update{
+					TableName: aws.String(r.tableName),
+					Key: map[string]types.AttributeValue{
+						"PK": &types.AttributeValueMemberS{Value: "DE!" + toDEPhone},
+						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+					},
+					UpdateExpression: aws.String(
+						"SET #status = :busy, current_order_id = :oid, current_trip_id = :tid, " +
+							"current_store_id = :store, updated_at = :now " +
+							"REMOVE duty_index_key, scan_deadline_at",
+					),
+					ConditionExpression: aws.String(
+						"(#status = :eligible OR #status = :free) AND attribute_not_exists(current_trip_id)",
+					),
+					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					ExpressionAttributeValues: map[string]types.AttributeValue{
+						":busy":     &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+						":eligible": &types.AttributeValueMemberS{Value: string(models.DEStatusEligible)},
+						":free":     &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
+						":oid":      &types.AttributeValueMemberS{Value: orderID},
+						":tid":      &types.AttributeValueMemberS{Value: tripID},
+						":store":    &types.AttributeValueMemberS{Value: storeID},
+						":now":      &types.AttributeValueMemberS{Value: now},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		var txErr *types.TransactionCanceledException
+		if errors.As(err, &txErr) {
+			return op.Outcome("conflict", fmt.Errorf(
+				"reassign conflict: trip moved, outgoing rider not busy on it, or incoming rider unavailable"))
+		}
+		return op.Fail(fmt.Errorf("failed to reassign trip: %w", err))
+	}
+	return nil
+}
