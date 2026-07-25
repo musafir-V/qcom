@@ -671,7 +671,7 @@ func tripItemsFromOrder(order JavaOrder) []models.TripItem {
 		items = append(items, models.TripItem{
 			Name:     it.ProductName,
 			ImageURL: it.ImageURL,
-			Quantity: it.Quantity,
+			Quantity: it.EffectiveQuantity(),
 			Sku:      it.Sku,
 		})
 	}

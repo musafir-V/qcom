@@ -18,8 +18,8 @@ import (
 // tag — this decodes a representative payload instead.
 func TestJavaOrder_DecodesItemsAndDeliveryName(t *testing.T) {
 	// Mirrors order-service OrderResponse: items[] = {sku, productName,
-	// imageUrl, quantity, ...}, delivery = {address, latitude, longitude,
-	// phone, notes, name}.
+	// imageUrl, orderedQuantity, fulfilledQuantity, ...}, delivery = {address,
+	// latitude, longitude, phone, notes, name}.
 	payload := `{
 		"orderId": "ORD-1",
 		"status": "READY_FOR_DELIVERY",
@@ -30,11 +30,11 @@ func TestJavaOrder_DecodesItemsAndDeliveryName(t *testing.T) {
 			"longitude": 28.28,
 			"phone": "0971234567",
 			"notes": "gate code 4",
-			"name": "Jane Doe"
+			"recipientName": "Jane Doe"
 		},
 		"items": [
-			{"sku": "SKU-1", "productName": "Milk", "imageUrl": "products/milk/front.jpg", "quantity": 2, "unitPrice": 10.0, "subTotal": 20.0},
-			{"sku": "SKU-2", "productName": "Bread", "imageUrl": "products/bread/front.jpg", "quantity": 1, "unitPrice": 8.5, "subTotal": 8.5}
+			{"sku": "SKU-1", "productName": "Milk", "imageUrl": "products/milk/front.jpg", "orderedQuantity": 3, "fulfilledQuantity": 2, "unitPrice": 10.0, "subTotal": 20.0},
+			{"sku": "SKU-2", "productName": "Bread", "imageUrl": "products/bread/front.jpg", "orderedQuantity": 1, "fulfilledQuantity": 1, "unitPrice": 8.5, "subTotal": 8.5}
 		]
 	}`
 
@@ -51,8 +51,36 @@ func TestJavaOrder_DecodesItemsAndDeliveryName(t *testing.T) {
 	}
 	first := order.Items[0]
 	if first.ProductName != "Milk" || first.ImageURL != "products/milk/front.jpg" ||
-		first.Quantity != 2 || first.Sku != "SKU-1" {
-		t.Errorf("item[0] tags mismatch: got %+v", first)
+		first.EffectiveQuantity() != 2 || first.Sku != "SKU-1" {
+		t.Errorf("item[0] tags mismatch: got %+v (qty %d)", first, first.EffectiveQuantity())
+	}
+}
+
+// The driver delivers what was picked, so fulfilledQuantity wins. Orders that
+// predate the ordered/fulfilled split (or any payload that omits fulfilled)
+// must fall back rather than silently reporting 0 — the bug this guards.
+func TestJavaOrderItem_EffectiveQuantityPrefersFulfilled(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want int
+	}{
+		{"fulfilled wins over ordered", `{"orderedQuantity": 5, "fulfilledQuantity": 3}`, 3},
+		{"short-picked to zero stays zero", `{"orderedQuantity": 5, "fulfilledQuantity": 0}`, 0},
+		{"falls back to ordered when fulfilled absent", `{"orderedQuantity": 4}`, 4},
+		{"falls back to legacy quantity", `{"quantity": 7}`, 7},
+		{"nothing at all is zero", `{"sku": "SKU-9"}`, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var item JavaOrderItem
+			if err := json.Unmarshal([]byte(tc.json), &item); err != nil {
+				t.Fatalf("unmarshal failed: %v", err)
+			}
+			if got := item.EffectiveQuantity(); got != tc.want {
+				t.Errorf("EffectiveQuantity() = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -112,7 +140,7 @@ func newTestJavaClient(serverURL string) *JavaOrderClient {
 }
 
 func TestGetOrderRaw_ReturnsFullPayloadVerbatim(t *testing.T) {
-	const body = `{"orderNumber":"ORD123","status":"OUT_FOR_DELIVERY","grandTotal":42.5,"items":[{"sku":"SKU-1","quantity":2}],"delivery":{"address":"12 Cairo Rd","phone":"0971234567"}}`
+	const body = `{"orderNumber":"ORD123","status":"OUT_FOR_DELIVERY","grandTotal":42.5,"items":[{"sku":"SKU-1","orderedQuantity":2,"fulfilledQuantity":2}],"delivery":{"address":"12 Cairo Rd","phone":"0971234567"}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/order-service/api/v1/orders/ORD123" {
 			t.Errorf("unexpected path %q", r.URL.Path)

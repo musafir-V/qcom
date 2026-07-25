@@ -76,8 +76,8 @@ func TestIsAcceptExpired(t *testing.T) {
 func TestTripItemsFromOrder_MapsFields(t *testing.T) {
 	order := JavaOrder{
 		Items: []JavaOrderItem{
-			{ProductName: "Milk", ImageURL: "items/milk.png", Quantity: 2, Sku: "SKU-1"},
-			{ProductName: "Bread", ImageURL: "items/bread.png", Quantity: 1, Sku: "SKU-2"},
+			{ProductName: "Milk", ImageURL: "items/milk.png", FulfilledQuantity: intPtr(2), OrderedQuantity: intPtr(3), Sku: "SKU-1"},
+			{ProductName: "Bread", ImageURL: "items/bread.png", FulfilledQuantity: intPtr(1), OrderedQuantity: intPtr(1), Sku: "SKU-2"},
 		},
 	}
 
@@ -93,6 +93,8 @@ func TestTripItemsFromOrder_MapsFields(t *testing.T) {
 		t.Errorf("item[1] mismatch: got %+v", items[1])
 	}
 }
+
+func intPtr(v int) *int { return &v }
 
 func TestTripItemsFromOrder_EmptyIsNil(t *testing.T) {
 	if items := tripItemsFromOrder(JavaOrder{}); items != nil {

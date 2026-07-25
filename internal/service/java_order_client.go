@@ -52,8 +52,29 @@ func (o *JavaOrder) normalizeOrderID() {
 type JavaOrderItem struct {
 	ProductName string `json:"productName"`
 	ImageURL    string `json:"imageUrl"`
-	Quantity    int    `json:"quantity"`
 	Sku         string `json:"sku"`
+
+	// The order-service split the old flat `quantity` into ordered (immutable
+	// snapshot at placement) and fulfilled (what the picker actually packed) —
+	// see OrderResponse.OrderItemResponse. Pointers so an absent field is
+	// distinguishable from a genuine 0 (fully short-picked line).
+	OrderedQuantity   *int `json:"orderedQuantity"`
+	FulfilledQuantity *int `json:"fulfilledQuantity"`
+	// LegacyQuantity decodes the pre-split `quantity` field so orders written
+	// before the rename still map to a non-zero trip quantity.
+	LegacyQuantity *int `json:"quantity"`
+}
+
+// EffectiveQuantity is the count the driver should see on the trip: what was
+// packed. Falls back to the ordered quantity, then the pre-split field, so a
+// payload missing the fulfilled count reports the real number rather than 0.
+func (i JavaOrderItem) EffectiveQuantity() int {
+	for _, q := range []*int{i.FulfilledQuantity, i.OrderedQuantity, i.LegacyQuantity} {
+		if q != nil {
+			return *q
+		}
+	}
+	return 0
 }
 
 type JavaDelivery struct {
