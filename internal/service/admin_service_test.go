@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
@@ -15,8 +17,26 @@ type fakeReassignTripRepo struct {
 	reassignCalled bool
 	gotEntry       models.TripReassignment
 	gotPromote     bool
+	// All seven positional string args are captured: they are same-typed and
+	// adjacent, so a transposition is invisible unless each is asserted.
+	gotTripID      string
+	gotFromDEPhone string
+	gotFromDEID    string
 	gotToDEID      string
+	gotToDEPhone   string
+	gotOrderID     string
+	gotStoreID     string
 	reassignErr    error
+}
+
+// fakeStatusEventAppender captures presence events written after a reassignment.
+type fakeStatusEventAppender struct {
+	events []*models.DEStatusEvent
+}
+
+func (f *fakeStatusEventAppender) Append(ctx context.Context, event *models.DEStatusEvent) error {
+	f.events = append(f.events, event)
+	return nil
 }
 
 func (f *fakeReassignTripRepo) GetByID(ctx context.Context, tripID string) (*models.Trip, error) {
@@ -37,7 +57,13 @@ func (f *fakeReassignTripRepo) Reassign(
 	f.reassignCalled = true
 	f.gotEntry = entry
 	f.gotPromote = promoteToAccepted
+	f.gotTripID = tripID
+	f.gotFromDEPhone = fromDEPhone
+	f.gotFromDEID = fromDEID
 	f.gotToDEID = toDEID
+	f.gotToDEPhone = toDEPhone
+	f.gotOrderID = orderID
+	f.gotStoreID = storeID
 	return f.reassignErr
 }
 
@@ -111,6 +137,61 @@ func TestReassignTrip_OutForDelivery_Succeeds(t *testing.T) {
 	}
 	if tr.gotEntry.At == "" {
 		t.Fatal("entry must be timestamped")
+	}
+
+	// Reassign takes seven consecutive same-typed strings; assert every one so a
+	// transposition (e.g. de_phone/de_id) fails here rather than against the
+	// DynamoDB condition expression at runtime.
+	for _, c := range []struct {
+		name, got, want string
+	}{
+		{"tripID", tr.gotTripID, "T1"},
+		{"fromDEPhone", tr.gotFromDEPhone, "+260A"},
+		{"fromDEID", tr.gotFromDEID, "DE-A"},
+		{"toDEID", tr.gotToDEID, "DE-B"},
+		{"toDEPhone", tr.gotToDEPhone, "+260B"},
+		{"orderID", tr.gotOrderID, "ORD-1"},
+		{"storeID", tr.gotStoreID, "221"},
+	} {
+		if c.got != c.want {
+			t.Errorf("Reassign arg %s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+}
+
+// DEStatusEvent.TS is embedded in the sort key and ListEventsForDay range-scans
+// with UTC day bounds, so a local-offset stamp would sort outside its own day.
+// The audit entry stays in Zambia local time; only the event TS is UTC.
+func TestReassignTrip_StatusEventsAreUTC(t *testing.T) {
+	tr, de := repoWithB(inFlightTrip(models.TripStatusOutForDelivery), riderB(models.DEStatusFree))
+	events := &fakeStatusEventAppender{}
+	svc := newTestAdminService(tr, de)
+	svc.statusEventRepo = events
+
+	if err := svc.ReassignTrip(context.Background(), "T1", "+260B", "other", "", "ops_jane"); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(events.events) != 2 {
+		t.Fatalf("expected 2 presence events, got %d", len(events.events))
+	}
+	entryAt, err := time.Parse(time.RFC3339, tr.gotEntry.At)
+	if err != nil {
+		t.Fatalf("entry.At is not RFC3339: %v", err)
+	}
+	for _, ev := range events.events {
+		if !strings.HasSuffix(ev.TS, "Z") {
+			t.Errorf("event TS %q for %s must be UTC (Z-suffixed)", ev.TS, ev.Phone)
+		}
+		ts, err := time.Parse(time.RFC3339, ev.TS)
+		if err != nil {
+			t.Fatalf("event TS is not RFC3339: %v", err)
+		}
+		if !ts.Equal(entryAt) {
+			t.Errorf("event TS %q and entry.At %q must be the same instant", ev.TS, tr.gotEntry.At)
+		}
+		if ev.Reason != models.ReasonReassigned {
+			t.Errorf("event reason = %q, want %q", ev.Reason, models.ReasonReassigned)
+		}
 	}
 }
 
@@ -291,6 +372,9 @@ func TestReassignCandidates_FiltersAndFlags(t *testing.T) {
 		{DEID: "DE-C", PhoneNumber: "+260C", Name: "Chanda", Status: models.DEStatusEligible, InHandCashZMW: 900},
 		{DEID: "DE-P", PhoneNumber: "+260P", Name: "Prev", Status: models.DEStatusEligible},
 		{DEID: "DE-O", PhoneNumber: "+260O", Name: "Offy", Status: models.DEStatusOffline},
+		// Current holder's phone under a stale de_id: ReassignTrip would reject
+		// this with ErrSameDriver, so the list must not offer it either.
+		{DEID: "DE-STALE", PhoneNumber: "+260A", Name: "Stale", Status: models.DEStatusFree},
 	}}
 	svc := newTestAdminService(tr, de)
 
@@ -311,6 +395,9 @@ func TestReassignCandidates_FiltersAndFlags(t *testing.T) {
 	}
 	if _, ok := byID["DE-O"]; ok {
 		t.Fatal("offline rider must be excluded")
+	}
+	if _, ok := byID["DE-STALE"]; ok {
+		t.Fatal("rider sharing the current holder's phone must be excluded")
 	}
 	if !byID["DE-C"].CashOverLimit {
 		t.Fatal("DE-C is over the 500 cap and must be flagged")

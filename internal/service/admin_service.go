@@ -166,7 +166,9 @@ func (s *AdminService) ReassignCandidates(ctx context.Context, tripID string) ([
 
 	out := make([]ReassignCandidate, 0, len(des))
 	for _, de := range des {
-		if de.DEID == trip.DEID {
+		// Same guard shape as ReassignTrip (de_id OR phone), so the UI can never
+		// offer a rider that ReassignTrip would then reject with ErrSameDriver.
+		if de.DEID == trip.DEID || de.PhoneNumber == trip.DEPhone {
 			continue
 		}
 		if de.Status != models.DEStatusEligible && de.Status != models.DEStatusFree {
@@ -239,6 +241,12 @@ func (s *AdminService) ReassignTrip(ctx context.Context, tripID, toDEPhone, reas
 	}
 
 	fromStatus := trip.Status
+	// Two renderings of one instant, deliberately different — do not "harmonise":
+	// the audit entry is read by ops in Zambia local time, while DEStatusEvent.TS
+	// must be UTC because it is embedded in the sort key that ListEventsForDay
+	// range-scans with UTC day bounds. A local-offset TS sorts outside its day.
+	now := timezone.Now()
+	eventTS := now.UTC().Format(time.RFC3339)
 	entry := models.TripReassignment{
 		FromDEID:             trip.DEID,
 		FromDEPhone:          trip.DEPhone,
@@ -248,7 +256,7 @@ func (s *AdminService) ReassignTrip(ctx context.Context, tripID, toDEPhone, reas
 		ReasonCode:           reasonCode,
 		Note:                 strings.TrimSpace(note),
 		AdminUsername:        adminUsername,
-		At:                   timezone.Now().Format(time.RFC3339),
+		At:                   now.Format(time.RFC3339),
 	}
 
 	if err := s.tripRepo.Reassign(ctx, trip.TripID, trip.DEPhone, trip.DEID,
@@ -258,17 +266,16 @@ func (s *AdminService) ReassignTrip(ctx context.Context, tripID, toDEPhone, reas
 	}
 
 	fromDE, _ := s.deRepo.GetByPhone(ctx, trip.DEPhone)
-	s.afterReassign(trip, fromDE, toDE, fromStatus, entry.At)
+	s.afterReassign(trip, fromDE, toDE, eventTS)
 	return nil
 }
 
 // afterReassign records presence events and pushes both riders. Best-effort
 // throughout: the reassignment has already committed and must not be failed by
-// a notification or log write.
+// a notification or log write. at must be a UTC RFC3339 stamp (sort-key bound).
 func (s *AdminService) afterReassign(
 	trip *models.Trip,
 	fromDE, toDE *models.DeliveryExecutive,
-	fromStatus models.TripStatus,
 	at string,
 ) {
 	fromName := "the previous rider"
@@ -307,8 +314,8 @@ func (s *AdminService) afterReassign(
 			Priority:      models.PriorityCritical,
 			Title:         "Order reassigned to you",
 			Body:          fmt.Sprintf("Collect order from %s — tap for details.", fromName),
+			// "type" is injected by buildFCMMessage from EventType; do not repeat it.
 			Data: map[string]string{
-				"type":          "ORDER_REASSIGNED",
 				"trip_id":       trip.TripID,
 				"order_id":      trip.OrderID,
 				"from_de_name":  fromName,
@@ -323,7 +330,6 @@ func (s *AdminService) afterReassign(
 			Title:         "Order reassigned",
 			Body:          "This order has been moved to another rider. Please wait at your location.",
 			Data: map[string]string{
-				"type":     "ORDER_REASSIGNED",
 				"trip_id":  trip.TripID,
 				"order_id": trip.OrderID,
 			},
