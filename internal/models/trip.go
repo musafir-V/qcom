@@ -93,9 +93,41 @@ type Trip struct {
 	AssignedAt     string   `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
 	AcceptDeadline string   `json:"accept_deadline,omitempty" dynamodbav:"accept_deadline,omitempty"`
 	RejectedDEIDs  []string `json:"rejected_de_ids,omitempty" dynamodbav:"rejected_de_ids,omitempty"`
+	// Reassignments is admin-facing audit only. json:"-" is load-bearing:
+	// GetCurrentTrip returns *models.Trip straight to the driver app, and this
+	// array carries the ops admin's username and a reason code about the rider.
+	Reassignments []TripReassignment `json:"-" dynamodbav:"reassignments,omitempty"`
 	CompletedAt    string   `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
 	CancelledAt    string   `json:"cancelled_at,omitempty" dynamodbav:"cancelled_at,omitempty"`
 }
+
+// TripReassignment is one admin-driven rider→rider handover of a trip.
+// Appended to Trip.Reassignments; never mutated once written.
+type TripReassignment struct {
+	FromDEID             string     `json:"from_de_id" dynamodbav:"from_de_id"`
+	FromDEPhone          string     `json:"from_de_phone" dynamodbav:"from_de_phone"`
+	ToDEID               string     `json:"to_de_id" dynamodbav:"to_de_id"`
+	ToDEPhone            string     `json:"to_de_phone" dynamodbav:"to_de_phone"`
+	TripStatusAtReassign TripStatus `json:"trip_status_at_reassign" dynamodbav:"trip_status_at_reassign"`
+	ReasonCode           string     `json:"reason_code" dynamodbav:"reason_code"`
+	Note                 string     `json:"note,omitempty" dynamodbav:"note,omitempty"`
+	AdminUsername        string     `json:"admin_username" dynamodbav:"admin_username"`
+	At                   string     `json:"at" dynamodbav:"at"`
+}
+
+// reassignReasonCodes is the closed set of reasons an admin may give.
+var reassignReasonCodes = map[string]bool{
+	"bike_breakdown":         true,
+	"rider_unreachable":      true,
+	"rider_sick_or_accident": true,
+	"rider_too_far":          true,
+	"cash_limit_reached":     true,
+	"customer_request":       true,
+	"other":                  true,
+}
+
+// IsValidReassignReasonCode reports whether code is an accepted reason.
+func IsValidReassignReasonCode(code string) bool { return reassignReasonCodes[code] }
 
 func (t *Trip) GetPK() string { return "TRIP!" + t.TripID }
 func (t *Trip) GetSK() string { return "METADATA" }

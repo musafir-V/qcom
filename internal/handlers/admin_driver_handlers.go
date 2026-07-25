@@ -236,18 +236,26 @@ func (h *AdminDriverHandlers) adminCompleteTask(w http.ResponseWriter, r *http.R
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
-func redactTripForAdmin(trip *models.Trip) *models.Trip {
+// adminTripView is the trip as ops sees it: OTP stripped, reassignment history
+// added. The history is deliberately absent from models.Trip's JSON (it names
+// the ops admin and carries reason codes about riders), so it is surfaced here.
+type adminTripView struct {
+	*models.Trip
+	Reassignments []models.TripReassignment `json:"reassignments,omitempty"`
+}
+
+func redactTripForAdmin(trip *models.Trip) *adminTripView {
 	if trip == nil {
 		return nil
 	}
-	copy := *trip
+	clone := *trip
 	tasks := make([]models.Task, len(trip.Tasks))
 	for i, task := range trip.Tasks {
 		tasks[i] = task
 		tasks[i].OTP = ""
 	}
-	copy.Tasks = tasks
-	return &copy
+	clone.Tasks = tasks
+	return &adminTripView{Trip: &clone, Reassignments: trip.Reassignments}
 }
 
 // GET /api/v1/admin/drivers/{phone}/earnings

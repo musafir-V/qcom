@@ -99,7 +99,7 @@ func main() {
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, deStatusEventRepo, logger)
-	adminService := service.NewAdminService(tripRepo, deRepo, logger)
+	adminService := service.NewAdminService(tripRepo, deRepo, cashConfigRepo, deStatusEventRepo, notificationService, logger)
 	appCtx, appCancel := context.WithCancel(context.Background())
 	ruleCache := service.NewRuleCache(ruleRepo, 60*time.Second, logger)
 	ruleCache.Start(appCtx)
@@ -408,6 +408,8 @@ func setupRouter(
 	admin.HandleFunc("/users/{username}/password", adminAuthHandlers.ChangePassword).Methods("POST", "OPTIONS")
 
 	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/trips/{trip_id}/reassign-candidates", adminHandlers.ReassignCandidates).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/trips/{trip_id}/reassign", adminHandlers.ReassignTrip).Methods("POST", "OPTIONS")
 
 	// Driver onboarding: presign document upload, then create the driver.
 	admin.HandleFunc("/uploads/url", adminDriverHandlers.PresignDriverDoc).Methods("POST", "OPTIONS")

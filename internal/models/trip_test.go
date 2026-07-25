@@ -1,6 +1,8 @@
 package models
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -203,5 +205,44 @@ func TestTripMarshalHasTripOrderID(t *testing.T) {
 	}
 	if _, ok := m["order_id"]; !ok {
 		t.Errorf("marshaled map must still have order_id for API/display, got keys: %v", m)
+	}
+}
+
+func TestIsValidReassignReasonCode(t *testing.T) {
+	valid := []string{
+		"bike_breakdown", "rider_unreachable", "rider_sick_or_accident",
+		"rider_too_far", "cash_limit_reached", "customer_request", "other",
+	}
+	for _, code := range valid {
+		if !IsValidReassignReasonCode(code) {
+			t.Fatalf("expected %q to be a valid reason code", code)
+		}
+	}
+	for _, code := range []string{"", "BIKE_BREAKDOWN", "bogus", " other"} {
+		if IsValidReassignReasonCode(code) {
+			t.Fatalf("expected %q to be rejected", code)
+		}
+	}
+}
+
+// Reassignments carries the ops admin's username and a reason code about the
+// rider. GetCurrentTrip returns *models.Trip straight to the driver app, so this
+// field must never appear in the JSON a rider receives.
+func TestTripReassignments_NotSerialisedToJSON(t *testing.T) {
+	trip := Trip{
+		TripID: "T1",
+		Reassignments: []TripReassignment{{
+			FromDEID: "DE-1", ToDEID: "DE-2",
+			ReasonCode: "bike_breakdown", AdminUsername: "ops_jane",
+		}},
+	}
+	raw, err := json.Marshal(trip)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, needle := range []string{"reassignments", "ops_jane", "bike_breakdown", "DE-1"} {
+		if strings.Contains(string(raw), needle) {
+			t.Fatalf("driver-facing trip JSON leaked %q: %s", needle, raw)
+		}
 	}
 }
