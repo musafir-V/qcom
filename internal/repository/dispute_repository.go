@@ -50,6 +50,7 @@ func (r *DisputeRepository) Create(ctx context.Context, d *models.Dispute) error
 
 	d.DisputeOrderNumber = d.OrderNumber
 	d.DisputeStatusKey = string(d.Status)
+	d.DisputeStoreStatusKey = models.DisputeStoreStatusKeyFor(d.StoreID, d.Status)
 
 	item, err := attributevalue.MarshalMap(d)
 	if err != nil {
@@ -175,8 +176,20 @@ func decodeDisputeCursor(cursor string) (map[string]types.AttributeValue, error)
 	return out, nil
 }
 
-// ListByStatus returns a newest-first page of disputes in the given status via DisputeStatusIndex.
-func (r *DisputeRepository) ListByStatus(ctx context.Context, status models.DisputeStatus, cursor string, limit int32) ([]models.Dispute, string, error) {
+// disputeStatusIndexFor picks the index backing a dispute list/count. An empty
+// storeID means "all stores" and uses the status-only index; a storeID uses the
+// composite index. keyValue is the prefix the caller appends the status to.
+func disputeStatusIndexFor(storeID string) (indexName, keyAttr, keyValue string) {
+	if storeID == "" {
+		return "DisputeStatusIndex", "dispute_status_key", ""
+	}
+	return "DisputeStoreStatusIndex", "dispute_store_status_key", storeID + "#"
+}
+
+// ListByStatus returns a newest-first page of disputes in the given status.
+// An empty storeID lists across all stores via DisputeStatusIndex; a storeID
+// scopes to that store via DisputeStoreStatusIndex.
+func (r *DisputeRepository) ListByStatus(ctx context.Context, status models.DisputeStatus, storeID, cursor string, limit int32) ([]models.Dispute, string, error) {
 	start, err := decodeDisputeCursor(cursor)
 	if err != nil {
 		return nil, "", err
@@ -184,19 +197,20 @@ func (r *DisputeRepository) ListByStatus(ctx context.Context, status models.Disp
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
+	indexName, keyAttr, keyPrefix := disputeStatusIndexFor(storeID)
 	out, err := r.client.Query(ctx, &dynamodb.QueryInput{
 		TableName:              aws.String(r.tableName),
-		IndexName:              aws.String("DisputeStatusIndex"),
-		KeyConditionExpression: aws.String("dispute_status_key = :s"),
+		IndexName:              aws.String(indexName),
+		KeyConditionExpression: aws.String(keyAttr + " = :s"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":s": &types.AttributeValueMemberS{Value: string(status)},
+			":s": &types.AttributeValueMemberS{Value: keyPrefix + string(status)},
 		},
 		ScanIndexForward:  aws.Bool(false), // newest first
 		Limit:             aws.Int32(limit),
 		ExclusiveStartKey: start,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to query DisputeStatusIndex: %w", err)
+		return nil, "", fmt.Errorf("failed to query %s: %w", indexName, err)
 	}
 	disputes := make([]models.Dispute, 0, len(out.Items))
 	for _, item := range out.Items {
@@ -211,22 +225,24 @@ func (r *DisputeRepository) ListByStatus(ctx context.Context, status models.Disp
 }
 
 // CountByStatus counts disputes in a status, paginating COUNT pages for correctness.
-func (r *DisputeRepository) CountByStatus(ctx context.Context, status models.DisputeStatus) (int, error) {
+// An empty storeID counts across all stores.
+func (r *DisputeRepository) CountByStatus(ctx context.Context, status models.DisputeStatus, storeID string) (int, error) {
+	indexName, keyAttr, keyPrefix := disputeStatusIndexFor(storeID)
 	var total int
 	var start map[string]types.AttributeValue
 	for {
 		out, err := r.client.Query(ctx, &dynamodb.QueryInput{
 			TableName:              aws.String(r.tableName),
-			IndexName:              aws.String("DisputeStatusIndex"),
-			KeyConditionExpression: aws.String("dispute_status_key = :s"),
+			IndexName:              aws.String(indexName),
+			KeyConditionExpression: aws.String(keyAttr + " = :s"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":s": &types.AttributeValueMemberS{Value: string(status)},
+				":s": &types.AttributeValueMemberS{Value: keyPrefix + string(status)},
 			},
 			Select:            types.SelectCount,
 			ExclusiveStartKey: start,
 		})
 		if err != nil {
-			return 0, fmt.Errorf("failed to count DisputeStatusIndex: %w", err)
+			return 0, fmt.Errorf("failed to count %s: %w", indexName, err)
 		}
 		total += int(out.Count)
 		if len(out.LastEvaluatedKey) == 0 {
@@ -237,15 +253,22 @@ func (r *DisputeRepository) CountByStatus(ctx context.Context, status models.Dis
 	return total, nil
 }
 
-// UpdateStatus mutates status/note/actor/timestamp and keeps dispute_status_key in sync.
+// UpdateStatus mutates status/note/actor/timestamp and keeps both index keys in
+// sync. storeID is the dispute's own store; when empty (a dispute created before
+// store attribution) dispute_store_status_key is left absent so the row stays out
+// of the sparse composite index rather than landing under a bogus key.
 // Returns (nil, nil) if no dispute with that id exists.
-func (r *DisputeRepository) UpdateStatus(ctx context.Context, id string, newStatus models.DisputeStatus, note, actor, now string) (*models.Dispute, error) {
+func (r *DisputeRepository) UpdateStatus(ctx context.Context, id string, newStatus models.DisputeStatus, note, actor, now, storeID string) (*models.Dispute, error) {
 	setExpr := "#status = :status, dispute_status_key = :statuskey, updated_at = :now, resolved_by = :actor"
 	values := map[string]types.AttributeValue{
 		":status":    &types.AttributeValueMemberS{Value: string(newStatus)},
 		":statuskey": &types.AttributeValueMemberS{Value: string(newStatus)},
 		":now":       &types.AttributeValueMemberS{Value: now},
 		":actor":     &types.AttributeValueMemberS{Value: actor},
+	}
+	if storeKey := models.DisputeStoreStatusKeyFor(storeID, newStatus); storeKey != "" {
+		setExpr += ", dispute_store_status_key = :storekey"
+		values[":storekey"] = &types.AttributeValueMemberS{Value: storeKey}
 	}
 	if note != "" {
 		setExpr += ", resolution_note = :note"

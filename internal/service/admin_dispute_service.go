@@ -17,9 +17,9 @@ var (
 
 type adminDisputeStore interface {
 	GetByID(ctx context.Context, id string) (*models.Dispute, error)
-	ListByStatus(ctx context.Context, status models.DisputeStatus, cursor string, limit int32) ([]models.Dispute, string, error)
-	CountByStatus(ctx context.Context, status models.DisputeStatus) (int, error)
-	UpdateStatus(ctx context.Context, id string, newStatus models.DisputeStatus, note, actor, now string) (*models.Dispute, error)
+	ListByStatus(ctx context.Context, status models.DisputeStatus, storeID, cursor string, limit int32) ([]models.Dispute, string, error)
+	CountByStatus(ctx context.Context, status models.DisputeStatus, storeID string) (int, error)
+	UpdateStatus(ctx context.Context, id string, newStatus models.DisputeStatus, note, actor, now, storeID string) (*models.Dispute, error)
 }
 
 type dispositionLookup interface {
@@ -69,14 +69,19 @@ func validDisputeStatus(s models.DisputeStatus) bool {
 	return false
 }
 
-func (s *AdminDisputeService) ListByStatus(ctx context.Context, status models.DisputeStatus, cursor string, limit int32) ([]models.Dispute, string, error) {
+// ListByStatus returns a page of disputes in a status. An empty storeID lists
+// across all stores; a storeID (including models.UnknownStoreID) scopes to it.
+// storeID is deliberately not validated against the darkstore list — an unknown
+// store simply yields an empty page.
+func (s *AdminDisputeService) ListByStatus(ctx context.Context, status models.DisputeStatus, storeID, cursor string, limit int32) ([]models.Dispute, string, error) {
 	if !validDisputeStatus(status) {
 		return nil, "", ErrInvalidDisputeStatus
 	}
-	return s.disputes.ListByStatus(ctx, status, cursor, limit)
+	return s.disputes.ListByStatus(ctx, status, storeID, cursor, limit)
 }
 
-func (s *AdminDisputeService) Summary(ctx context.Context) (DisputeSummary, error) {
+// Summary counts disputes per status. An empty storeID counts across all stores.
+func (s *AdminDisputeService) Summary(ctx context.Context, storeID string) (DisputeSummary, error) {
 	var sum DisputeSummary
 	targets := []struct {
 		st models.DisputeStatus
@@ -88,7 +93,7 @@ func (s *AdminDisputeService) Summary(ctx context.Context) (DisputeSummary, erro
 		{models.DisputeStatusRejected, &sum.Rejected},
 	}
 	for _, t := range targets {
-		n, err := s.disputes.CountByStatus(ctx, t.st)
+		n, err := s.disputes.CountByStatus(ctx, t.st, storeID)
 		if err != nil {
 			return DisputeSummary{}, err
 		}
@@ -116,7 +121,7 @@ func (s *AdminDisputeService) UpdateStatus(ctx context.Context, id string, newSt
 		return nil, ErrResolutionNoteRequired
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	updated, err := s.disputes.UpdateStatus(ctx, id, newStatus, note, actor, now)
+	updated, err := s.disputes.UpdateStatus(ctx, id, newStatus, note, actor, now, d.StoreID)
 	if err != nil {
 		return nil, err
 	}

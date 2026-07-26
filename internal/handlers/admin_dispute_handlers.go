@@ -28,6 +28,7 @@ type adminDisputeDTO struct {
 	DisputeID        string   `json:"dispute_id"`
 	OrderNumber      string   `json:"order_number"`
 	CustomerID       string   `json:"customer_id"`
+	StoreID          string   `json:"store_id,omitempty"`
 	DispositionCode  string   `json:"disposition_code"`
 	DispositionTitle string   `json:"disposition_title,omitempty"`
 	Description      string   `json:"description,omitempty"`
@@ -70,7 +71,7 @@ type adminDisputeDetailDTO struct {
 func (h *AdminDisputeHandlers) toDTO(ctx context.Context, d *models.Dispute, titles map[string]string) adminDisputeDTO {
 	dto := adminDisputeDTO{
 		DisputeID: d.DisputeID, OrderNumber: d.OrderNumber, CustomerID: d.CustomerID,
-		DispositionCode: d.DispositionCode, DispositionTitle: titles[d.DispositionCode],
+		StoreID: d.StoreID, DispositionCode: d.DispositionCode, DispositionTitle: titles[d.DispositionCode],
 		Description: d.Description, Status: string(d.Status), ResolutionNote: d.ResolutionNote,
 		ResolvedBy: d.ResolvedBy, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt,
 	}
@@ -85,6 +86,13 @@ func (h *AdminDisputeHandlers) toDTO(ctx context.Context, d *models.Dispute, tit
 	return dto
 }
 
+// storeFilterFrom reads the optional store scope. Absent, empty, and
+// whitespace-only all mean "all stores". The value is not validated against the
+// darkstore list — an unknown store just yields an empty page.
+func storeFilterFrom(r *http.Request) string {
+	return strings.TrimSpace(r.URL.Query().Get("store_id"))
+}
+
 func (h *AdminDisputeHandlers) List(w http.ResponseWriter, r *http.Request) {
 	status := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
 	if status == "" {
@@ -97,7 +105,8 @@ func (h *AdminDisputeHandlers) List(w http.ResponseWriter, r *http.Request) {
 			limit = int32(n)
 		}
 	}
-	disputes, next, err := h.service.ListByStatus(r.Context(), models.DisputeStatus(status), cursor, limit)
+	storeID := storeFilterFrom(r)
+	disputes, next, err := h.service.ListByStatus(r.Context(), models.DisputeStatus(status), storeID, cursor, limit)
 	if err != nil {
 		h.respondErr(w, err)
 		return
@@ -115,7 +124,7 @@ func (h *AdminDisputeHandlers) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminDisputeHandlers) Summary(w http.ResponseWriter, r *http.Request) {
-	sum, err := h.service.Summary(r.Context())
+	sum, err := h.service.Summary(r.Context(), storeFilterFrom(r))
 	if err != nil {
 		h.logger.WithError(err).Error("dispute summary failed")
 		h.respondJSON(w, http.StatusInternalServerError, ErrorResponse{Error: ErrorDetail{Code: "INTERNAL_ERROR", Message: "Failed to load dispute summary"}})

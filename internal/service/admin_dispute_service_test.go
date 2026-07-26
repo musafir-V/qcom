@@ -18,19 +18,26 @@ type fakeAdminDisputeStore struct {
 	gotStatus  models.DisputeStatus
 	gotNote    string
 	gotActor   string
+
+	gotStoreID      string
+	gotCountStoreID string
+	gotUpdateStore  string
 }
 
 func (f *fakeAdminDisputeStore) GetByID(ctx context.Context, id string) (*models.Dispute, error) {
 	return f.getByID, nil
 }
-func (f *fakeAdminDisputeStore) ListByStatus(ctx context.Context, status models.DisputeStatus, cursor string, limit int32) ([]models.Dispute, string, error) {
+func (f *fakeAdminDisputeStore) ListByStatus(ctx context.Context, status models.DisputeStatus, storeID, cursor string, limit int32) ([]models.Dispute, string, error) {
+	f.gotStoreID = storeID
 	return f.listResult, f.listCursor, nil
 }
-func (f *fakeAdminDisputeStore) CountByStatus(ctx context.Context, status models.DisputeStatus) (int, error) {
+func (f *fakeAdminDisputeStore) CountByStatus(ctx context.Context, status models.DisputeStatus, storeID string) (int, error) {
+	f.gotCountStoreID = storeID
 	return f.counts[status], nil
 }
-func (f *fakeAdminDisputeStore) UpdateStatus(ctx context.Context, id string, newStatus models.DisputeStatus, note, actor, now string) (*models.Dispute, error) {
+func (f *fakeAdminDisputeStore) UpdateStatus(ctx context.Context, id string, newStatus models.DisputeStatus, note, actor, now, storeID string) (*models.Dispute, error) {
 	f.gotID, f.gotStatus, f.gotNote, f.gotActor = id, newStatus, note, actor
+	f.gotUpdateStore = storeID
 	return f.updateOut, nil
 }
 
@@ -106,7 +113,7 @@ func TestAdminUpdateStatus_InvalidStatus(t *testing.T) {
 
 func TestAdminListByStatus_InvalidStatus(t *testing.T) {
 	svc := NewAdminDisputeService(&fakeAdminDisputeStore{}, &fakeDispositionLookup{}, nil, nil)
-	if _, _, err := svc.ListByStatus(context.Background(), models.DisputeStatus("NOPE"), "", 50); !errors.Is(err, ErrInvalidDisputeStatus) {
+	if _, _, err := svc.ListByStatus(context.Background(), models.DisputeStatus("NOPE"), "", "", 50); !errors.Is(err, ErrInvalidDisputeStatus) {
 		t.Fatalf("want ErrInvalidDisputeStatus, got %v", err)
 	}
 }
@@ -117,7 +124,7 @@ func TestAdminSummary(t *testing.T) {
 		models.DisputeStatusResolved: 7, models.DisputeStatusRejected: 2,
 	}}
 	svc := NewAdminDisputeService(store, &fakeDispositionLookup{}, nil, nil)
-	got, err := svc.Summary(context.Background())
+	got, err := svc.Summary(context.Background(), "")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -138,13 +145,13 @@ func (s *adminDetailDisputeStore) GetByID(ctx context.Context, id string) (*mode
 	}
 	return s.byID[id], nil
 }
-func (s *adminDetailDisputeStore) ListByStatus(ctx context.Context, status models.DisputeStatus, cursor string, limit int32) ([]models.Dispute, string, error) {
+func (s *adminDetailDisputeStore) ListByStatus(ctx context.Context, status models.DisputeStatus, storeID, cursor string, limit int32) ([]models.Dispute, string, error) {
 	return nil, "", nil
 }
-func (s *adminDetailDisputeStore) CountByStatus(ctx context.Context, status models.DisputeStatus) (int, error) {
+func (s *adminDetailDisputeStore) CountByStatus(ctx context.Context, status models.DisputeStatus, storeID string) (int, error) {
 	return 0, nil
 }
-func (s *adminDetailDisputeStore) UpdateStatus(ctx context.Context, id string, newStatus models.DisputeStatus, note, actor, now string) (*models.Dispute, error) {
+func (s *adminDetailDisputeStore) UpdateStatus(ctx context.Context, id string, newStatus models.DisputeStatus, note, actor, now, storeID string) (*models.Dispute, error) {
 	return nil, nil
 }
 
@@ -292,5 +299,71 @@ func TestGetDetail_NoDE_FailOpen(t *testing.T) {
 	}
 	if detail.DE != nil {
 		t.Errorf("expected nil DE due to lookup failure, got %v", detail.DE)
+	}
+}
+
+func TestListByStatus_ForwardsStoreFilter(t *testing.T) {
+	f := &fakeAdminDisputeStore{}
+	svc := NewAdminDisputeService(f, &fakeDispositionLookup{}, nil, nil)
+
+	if _, _, err := svc.ListByStatus(context.Background(), models.DisputeStatusOpen, "42", "", 50); err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	if f.gotStoreID != "42" {
+		t.Errorf("store forwarded to store layer = %q, want %q", f.gotStoreID, "42")
+	}
+}
+
+func TestListByStatus_EmptyStoreMeansAllStores(t *testing.T) {
+	f := &fakeAdminDisputeStore{}
+	svc := NewAdminDisputeService(f, &fakeDispositionLookup{}, nil, nil)
+
+	if _, _, err := svc.ListByStatus(context.Background(), models.DisputeStatusOpen, "", "", 50); err != nil {
+		t.Fatalf("ListByStatus: %v", err)
+	}
+	if f.gotStoreID != "" {
+		t.Errorf("store = %q, want empty (all stores)", f.gotStoreID)
+	}
+}
+
+func TestSummary_ForwardsStoreFilter(t *testing.T) {
+	f := &fakeAdminDisputeStore{counts: map[models.DisputeStatus]int{}}
+	svc := NewAdminDisputeService(f, &fakeDispositionLookup{}, nil, nil)
+
+	if _, err := svc.Summary(context.Background(), "42"); err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if f.gotCountStoreID != "42" {
+		t.Errorf("store forwarded to count = %q, want %q", f.gotCountStoreID, "42")
+	}
+}
+
+func TestUpdateStatus_PassesDisputeStoreToStore(t *testing.T) {
+	f := &fakeAdminDisputeStore{
+		getByID:   &models.Dispute{DisputeID: "DP1", Status: models.DisputeStatusOpen, StoreID: "42"},
+		updateOut: &models.Dispute{DisputeID: "DP1", Status: models.DisputeStatusResolved, StoreID: "42"},
+	}
+	svc := NewAdminDisputeService(f, &fakeDispositionLookup{}, nil, nil)
+
+	if _, err := svc.UpdateStatus(context.Background(), "DP1", models.DisputeStatusResolved, "refunded", "admin1"); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	if f.gotUpdateStore != "42" {
+		t.Errorf("store passed to UpdateStatus = %q, want %q", f.gotUpdateStore, "42")
+	}
+}
+
+func TestUpdateStatus_LegacyDisputePassesEmptyStore(t *testing.T) {
+	f := &fakeAdminDisputeStore{
+		getByID:   &models.Dispute{DisputeID: "DP1", Status: models.DisputeStatusOpen},
+		updateOut: &models.Dispute{DisputeID: "DP1", Status: models.DisputeStatusResolved},
+	}
+	svc := NewAdminDisputeService(f, &fakeDispositionLookup{}, nil, nil)
+
+	if _, err := svc.UpdateStatus(context.Background(), "DP1", models.DisputeStatusResolved, "refunded", "admin1"); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+	if f.gotUpdateStore != "" {
+		t.Errorf("store passed for a legacy dispute = %q, want empty", f.gotUpdateStore)
 	}
 }

@@ -192,7 +192,7 @@ func main() {
 	dispositionRepo := repository.NewDisputeDispositionRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	disputeNotifier := service.NewLoggingDisputeNotifier(logger)
 	disputeService := service.NewDisputeService(
-		disputeRepo, dispositionRepo, javaOrderClient, disputeNotifier,
+		disputeRepo, dispositionRepo, javaOrderClient, tripRepo, disputeNotifier,
 		cfg.Dispute.EligibleOrderStatuses,
 		logger,
 	)
