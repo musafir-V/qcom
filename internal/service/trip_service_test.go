@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
@@ -473,13 +475,17 @@ func (s *stubDERepo) GetByPhone(_ context.Context, _ string) (*models.DeliveryEx
 	return s.de, nil
 }
 
-// stubNotifier satisfies NotificationService. Only Send is used by CancelTripByOrder.
+// stubNotifier satisfies NotificationService. Guarded by a mutex because
+// notifyCustomer dispatches sends on a goroutine.
 type stubNotifier struct {
+	mu      sync.Mutex
 	sent    bool
 	lastReq models.NotificationSendRequest
 }
 
 func (s *stubNotifier) Send(_ context.Context, req models.NotificationSendRequest) models.NotificationSendResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sent = true
 	s.lastReq = req
 	return models.NotificationSendResult{Status: models.SendStatusSent}
@@ -549,4 +555,71 @@ func TestUpdateTaskStatus_PhotoS3Key_StoredOnDrop(t *testing.T) {
 	if dropTask.PhotoS3Key != wantKey {
 		t.Errorf("drop task PhotoS3Key = %q, want %q", dropTask.PhotoS3Key, wantKey)
 	}
+}
+
+func TestNotifyCustomer_SendsBuiltRequest(t *testing.T) {
+	notifier := &stubNotifier{}
+	svc := newTestTripService(&stubTripRepo{}, notifier)
+
+	trip := &models.Trip{OrderID: "ORD1289752277", CustomerUserID: "US0418437320"}
+	de := &models.DeliveryExecutive{Name: "Chanda"}
+
+	// notifyCustomer dispatches asynchronously; waitForSend polls so the test
+	// does not depend on goroutine scheduling.
+	svc.notifyCustomer(trip, de, eventOutForDelivery)
+
+	if !waitForSend(notifier) {
+		t.Fatal("expected a notification to be sent")
+	}
+	if notifier.lastReq.RecipientID != "US0418437320" {
+		t.Fatalf("recipient id = %q", notifier.lastReq.RecipientID)
+	}
+	if notifier.lastReq.EventType != "ORDER_OUT_FOR_DELIVERY" {
+		t.Fatalf("event type = %q", notifier.lastReq.EventType)
+	}
+	if notifier.lastReq.Data["screen"] != "ORDER_DETAILS_SCREEN" {
+		t.Fatalf("screen = %q", notifier.lastReq.Data["screen"])
+	}
+}
+
+func TestNotifyCustomer_NoCustomerIDDoesNotSend(t *testing.T) {
+	notifier := &stubNotifier{}
+	svc := newTestTripService(&stubTripRepo{}, notifier)
+
+	svc.notifyCustomer(&models.Trip{OrderID: "ORD1849915231"}, &models.DeliveryExecutive{Name: "Chanda"}, eventDelivered)
+
+	if waitForSend(notifier) {
+		t.Fatal("expected no notification when CustomerUserID is blank")
+	}
+}
+
+func TestNotifyCustomer_NilNotifierDoesNotPanic(t *testing.T) {
+	svc := newTestTripService(&stubTripRepo{}, &stubNotifier{})
+	// Assign untyped nil directly. Passing a nil *stubNotifier into
+	// newTestTripService would store a typed nil in the interface field, so
+	// `s.notifier == nil` would be false and the guard would not fire.
+	svc.notifier = nil
+
+	// Must not panic.
+	svc.notifyCustomer(
+		&models.Trip{OrderID: "ORD1289752277", CustomerUserID: "US0418437320"},
+		&models.DeliveryExecutive{Name: "Chanda"},
+		eventDelivered,
+	)
+}
+
+// waitForSend polls the stub for up to ~500ms. Returns true once a send has
+// been recorded, false if none arrives. Used because notifyCustomer dispatches
+// on a goroutine.
+func waitForSend(n *stubNotifier) bool {
+	for i := 0; i < 50; i++ {
+		n.mu.Lock()
+		sent := n.sent
+		n.mu.Unlock()
+		if sent {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }

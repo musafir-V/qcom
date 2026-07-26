@@ -435,7 +435,7 @@ func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip
 			TS:        timezone.Now().UTC().Format(time.RFC3339),
 		})
 		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
-		s.notifyCustomerOrderDelivered(trip.OrderID)
+		s.notifyCustomer(trip, de, eventDelivered)
 		s.recordTripPayout(trip, de)
 		return nil
 	}
@@ -461,58 +461,44 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 		}
 		// Async: notify Java OUT_FOR_DELIVERY
 		go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", de.DEID)
-		s.notifyCustomerOutForDelivery(trip.OrderID)
+		s.notifyCustomer(trip, de, eventOutForDelivery)
 
 	}
 }
 
-func (s *TripService) notifyCustomerOutForDelivery(orderID string) {
-	s.notifyCustomer(orderID, "ORDER_OUT_FOR_DELIVERY", models.PriorityHigh,
-		"On the way!", "Your order is out for delivery.")
-}
-
-func (s *TripService) notifyCustomerOrderDelivered(orderID string) {
-	s.notifyCustomer(orderID, "ORDER_DELIVERED", models.PriorityHigh,
-		"Delivered!", "Your order has been delivered.")
-}
-
-func (s *TripService) notifyCustomer(orderID, eventType string, priority models.NotificationPriority, title, body string) {
+// notifyCustomer pushes a driver-triggered order update to the customer.
+//
+// Resolves the recipient from trip.CustomerUserID, which the assignment cron
+// sets at trip creation. It deliberately does NOT call the Java order-service:
+// the /internal/v1/orders/{ref}/notification-target endpoint this used to
+// depend on was never implemented, which silently killed every customer push.
+//
+// Dispatches on a goroutine so the driver's swipe-to-confirm is not delayed by
+// the FCM round-trip. Payload construction is synchronous and pure, so the
+// interesting logic stays testable.
+func (s *TripService) notifyCustomer(trip *models.Trip, de *models.DeliveryExecutive, event customerOrderEvent) {
 	if s.notifier == nil {
 		return
 	}
-	go func() {
-		ctx := context.Background()
-		target, err := s.javaClient.GetNotificationTarget(ctx, orderID)
-		if err != nil {
-			s.logger.WithError(err).WithField("order_id", orderID).Warn("customer notification target lookup failed")
-			return
-		}
-		if target == nil || target.CustomerID == "" {
-			s.logger.WithField("order_id", orderID).Debug("customer notification skipped — no target")
-			return
-		}
 
-		orderRef := target.OrderNumber
-		if orderRef == "" {
-			orderRef = orderID
-		}
-		data := map[string]string{
-			"order_id": orderRef,
-		}
-		if target.OrderUUID != "" {
-			data["order_uuid"] = target.OrderUUID
-		}
+	req, ok := buildCustomerNotification(trip, de, event)
+	if !ok {
+		s.logger.WithFields(logrus.Fields{
+			"order_id": tripOrderID(trip),
+			"event":    string(event),
+		}).Warn("customer push skipped — trip has no customer_user_id")
+		return
+	}
 
-		s.notifier.Send(ctx, models.NotificationSendRequest{
-			RecipientType: models.RecipientTypeCustomer,
-			RecipientID:   target.CustomerID,
-			EventType:     eventType,
-			Priority:      priority,
-			Title:         title,
-			Body:          body,
-			Data:          data,
-		})
-	}()
+	go s.notifier.Send(context.Background(), req)
+}
+
+// tripOrderID safely reads the order id for logging on the nil-trip path.
+func tripOrderID(trip *models.Trip) string {
+	if trip == nil {
+		return ""
+	}
+	return trip.OrderID
 }
 
 // syncJavaWithRetry retries the Java status update up to 3 times with backoff.
