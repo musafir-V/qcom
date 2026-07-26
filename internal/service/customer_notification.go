@@ -47,11 +47,21 @@ func buildCustomerNotification(
 	// trackOrder(), so no further resolution is needed.
 	orderNumber := trip.OrderID
 
+	data := orderNavigationData(orderNumber)
+
 	var title, body string
 	switch event {
 	case eventOutForDelivery:
 		title = "On the way!"
 		body = fmt.Sprintf("%s has picked up order %s and is heading to you.", driverName(de), orderNumber)
+		// The OTP the customer must read out to the rider. It rides along in the
+		// push so they have it without opening the app; the tracking endpoint
+		// remains the source of truth. Older trips may carry no OTP, in which
+		// case the push degrades to the plain heading-to-you copy.
+		if otp := deliveryOTP(trip); otp != "" {
+			body += fmt.Sprintf(" Share OTP %s to receive it.", otp)
+			data["delivery_otp"] = otp
+		}
 	case eventDelivered:
 		title = "Delivered!"
 		body = fmt.Sprintf("Order %s has been delivered. Thanks for shopping with Bunzo!", orderNumber)
@@ -66,8 +76,18 @@ func buildCustomerNotification(
 		Priority:      models.PriorityHigh,
 		Title:         title,
 		Body:          body,
-		Data:          orderNavigationData(orderNumber),
+		Data:          data,
 	}, true
+}
+
+// deliveryOTP returns the drop task's OTP, or "" when the trip has no drop task
+// or the task carries no usable OTP.
+func deliveryOTP(trip *models.Trip) string {
+	drop := trip.DropTask()
+	if drop == nil {
+		return ""
+	}
+	return strings.TrimSpace(drop.OTP)
 }
 
 // driverName returns the DE's display name, or a neutral fallback when the

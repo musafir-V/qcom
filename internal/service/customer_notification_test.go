@@ -35,6 +35,73 @@ func TestBuildCustomerNotification_OutForDelivery(t *testing.T) {
 	}
 }
 
+func TestBuildCustomerNotification_OutForDeliveryIncludesOTP(t *testing.T) {
+	trip := &models.Trip{
+		OrderID:        "ORD1289752277",
+		CustomerUserID: "US0418437320",
+		Tasks: []models.Task{
+			{Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+			{Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "4821"},
+		},
+	}
+
+	req, ok := buildCustomerNotification(trip, &models.DeliveryExecutive{Name: "Chanda"}, eventOutForDelivery)
+	if !ok {
+		t.Fatal("expected notification to be built")
+	}
+	want := "Chanda has picked up order ORD1289752277 and is heading to you. Share OTP 4821 to receive it."
+	if req.Body != want {
+		t.Fatalf("body = %q, want %q", req.Body, want)
+	}
+	if req.Data["delivery_otp"] != "4821" {
+		t.Fatalf("delivery_otp = %q, want 4821", req.Data["delivery_otp"])
+	}
+}
+
+func TestBuildCustomerNotification_OutForDeliveryBlankOTPOmitted(t *testing.T) {
+	trip := &models.Trip{
+		OrderID:        "ORD1289752277",
+		CustomerUserID: "US0418437320",
+		Tasks: []models.Task{
+			{Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "  "},
+		},
+	}
+
+	req, ok := buildCustomerNotification(trip, &models.DeliveryExecutive{Name: "Chanda"}, eventOutForDelivery)
+	if !ok {
+		t.Fatal("expected notification to be built")
+	}
+	want := "Chanda has picked up order ORD1289752277 and is heading to you."
+	if req.Body != want {
+		t.Fatalf("body = %q, want %q", req.Body, want)
+	}
+	if _, present := req.Data["delivery_otp"]; present {
+		t.Fatalf("delivery_otp should be absent, got %q", req.Data["delivery_otp"])
+	}
+}
+
+func TestBuildCustomerNotification_DeliveredNeverCarriesOTP(t *testing.T) {
+	trip := &models.Trip{
+		OrderID:        "ORD1848863216",
+		CustomerUserID: "US0418437320",
+		Tasks: []models.Task{
+			{Type: models.TaskTypeDrop, Status: models.TaskStatusCompleted, OTP: "4821"},
+		},
+	}
+
+	req, ok := buildCustomerNotification(trip, &models.DeliveryExecutive{Name: "Chanda"}, eventDelivered)
+	if !ok {
+		t.Fatal("expected notification to be built")
+	}
+	if _, present := req.Data["delivery_otp"]; present {
+		t.Fatal("delivered push must not leak the OTP")
+	}
+	want := "Order ORD1848863216 has been delivered. Thanks for shopping with Bunzo!"
+	if req.Body != want {
+		t.Fatalf("body = %q, want %q", req.Body, want)
+	}
+}
+
 func TestBuildCustomerNotification_Delivered(t *testing.T) {
 	trip := &models.Trip{OrderID: "ORD1848863216", CustomerUserID: "d8f8f364-1b3e-4a20-84be-e27245b7c164"}
 	de := &models.DeliveryExecutive{Name: "Chanda"}
