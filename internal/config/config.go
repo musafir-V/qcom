@@ -160,6 +160,11 @@ func Load() (*Config, error) {
 			CredentialsB64: getEnv("FIREBASE_CREDENTIALS_B64", ""),
 		},
 		Dispute: DisputeConfig{
+			// Dispute store attribution (DisputeService.resolveStoreID) resolves the
+			// store from the disputed order's Trip, which is only safe because every
+			// route to DELIVERED goes through a trip. Widening this list to a
+			// pre-dispatch status will silently start producing disputes stamped
+			// StoreID=UNKNOWN, with no error anywhere.
 			EligibleOrderStatuses: splitAndTrim(getEnv("DISPUTE_ELIGIBLE_ORDER_STATUSES", "DELIVERED")),
 		},
 		VonageVoice: loadVoiceConfig(),

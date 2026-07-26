@@ -54,3 +54,30 @@ func TestDisputeStatusIndexFor(t *testing.T) {
 		}
 	})
 }
+
+// TestDisputeStatusIndexFor_MatchesWritePathKey guards against the write path
+// (models.DisputeStoreStatusKeyFor) and the read path (disputeStatusIndexFor's
+// prefix + status) drifting apart. They build the same "<store>#<status>" key
+// format independently, in different packages, and each is currently pinned
+// only by hardcoded literals in its own package's tests. Nothing else couples
+// them, and a divergence would be silent: queries would just return nothing.
+func TestDisputeStatusIndexFor_MatchesWritePathKey(t *testing.T) {
+	cases := []struct {
+		storeID string
+		status  models.DisputeStatus
+	}{
+		{"42", models.DisputeStatusOpen},
+		{"042", models.DisputeStatusOpen},
+		{"221", models.DisputeStatusResolved},
+		{models.UnknownStoreID, models.DisputeStatusUnderReview},
+	}
+	for _, tc := range cases {
+		_, _, prefix := disputeStatusIndexFor(tc.storeID)
+		read := prefix + string(tc.status)
+		write := models.DisputeStoreStatusKeyFor(tc.storeID, tc.status)
+		if read != write {
+			t.Errorf("read-path key %q != write-path key %q (store %q, status %q)",
+				read, write, tc.storeID, tc.status)
+		}
+	}
+}
