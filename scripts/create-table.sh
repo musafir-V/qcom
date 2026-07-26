@@ -141,6 +141,13 @@ create_gsi "DisputeStatusIndex" \
   "AttributeName=dispute_status_key,AttributeType=S" \
   "AttributeName=created_at,AttributeType=S"
 
+# DisputeStoreStatusIndex — admin dispute lists scoped to a store (sparse: only
+# disputes with a resolved store set dispute_store_status_key)
+create_gsi "DisputeStoreStatusIndex" \
+  '[{"Create":{"IndexName":"DisputeStoreStatusIndex","KeySchema":[{"AttributeName":"dispute_store_status_key","KeyType":"HASH"},{"AttributeName":"created_at","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]' \
+  "AttributeName=dispute_store_status_key,AttributeType=S" \
+  "AttributeName=created_at,AttributeType=S"
+
 # DETripsIndex — DE earnings / payout queries
 create_gsi "DETripsIndex" \
   '[{"Create":{"IndexName":"DETripsIndex","KeySchema":[{"AttributeName":"de_id","KeyType":"HASH"},{"AttributeName":"completed_at","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]' \
