@@ -490,7 +490,22 @@ func (s *TripService) notifyCustomer(trip *models.Trip, de *models.DeliveryExecu
 		return
 	}
 
-	go s.notifier.Send(context.Background(), req)
+	go func() {
+		res := s.notifier.Send(context.Background(), req)
+		fields := logrus.Fields{
+			"order_id":     req.Data["order_number"],
+			"event":        req.EventType,
+			"recipient_id": req.RecipientID,
+			"status":       string(res.Status),
+		}
+		if res.Reason != "" {
+			fields["reason"] = res.Reason
+		}
+		// Logged at Info on every outcome — including "skipped" — because the
+		// previous version discarded this result, which is how a completely
+		// broken push pipeline went unnoticed in production.
+		s.logger.WithFields(fields).Info("customer push outcome")
+	}()
 }
 
 // tripOrderID safely reads the order id for logging on the nil-trip path.

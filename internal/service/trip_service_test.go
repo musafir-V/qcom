@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -481,6 +483,7 @@ type stubNotifier struct {
 	mu      sync.Mutex
 	sent    bool
 	lastReq models.NotificationSendRequest
+	result  models.NotificationSendResult
 }
 
 func (s *stubNotifier) Send(_ context.Context, req models.NotificationSendRequest) models.NotificationSendResult {
@@ -488,7 +491,10 @@ func (s *stubNotifier) Send(_ context.Context, req models.NotificationSendReques
 	defer s.mu.Unlock()
 	s.sent = true
 	s.lastReq = req
-	return models.NotificationSendResult{Status: models.SendStatusSent}
+	if s.result.Status == "" {
+		return models.NotificationSendResult{Status: models.SendStatusSent}
+	}
+	return s.result
 }
 
 func (s *stubNotifier) UpsertDeviceToken(_ context.Context, _ models.RecipientType, _, _, _ string) error {
@@ -622,4 +628,69 @@ func waitForSend(n *stubNotifier) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+// safeBuf is a mutex-guarded io.Writer for capturing log output written from
+// the notify goroutine. A bare bytes.Buffer would data-race under -race:
+// logrus writes from the goroutine while the test reads from the test
+// goroutine.
+type safeBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *safeBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// waitForLog polls the captured output for a substring, up to ~1s.
+// Polling, not a fixed sleep: the log line is written after Send returns, so
+// waitForSend has already returned by then and cannot be used to synchronise.
+func waitForLog(w *safeBuf, want string) bool {
+	for i := 0; i < 100; i++ {
+		if strings.Contains(w.String(), want) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+func TestNotifyCustomer_LogsSkippedOutcome(t *testing.T) {
+	notifier := &stubNotifier{result: models.NotificationSendResult{
+		Status: models.SendStatusSkipped,
+		Reason: "no_token",
+	}}
+	out := &safeBuf{}
+	logger := logrus.New()
+	logger.SetOutput(out)
+	logger.SetLevel(logrus.InfoLevel)
+
+	svc := newTestTripService(&stubTripRepo{}, notifier)
+	svc.logger = logger
+
+	svc.notifyCustomer(
+		&models.Trip{OrderID: "ORD1289752277", CustomerUserID: "US0418437320"},
+		&models.DeliveryExecutive{Name: "Chanda"},
+		eventDelivered,
+	)
+
+	// Wait on the last field to be written, then assert the rest are present.
+	if !waitForLog(out, "no_token") {
+		t.Fatalf("timed out waiting for the outcome log; got: %s", out.String())
+	}
+	got := out.String()
+	for _, want := range []string{"ORDER_DELIVERED", "ORD1289752277", "skipped", "no_token"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log missing %q; got: %s", want, got)
+		}
+	}
 }
