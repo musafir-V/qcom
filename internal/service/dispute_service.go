@@ -51,12 +51,13 @@ type DisputeService struct {
 	disputes         disputeStore
 	dispositions     dispositionStore
 	orders           orderValidator
+	trips            tripStoreForDispute
 	notifier         DisputeNotifier
 	eligibleStatuses map[string]bool
 	logger           *logrus.Logger
 }
 
-func NewDisputeService(disputes disputeStore, dispositions dispositionStore, orders orderValidator, notifier DisputeNotifier, eligibleStatuses []string, logger *logrus.Logger) *DisputeService {
+func NewDisputeService(disputes disputeStore, dispositions dispositionStore, orders orderValidator, trips tripStoreForDispute, notifier DisputeNotifier, eligibleStatuses []string, logger *logrus.Logger) *DisputeService {
 	set := make(map[string]bool, len(eligibleStatuses))
 	for _, s := range eligibleStatuses {
 		set[strings.ToUpper(strings.TrimSpace(s))] = true
@@ -65,6 +66,7 @@ func NewDisputeService(disputes disputeStore, dispositions dispositionStore, ord
 		disputes:         disputes,
 		dispositions:     dispositions,
 		orders:           orders,
+		trips:            trips,
 		notifier:         notifier,
 		eligibleStatuses: set,
 		logger:           logger,
@@ -146,6 +148,7 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 		Description:     desc,
 		PhotoKeys:       in.PhotoKeys,
 		Status:          models.DisputeStatusOpen,
+		StoreID:         s.resolveStoreID(ctx, in.OrderNumber),
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -159,6 +162,34 @@ func (s *DisputeService) CreateDispute(ctx context.Context, in CreateDisputeInpu
 	// 6. Emit creation seam (best-effort).
 	s.notifier.DisputeCreated(ctx, d)
 	return d, nil
+}
+
+// resolveStoreID finds the darkstore for a disputed order via its trip.
+//
+// This is safe because disputes are only allowed on orders in
+// DISPUTE_ELIGIBLE_ORDER_STATUSES, which defaults to DELIVERED (see
+// config.go), and every route to DELIVERED goes through a trip — the
+// driver-app drop flow and the admin drop/pickup overrides alike. If that env
+// var is ever widened to a pre-dispatch status, disputes on those orders will
+// silently start resolving to UNKNOWN.
+//
+// Fails open: a missing trip, a lookup error, or an empty Trip.StoreID all
+// yield UnknownStoreID. A customer's complaint is never rejected because we
+// could not attribute it to a store.
+func (s *DisputeService) resolveStoreID(ctx context.Context, orderNumber string) string {
+	if s.trips == nil {
+		return models.UnknownStoreID
+	}
+	trip, err := s.trips.GetByOrderID(ctx, orderNumber)
+	if err != nil {
+		s.logger.WithError(err).WithField("order_number", orderNumber).
+			Warn("failed to resolve store for dispute; falling back to UNKNOWN")
+		return models.UnknownStoreID
+	}
+	if trip == nil || trip.StoreID == "" {
+		return models.UnknownStoreID
+	}
+	return trip.StoreID
 }
 
 func (s *DisputeService) GetDispute(ctx context.Context, customerID, disputeID string) (*models.Dispute, error) {

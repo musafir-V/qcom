@@ -66,7 +66,7 @@ type noopNotifier struct{}
 func (noopNotifier) DisputeCreated(_ context.Context, _ *models.Dispute) {}
 
 func newTestDisputeService(ds *stubDisputeStore, dp *stubDispositionStore, ov *stubOrderValidator) *DisputeService {
-	return NewDisputeService(ds, dp, ov, noopNotifier{}, []string{"DELIVERED"}, logrus.New())
+	return NewDisputeService(ds, dp, ov, nil, noopNotifier{}, []string{"DELIVERED"}, logrus.New())
 }
 
 func basicDisposition() *models.DisputeDisposition {
@@ -227,4 +227,73 @@ func TestGetDisputeByOrder_Forbidden(t *testing.T) {
 	if !errors.Is(err, ErrDisputeForbidden) {
 		t.Fatalf("want ErrDisputeForbidden, got %v", err)
 	}
+}
+
+func TestCreateDispute_StampsStoreIDFromTrip(t *testing.T) {
+	svc, store := newDisputeSvcWithTrip(&models.Trip{OrderID: "ORD1", StoreID: "42"}, nil)
+
+	if _, err := svc.CreateDispute(context.Background(), validCreateInput()); err != nil {
+		t.Fatalf("CreateDispute: %v", err)
+	}
+	if store.created.StoreID != "42" {
+		t.Errorf("StoreID = %q, want %q", store.created.StoreID, "42")
+	}
+}
+
+func TestCreateDispute_NoTripFailsOpenToUnknown(t *testing.T) {
+	svc, store := newDisputeSvcWithTrip(nil, nil)
+
+	if _, err := svc.CreateDispute(context.Background(), validCreateInput()); err != nil {
+		t.Fatalf("CreateDispute must not fail when the trip is missing: %v", err)
+	}
+	if store.created.StoreID != models.UnknownStoreID {
+		t.Errorf("StoreID = %q, want %q", store.created.StoreID, models.UnknownStoreID)
+	}
+}
+
+func TestCreateDispute_TripLookupErrorFailsOpenToUnknown(t *testing.T) {
+	svc, store := newDisputeSvcWithTrip(nil, errors.New("dynamo exploded"))
+
+	if _, err := svc.CreateDispute(context.Background(), validCreateInput()); err != nil {
+		t.Fatalf("CreateDispute must not fail when the trip lookup errors: %v", err)
+	}
+	if store.created.StoreID != models.UnknownStoreID {
+		t.Errorf("StoreID = %q, want %q", store.created.StoreID, models.UnknownStoreID)
+	}
+}
+
+func TestCreateDispute_TripWithEmptyStoreFailsOpenToUnknown(t *testing.T) {
+	svc, store := newDisputeSvcWithTrip(&models.Trip{OrderID: "ORD1", StoreID: ""}, nil)
+
+	if _, err := svc.CreateDispute(context.Background(), validCreateInput()); err != nil {
+		t.Fatalf("CreateDispute: %v", err)
+	}
+	if store.created.StoreID != models.UnknownStoreID {
+		t.Errorf("StoreID = %q, want %q", store.created.StoreID, models.UnknownStoreID)
+	}
+}
+
+// validCreateInput returns an input that passes every non-store validation, so
+// these tests exercise only store resolution.
+func validCreateInput() CreateDisputeInput {
+	return CreateDisputeInput{
+		CustomerID:      "CUS1",
+		OrderNumber:     "ORD1",
+		DispositionCode: "DAMAGED",
+		Description:     "the item arrived damaged",
+	}
+}
+
+func newDisputeSvcWithTrip(trip *models.Trip, tripErr error) (*DisputeService, *stubDisputeStore) {
+	store := &stubDisputeStore{}
+	svc := NewDisputeService(
+		store,
+		&stubDispositionStore{disp: &models.DisputeDisposition{Code: "DAMAGED", Title: "Damaged", Active: true}},
+		&stubOrderValidator{status: "DELIVERED"},
+		&stubTripStoreForDispute{trip: trip, err: tripErr},
+		noopNotifier{},
+		[]string{"DELIVERED"},
+		logrus.New(),
+	)
+	return svc, store
 }
