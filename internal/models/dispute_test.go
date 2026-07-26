@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 func TestDisputeKeys(t *testing.T) {
@@ -74,5 +75,67 @@ func TestDisputeMarshalHasNoOrderIDAttribute(t *testing.T) {
 	}
 	if _, ok := m["dispute_order_number"]; !ok {
 		t.Errorf("marshaled map must have key \"dispute_order_number\", got keys: %v", m)
+	}
+}
+
+func TestDisputeStoreStatusKeyFor(t *testing.T) {
+	cases := []struct {
+		name    string
+		storeID string
+		status  DisputeStatus
+		want    string
+	}{
+		{"store and status", "42", DisputeStatusOpen, "42#OPEN"},
+		{"unknown store", UnknownStoreID, DisputeStatusOpen, "UNKNOWN#OPEN"},
+		{"resolved", "7", DisputeStatusResolved, "7#RESOLVED"},
+		{"empty store yields empty key", "", DisputeStatusOpen, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DisputeStoreStatusKeyFor(tc.storeID, tc.status); got != tc.want {
+				t.Errorf("DisputeStoreStatusKeyFor(%q, %q) = %q, want %q", tc.storeID, tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUnknownStoreIDValue(t *testing.T) {
+	if UnknownStoreID != "UNKNOWN" {
+		t.Errorf("UnknownStoreID = %q, want %q", UnknownStoreID, "UNKNOWN")
+	}
+}
+
+func TestDisputeMarshalOmitsEmptyStoreAttributes(t *testing.T) {
+	d := Dispute{DisputeID: "DP1", OrderNumber: "ORD1", Status: DisputeStatusOpen}
+	item, err := attributevalue.MarshalMap(d)
+	if err != nil {
+		t.Fatalf("MarshalMap: %v", err)
+	}
+	if _, ok := item["store_id"]; ok {
+		t.Error("store_id attribute present on a dispute with no store; must be omitted")
+	}
+	if _, ok := item["dispute_store_status_key"]; ok {
+		t.Error("dispute_store_status_key present with no store; must be omitted to keep the GSI sparse")
+	}
+}
+
+func TestDisputeMarshalIncludesStoreAttributesWhenSet(t *testing.T) {
+	d := Dispute{
+		DisputeID:             "DP1",
+		OrderNumber:           "ORD1",
+		Status:                DisputeStatusOpen,
+		StoreID:               "42",
+		DisputeStoreStatusKey: DisputeStoreStatusKeyFor("42", DisputeStatusOpen),
+	}
+	item, err := attributevalue.MarshalMap(d)
+	if err != nil {
+		t.Fatalf("MarshalMap: %v", err)
+	}
+	got, ok := item["dispute_store_status_key"].(*types.AttributeValueMemberS)
+	if !ok {
+		t.Fatalf("dispute_store_status_key missing or wrong type: %#v", item["dispute_store_status_key"])
+	}
+	if got.Value != "42#OPEN" {
+		t.Errorf("dispute_store_status_key = %q, want %q", got.Value, "42#OPEN")
 	}
 }
