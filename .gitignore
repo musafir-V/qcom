@@ -9,3 +9,6 @@ data/ssm-export*.json
 
 # Git worktrees for isolated feature work.
 .worktrees/
+
+# Subagent-driven-development scratch: ledgers, task briefs, review packages.
+.superpowers/
