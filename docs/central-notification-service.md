@@ -323,7 +323,7 @@ When adding a new `event_type`, coordinate with mobile teams so the app handles 
 ### Backend engineer (order-service)
 
 - [ ] Set `QCOM_NOTIFICATION_ENABLED=true` and `QCOM_NOTIFICATION_BASE_URL` to the private qcom host
-- [ ] Ensure order-service can reach qcom `/internal/v1/notifications/send` and qcom can reach order-service `/internal/v1/orders/{ref}/notification-target`
+- [ ] Ensure order-service can reach qcom `/internal/v1/notifications/send`. qcom does **not** call order-service for notification targets — customer pushes triggered by driver action resolve the recipient from `Trip.CustomerUserID`.
 - [ ] On pick complete → `ORDER_PACKED` is sent automatically (no code changes per notification)
 - [ ] Do **not** remove `FcmPickerNotificationService` — picker→picker push stays on order-service
 
