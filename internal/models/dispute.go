@@ -32,8 +32,8 @@ type Dispute struct {
 	OrderNumber string `json:"order_number" dynamodbav:"order_number"`
 	// DisputeOrderNumber is the sparse-GSI (DisputeOrderIndex) hash key; equals OrderNumber.
 	// It is a dispute-only attribute so trip items never appear in the index.
-	DisputeOrderNumber string        `json:"-" dynamodbav:"dispute_order_number"`
-	CustomerID         string        `json:"customer_id" dynamodbav:"customer_id"`
+	DisputeOrderNumber string `json:"-" dynamodbav:"dispute_order_number"`
+	CustomerID         string `json:"customer_id" dynamodbav:"customer_id"`
 	// StoreID is the darkstore the disputed order belonged to, resolved from the
 	// trip at creation time. "UNKNOWN" when it could not be resolved; empty on
 	// disputes created before store attribution existed (never backfilled).
@@ -41,12 +41,12 @@ type Dispute struct {
 	// DisputeStoreStatusKey is the sparse-GSI (DisputeStoreStatusIndex) hash key;
 	// equals "<store_id>#<status>". Empty — and therefore absent from the item —
 	// when StoreID is empty, which keeps legacy disputes out of the index.
-	DisputeStoreStatusKey string `json:"-" dynamodbav:"dispute_store_status_key,omitempty"`
-	DispositionCode       string `json:"disposition_code" dynamodbav:"disposition_code"`
-	Description        string        `json:"description,omitempty" dynamodbav:"description,omitempty"`
-	PhotoKeys          []string      `json:"photo_keys,omitempty" dynamodbav:"photo_keys,omitempty"`
-	Status             DisputeStatus `json:"status" dynamodbav:"status"`
-	ResolutionNote     string        `json:"resolution_note,omitempty" dynamodbav:"resolution_note,omitempty"`
+	DisputeStoreStatusKey string        `json:"-" dynamodbav:"dispute_store_status_key,omitempty"`
+	DispositionCode       string        `json:"disposition_code" dynamodbav:"disposition_code"`
+	Description           string        `json:"description,omitempty" dynamodbav:"description,omitempty"`
+	PhotoKeys             []string      `json:"photo_keys,omitempty" dynamodbav:"photo_keys,omitempty"`
+	Status                DisputeStatus `json:"status" dynamodbav:"status"`
+	ResolutionNote        string        `json:"resolution_note,omitempty" dynamodbav:"resolution_note,omitempty"`
 	// ResolvedBy is the admin username that last changed the status (audit).
 	ResolvedBy string `json:"resolved_by,omitempty" dynamodbav:"resolved_by,omitempty"`
 	// DisputeStatusKey is the sparse-GSI (DisputeStatusIndex) hash key; equals string(Status).
