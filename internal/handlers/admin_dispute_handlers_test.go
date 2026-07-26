@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/qcom/qcom/internal/service"
@@ -35,3 +36,26 @@ var errAdminTestSentinel = &sentinelErr{}
 type sentinelErr struct{}
 
 func (*sentinelErr) Error() string { return "boom" }
+
+func TestStoreFilterFrom(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"absent means all stores", "/admin/disputes?status=OPEN", ""},
+		{"empty means all stores", "/admin/disputes?status=OPEN&store_id=", ""},
+		{"whitespace means all stores", "/admin/disputes?status=OPEN&store_id=%20%20", ""},
+		{"numeric store", "/admin/disputes?status=OPEN&store_id=42", "42"},
+		{"store is trimmed", "/admin/disputes?status=OPEN&store_id=%2042%20", "42"},
+		{"unknown sentinel passes through", "/admin/disputes?status=OPEN&store_id=UNKNOWN", "UNKNOWN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			if got := storeFilterFrom(req); got != tc.want {
+				t.Errorf("storeFilterFrom(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+}
