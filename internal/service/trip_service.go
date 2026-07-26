@@ -478,6 +478,10 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 // interesting logic stays testable.
 func (s *TripService) notifyCustomer(trip *models.Trip, de *models.DeliveryExecutive, event customerOrderEvent) {
 	if s.notifier == nil {
+		s.logger.WithFields(logrus.Fields{
+			"order_id": tripOrderID(trip),
+			"event":    string(event),
+		}).Debug("customer push skipped — notifier not configured")
 		return
 	}
 
@@ -486,14 +490,22 @@ func (s *TripService) notifyCustomer(trip *models.Trip, de *models.DeliveryExecu
 		s.logger.WithFields(logrus.Fields{
 			"order_id": tripOrderID(trip),
 			"event":    string(event),
-		}).Warn("customer push skipped — trip has no customer_user_id")
+		}).Warn("customer push skipped — nothing to send")
 		return
 	}
 
+	// Captured before the goroutine so the outcome log does not depend on the
+	// wire-format "order_number" key inside req.Data, which exists only to
+	// satisfy the mobile app's deep-link payload and could be renamed
+	// independently of this log.
+	orderNumber := tripOrderID(trip)
+
 	go func() {
-		res := s.notifier.Send(context.Background(), req)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		res := s.notifier.Send(ctx, req)
 		fields := logrus.Fields{
-			"order_id":     req.Data["order_number"],
+			"order_id":     orderNumber,
 			"event":        req.EventType,
 			"recipient_id": req.RecipientID,
 			"status":       string(res.Status),

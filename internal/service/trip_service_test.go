@@ -420,6 +420,9 @@ type stubTripRepo struct {
 	updatePaymentCalled bool
 	updatePaymentErr    error
 	capturedPayment     *models.Payment
+	updateStatusCalled  bool
+	updateStatusTripID  string
+	updateStatusStatus  models.TripStatus
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -450,8 +453,11 @@ func (s *stubTripRepo) UpdateTasks(ctx context.Context, tripID string, tasks []m
 	return nil
 }
 
-func (s *stubTripRepo) UpdateStatus(_ context.Context, _ string, _ models.TripStatus) error {
-	panic("stubTripRepo.UpdateStatus: unexpected call")
+func (s *stubTripRepo) UpdateStatus(_ context.Context, tripID string, status models.TripStatus) error {
+	s.updateStatusCalled = true
+	s.updateStatusTripID = tripID
+	s.updateStatusStatus = status
+	return nil
 }
 
 func (s *stubTripRepo) Accept(_ context.Context, _, _ string) error {
@@ -514,11 +520,14 @@ func newTestTripService(repo *stubTripRepo, notifier *stubNotifier) *TripService
 }
 
 // newTripServiceForTest creates a TripService wired with stubs for trip and DE
-// repos, suitable for testing UpdateTaskStatus paths.
-func newTripServiceForTest(repo *stubTripRepo, deRepo *stubDERepo) *TripService {
+// repos, suitable for testing UpdateTaskStatus paths. notifier is wired in too
+// so the full applyTaskCompletion funnel — including the customer push — is
+// exercised, not just the layer below it.
+func newTripServiceForTest(repo *stubTripRepo, deRepo *stubDERepo, notifier *stubNotifier) *TripService {
 	return &TripService{
 		tripRepo: repo,
 		deRepo:   deRepo,
+		notifier: notifier,
 		logger:   logrus.New(),
 	}
 }
@@ -540,7 +549,7 @@ func TestUpdateTaskStatus_PhotoS3Key_StoredOnDrop(t *testing.T) {
 		},
 	}
 	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
-	svc := newTripServiceForTest(repo, deRepo)
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 
 	err := svc.UpdateTaskStatus(context.Background(), "t1", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "orders/ORD-001/drop/de-1/abc.jpg")
 	if err != nil {
@@ -560,6 +569,89 @@ func TestUpdateTaskStatus_PhotoS3Key_StoredOnDrop(t *testing.T) {
 	const wantKey = "orders/ORD-001/drop/de-1/abc.jpg"
 	if dropTask.PhotoS3Key != wantKey {
 		t.Errorf("drop task PhotoS3Key = %q, want %q", dropTask.PhotoS3Key, wantKey)
+	}
+}
+
+// TestUpdateTaskStatus_DropCompletion_NotifiesCustomer pins the full
+// production funnel for the drop path: driver completes the drop task via
+// UpdateTaskStatus → applyTaskCompletion → notifyCustomer → a customer push
+// actually goes out. Every earlier notifyCustomer test called that method
+// directly, which is not the layer that was broken in production — the
+// dead-on-arrival bug lived in the call site inside applyTaskCompletion, and
+// no test exercised it. This test would fail if that call site were deleted.
+func TestUpdateTaskStatus_DropCompletion_NotifiesCustomer(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:         "t1",
+			OrderID:        "ORD-DROP-1",
+			DEID:           "de-1",
+			CustomerUserID: "US-CUSTOMER-DROP",
+			Status:         models.TripStatusOutForDelivery,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted, CompletedAt: "2026-06-24T10:00:00Z"},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001", Name: "Chanda"}}
+	notifier := &stubNotifier{}
+	svc := newTripServiceForTest(repo, deRepo, notifier)
+
+	err := svc.UpdateTaskStatus(context.Background(), "t1", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !waitForSend(notifier) {
+		t.Fatal("expected a customer push to be sent when the drop task completes")
+	}
+	if notifier.lastReq.EventType != "ORDER_DELIVERED" {
+		t.Fatalf("event type = %q, want ORDER_DELIVERED", notifier.lastReq.EventType)
+	}
+	if notifier.lastReq.RecipientID != "US-CUSTOMER-DROP" {
+		t.Fatalf("recipient id = %q, want %q", notifier.lastReq.RecipientID, "US-CUSTOMER-DROP")
+	}
+}
+
+// TestUpdateTaskStatus_PickupCompletion_NotifiesCustomer is the pickup-path
+// mirror of TestUpdateTaskStatus_DropCompletion_NotifiesCustomer: driver
+// completes pickup via UpdateTaskStatus → applyTaskCompletion →
+// onTaskCompleted → notifyCustomer. This would fail if that call site were
+// deleted.
+func TestUpdateTaskStatus_PickupCompletion_NotifiesCustomer(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:         "t2",
+			OrderID:        "ORD-PICKUP-1",
+			DEID:           "de-1",
+			CustomerUserID: "US-CUSTOMER-PICKUP",
+			Status:         models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001", Name: "Chanda"}}
+	notifier := &stubNotifier{}
+	svc := newTripServiceForTest(repo, deRepo, notifier)
+
+	err := svc.UpdateTaskStatus(context.Background(), "t2", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !waitForSend(notifier) {
+		t.Fatal("expected a customer push to be sent when the pickup task completes")
+	}
+	if notifier.lastReq.EventType != "ORDER_OUT_FOR_DELIVERY" {
+		t.Fatalf("event type = %q, want ORDER_OUT_FOR_DELIVERY", notifier.lastReq.EventType)
+	}
+	if notifier.lastReq.RecipientID != "US-CUSTOMER-PICKUP" {
+		t.Fatalf("recipient id = %q, want %q", notifier.lastReq.RecipientID, "US-CUSTOMER-PICKUP")
+	}
+	if !repo.updateStatusCalled || repo.updateStatusStatus != models.TripStatusOutForDelivery {
+		t.Fatalf("expected trip status mirrored to out_for_delivery, got called=%v status=%q", repo.updateStatusCalled, repo.updateStatusStatus)
 	}
 }
 
