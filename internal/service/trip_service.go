@@ -10,6 +10,7 @@ import (
 
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
@@ -584,9 +585,10 @@ func validateDropOTP(task models.Task, otp string) error {
 
 // codAccrualAmount returns the cash a DE collects on completing this trip's
 // drop. Only COD (collect_cash) trips accrue in-hand cash; prepaid trips are 0.
+// Rounded to 2dp so DynamoDB never stores float64 binary noise.
 func codAccrualAmount(trip *models.Trip) float64 {
 	if trip.Payment != nil && trip.Payment.CollectCash {
-		return trip.Payment.AmountZMW
+		return money.Round2ZMW(trip.Payment.AmountZMW)
 	}
 	return 0
 }

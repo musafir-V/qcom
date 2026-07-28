@@ -8,6 +8,7 @@ import (
 
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
 )
@@ -30,13 +31,16 @@ func ValidateDepositAmount(amount float64) error {
 }
 
 // ClampDeposit applies a requested deposit against current in-hand cash,
-// flooring the new balance at zero. Returns (applied, newBalance).
+// flooring the new balance at zero. Returns (applied, newBalance). Both inputs
+// and outputs are rounded to 2dp so float noise never blocks a deposit.
 func ClampDeposit(requested, inHand float64) (applied, newBalance float64) {
+	requested = money.Round2ZMW(requested)
+	inHand = money.Round2ZMW(inHand)
 	applied = requested
 	if applied > inHand {
 		applied = inHand
 	}
-	return applied, inHand - applied
+	return money.Round2ZMW(applied), money.Round2ZMW(inHand - applied)
 }
 
 type CashDepositService struct {
@@ -80,6 +84,7 @@ func (s *CashDepositService) RecordDeposit(ctx context.Context, phone, depositID
 	}
 
 	applied, newBalance := ClampDeposit(requested, de.InHandCashZMW)
+	expectedInHand := money.Round2ZMW(de.InHandCashZMW)
 
 	if applied == 0 {
 		return nil, op.Outcome("no_cash_in_hand", ErrNoCashInHand)
@@ -88,12 +93,14 @@ func (s *CashDepositService) RecordDeposit(ctx context.Context, phone, depositID
 	entry := &models.CashDepositLedger{
 		DEID:               de.PhoneNumber,
 		DepositID:          depositID,
-		RequestedAmountZMW: requested,
+		RequestedAmountZMW: money.Round2ZMW(requested),
 		AppliedAmountZMW:   applied,
 		CreatedAt:          time.Now().UTC().Format(time.RFC3339),
 	}
 
-	if err := s.deRepo.ApplyCashDeposit(ctx, de.PhoneNumber, de.InHandCashZMW, newBalance, entry); err != nil {
+	// Pass the rounded expected balance so ApplyCashDeposit's lock matches
+	// both clean and float-polluted DynamoDB values (via epsilon band).
+	if err := s.deRepo.ApplyCashDeposit(ctx, de.PhoneNumber, expectedInHand, newBalance, entry); err != nil {
 		if errors.Is(err, repository.ErrCashDepositConflict) {
 			return nil, op.Outcome("conflict", ErrDepositConflict)
 		}

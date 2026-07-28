@@ -14,6 +14,7 @@ import (
 	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/sirupsen/logrus"
 )
 
@@ -335,10 +336,10 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 						":store":    &types.AttributeValueMemberS{Value: storeID},
 						":duty":     &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
 						":deadline": &types.AttributeValueMemberS{Value: deadline},
-						// FormatFloat with precision -1 preserves fractional ZMW (e.g. 482.50); the
-						// payout fields elsewhere use "%.0f" because they round to whole kwacha.
-						":cod":  &types.AttributeValueMemberN{Value: strconv.FormatFloat(codAmount, 'f', -1, 64)},
-						":zero": &types.AttributeValueMemberN{Value: "0"},
+						// Always persist COD accrual at 2dp so float64 noise cannot
+						// pollute in_hand_cash_zmw and break later cash deposits.
+						":cod":  &types.AttributeValueMemberN{Value: money.FormatZMW(codAmount)},
+						":zero": &types.AttributeValueMemberN{Value: "0.00"},
 					},
 				},
 			},

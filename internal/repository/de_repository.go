@@ -17,6 +17,7 @@ import (
 	"github.com/qcom/qcom/internal/ids"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/sirupsen/logrus"
 )
 
@@ -723,8 +724,14 @@ func (r *DERepository) UpdateLastDisbursedAt(ctx context.Context, phone, disburs
 
 // ApplyCashDeposit atomically decrements the DE's in-hand cash to newBalance
 // and appends a cash-deposit ledger entry. The DE update is guarded by an
-// optimistic condition (in-hand unchanged since read) and the ledger Put is
-// conditional on the deposit_id not already existing (idempotent retry).
+// optimistic condition (in-hand still near the value read) and the ledger Put
+// is conditional on the deposit_id not already existing (idempotent retry).
+//
+// The lock uses a ±CashMatchEpsilonZMW band rather than exact equality so
+// float64/DynamoDB binary noise (e.g. 508.9400000000000182 vs 508.94) cannot
+// 409 a legitimate deposit. A real concurrent COD accrual (≥ 0.01 ZMW) still
+// falls outside the band and conflicts. The write always SETs a 2dp-rounded
+// balance, which also cleans any prior pollution.
 func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expectedInHand, newBalance float64, entry *models.CashDepositLedger) error {
 	op := logging.Start(ctx, r.logger, "ApplyCashDeposit", logrus.Fields{
 		"phone": phone, "deposit_id": entry.DepositID,
@@ -742,6 +749,9 @@ func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expec
 	}
 	op.With("deposit_id", entry.DepositID)
 
+	entry.RequestedAmountZMW = money.Round2ZMW(entry.RequestedAmountZMW)
+	entry.AppliedAmountZMW = money.Round2ZMW(entry.AppliedAmountZMW)
+
 	ledgerItem, err := attributevalue.MarshalMap(entry)
 	if err != nil {
 		return op.Fail(fmt.Errorf("failed to marshal cash deposit entry: %w", err))
@@ -749,9 +759,12 @@ func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expec
 	ledgerItem["PK"] = &types.AttributeValueMemberS{Value: entry.GetPK()}
 	ledgerItem["SK"] = &types.AttributeValueMemberS{Value: entry.GetSK()}
 
-	// FormatFloat precision -1 preserves fractional ZMW; it must match how the
-	// value is stored elsewhere so the optimistic-lock equality holds.
-	fmtFloat := func(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+	expected := money.Round2ZMW(expectedInHand)
+	lo := expected - money.CashMatchEpsilonZMW
+	hi := expected + money.CashMatchEpsilonZMW
+	// Format the epsilon band to 3dp (not FormatZMW) so lo/hi don't collapse
+	// back to the same 2dp value after rounding.
+	fmtBand := func(f float64) string { return strconv.FormatFloat(f, 'f', 3, 64) }
 
 	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
@@ -765,11 +778,16 @@ func (r *DERepository) ApplyCashDeposit(ctx context.Context, phone string, expec
 					UpdateExpression: aws.String("SET in_hand_cash_zmw = :new, updated_at = :now"),
 					// DynamoDB forbids if_not_exists() inside a ConditionExpression, so the
 					// "attribute absent ⇔ expected 0" case is spelled out explicitly.
-					ConditionExpression: aws.String("(attribute_not_exists(in_hand_cash_zmw) AND :expected = :zero) OR in_hand_cash_zmw = :expected"),
+					// BETWEEN absorbs float noise around the rounded expected balance.
+					ConditionExpression: aws.String(
+						"(attribute_not_exists(in_hand_cash_zmw) AND :expected = :zero) OR (in_hand_cash_zmw BETWEEN :lo AND :hi)",
+					),
 					ExpressionAttributeValues: map[string]types.AttributeValue{
-						":new":      &types.AttributeValueMemberN{Value: fmtFloat(newBalance)},
-						":expected": &types.AttributeValueMemberN{Value: fmtFloat(expectedInHand)},
-						":zero":     &types.AttributeValueMemberN{Value: "0"},
+						":new":      &types.AttributeValueMemberN{Value: money.FormatZMW(newBalance)},
+						":expected": &types.AttributeValueMemberN{Value: money.FormatZMW(expected)},
+						":lo":       &types.AttributeValueMemberN{Value: fmtBand(lo)},
+						":hi":       &types.AttributeValueMemberN{Value: fmtBand(hi)},
+						":zero":     &types.AttributeValueMemberN{Value: "0.00"},
 						":now":      &types.AttributeValueMemberS{Value: now},
 					},
 				},
