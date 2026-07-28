@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 
 	"github.com/qcom/qcom/internal/middleware"
@@ -53,6 +54,11 @@ func (h *GeocodeHandlers) ReverseGeocode(w http.ResponseWriter, r *http.Request)
 	}
 	if req.Longitude == nil {
 		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "longitude is required")
+		return
+	}
+	if math.IsNaN(*req.Latitude) || math.IsInf(*req.Latitude, 0) ||
+		math.IsNaN(*req.Longitude) || math.IsInf(*req.Longitude, 0) {
+		respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Coordinates must be finite numbers")
 		return
 	}
 	if *req.Latitude < -90 || *req.Latitude > 90 {

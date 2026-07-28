@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -358,6 +359,30 @@ func TestReverseGeocodeAddressLine(t *testing.T) {
 		_, err := g.ReverseGeocodeAddressLine(context.Background(), 0.1, 0.1)
 		if !errors.Is(err, ErrNoGeocodeResult) {
 			t.Fatalf("err = %v, want ErrNoGeocodeResult", err)
+		}
+	})
+
+	// A9 — transport failure must not leak the API key: httpClient.Do returns a
+	// *url.Error whose Error() normally renders the full request URL (including
+	// ?key=...). sanitizeGeocodeErr must strip that before it reaches the
+	// returned error.
+	t.Run("transport failure does not leak API key", func(t *testing.T) {
+		const testKey = "SECRET-TEST-KEY-123"
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"status":"OK","results":[]}`))
+		}))
+		unreachableURL := srv.URL
+		srv.Close() // closed immediately: any request now fails at Do() with a connection error
+
+		g := NewGoogleGeocoder(testKey, logger)
+		g.geocodeURL = unreachableURL
+		_, err := g.ReverseGeocodeAddressLine(context.Background(), -15.38, 28.32)
+		if err == nil {
+			t.Fatal("expected an error from a closed server, got nil")
+		}
+		if strings.Contains(err.Error(), testKey) {
+			t.Fatalf("error must not contain the API key, got: %v", err)
 		}
 	})
 }

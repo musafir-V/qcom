@@ -28,6 +28,17 @@ const geocodeH3Resolution = 9
 // ErrGeocoderNotConfigured is returned when no GOOGLE_MAPS_API_KEY is set.
 var ErrGeocoderNotConfigured = errors.New("geocoder not configured: GOOGLE_MAPS_API_KEY is missing")
 
+// sanitizeGeocodeErr strips the request URL (which carries the API key as a
+// query param) from a *url.Error, keeping only the operation and underlying
+// error. Non-url errors pass through unchanged.
+func sanitizeGeocodeErr(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return fmt.Errorf("%s: %w", uerr.Op, uerr.Err)
+	}
+	return err
+}
+
 // ErrNoGeocodeResult is returned when Google has no usable result for a coordinate.
 var ErrNoGeocodeResult = errors.New("no geocode result for coordinate")
 
@@ -79,7 +90,7 @@ func (g *GoogleGeocoder) ReverseGeocode(ctx context.Context, lat, lng float64) (
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.geocodeURL+"?"+q.Encode(), nil)
 	if err != nil {
-		return "", fmt.Errorf("failed to build geocode request: %w", err)
+		return "", fmt.Errorf("failed to build geocode request: %w", sanitizeGeocodeErr(err))
 	}
 
 	op := logging.Start(ctx, g.logger, "ReverseGeocode", logrus.Fields{
@@ -90,7 +101,7 @@ func (g *GoogleGeocoder) ReverseGeocode(ctx context.Context, lat, lng float64) (
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return "", op.Fail(fmt.Errorf("geocode request failed: %w", err))
+		return "", op.Fail(fmt.Errorf("geocode request failed: %w", sanitizeGeocodeErr(err)))
 	}
 	defer resp.Body.Close()
 	op.With("status_code", resp.StatusCode)
@@ -240,7 +251,7 @@ func (g *GoogleGeocoder) ReverseGeocodeAddressLine(ctx context.Context, lat, lng
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.geocodeURL+"?"+q.Encode(), nil)
 	if err != nil {
-		return AddressLineResult{}, fmt.Errorf("failed to build geocode request: %w", err)
+		return AddressLineResult{}, fmt.Errorf("failed to build geocode request: %w", sanitizeGeocodeErr(err))
 	}
 
 	op := logging.Start(ctx, g.logger, "ReverseGeocodeAddressLine", logrus.Fields{"lat": lat, "lng": lng})
@@ -248,7 +259,7 @@ func (g *GoogleGeocoder) ReverseGeocodeAddressLine(ctx context.Context, lat, lng
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return AddressLineResult{}, op.Fail(fmt.Errorf("geocode request failed: %w", err))
+		return AddressLineResult{}, op.Fail(fmt.Errorf("geocode request failed: %w", sanitizeGeocodeErr(err)))
 	}
 	defer resp.Body.Close()
 	op.With("status_code", resp.StatusCode)
