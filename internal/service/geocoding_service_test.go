@@ -226,3 +226,86 @@ func TestCachedGeocoder_CellKeyDeterministic(t *testing.T) {
 		t.Fatalf("H3 cell must be deterministic: %s vs %s", cache1.savedCells[0], cache2.savedCells[0])
 	}
 }
+
+// ── extractRouteAddressLine ──────────────────────────────────────────────
+
+func TestExtractRouteAddressLine(t *testing.T) {
+	comp := func(name string, types ...string) struct {
+		LongName string   `json:"long_name"`
+		Types    []string `json:"types"`
+	} {
+		return struct {
+			LongName string   `json:"long_name"`
+			Types    []string `json:"types"`
+		}{LongName: name, Types: types}
+	}
+	type result = struct {
+		FormattedAddress  string `json:"formatted_address"`
+		AddressComponents []struct {
+			LongName string   `json:"long_name"`
+			Types    []string `json:"types"`
+		} `json:"address_components"`
+	}
+
+	tests := []struct {
+		name string
+		body googleGeocodeResponse
+		want string
+	}{
+		{
+			name: "route and sublocality present",
+			body: googleGeocodeResponse{Status: "OK", Results: []result{{
+				FormattedAddress: "Plot 542 Paul Ngozi Road, Lusaka",
+				AddressComponents: []struct {
+					LongName string   `json:"long_name"`
+					Types    []string `json:"types"`
+				}{comp("Paul Ngozi Road", "route"), comp("Munali", "political", "sublocality", "sublocality_level_1"), comp("Lusaka", "locality")},
+			}}},
+			want: "Paul Ngozi Road, Munali",
+		},
+		{
+			name: "no route falls back to sublocality",
+			body: googleGeocodeResponse{Status: "OK", Results: []result{{
+				FormattedAddress: "J826+PM8, Lusaka, Zambia",
+				AddressComponents: []struct {
+					LongName string   `json:"long_name"`
+					Types    []string `json:"types"`
+				}{comp("Munali", "sublocality_level_1"), comp("Lusaka", "locality")},
+			}}},
+			want: "Munali",
+		},
+		{
+			name: "route in a later result is still found",
+			body: googleGeocodeResponse{Status: "OK", Results: []result{
+				{FormattedAddress: "J82P+92 Lusaka, Zambia", AddressComponents: []struct {
+					LongName string   `json:"long_name"`
+					Types    []string `json:"types"`
+				}{comp("Lusaka", "locality")}},
+				{FormattedAddress: "Nangwenya Rd, Lusaka", AddressComponents: []struct {
+					LongName string   `json:"long_name"`
+					Types    []string `json:"types"`
+				}{comp("Nangwenya Road", "route"), comp("Munali", "sublocality_level_1"), comp("Lusaka", "locality")}},
+			}},
+			want: "Nangwenya Road, Munali",
+		},
+		{
+			name: "only locality falls back to locality",
+			body: googleGeocodeResponse{Status: "OK", Results: []result{{
+				FormattedAddress: "Lusaka, Zambia",
+				AddressComponents: []struct {
+					LongName string   `json:"long_name"`
+					Types    []string `json:"types"`
+				}{comp("Lusaka", "locality")},
+			}}},
+			want: "Lusaka",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractRouteAddressLine(tt.body)
+			if got.AddressLine != tt.want {
+				t.Errorf("AddressLine = %q, want %q", got.AddressLine, tt.want)
+			}
+		})
+	}
+}

@@ -156,6 +156,71 @@ func extractAddressLine(body googleGeocodeResponse) string {
 	return strings.Join(parts, ", ")
 }
 
+// AddressLineResult is the structured output of the route-aware reverse
+// geocode used by the address form. AddressLine is the composed, ready-to-
+// display string; the raw parts are returned for future use.
+type AddressLineResult struct {
+	AddressLine      string `json:"address_line"`
+	Route            string `json:"route"`
+	Sublocality      string `json:"sublocality"`
+	Locality         string `json:"locality"`
+	FormattedAddress string `json:"formatted_address"`
+}
+
+// extractRouteAddressLine scans every result for the first route, sublocality,
+// locality, and formatted address, then composes "<route>, <sublocality>"
+// (falling back to route, then sublocality, then locality, then the formatted
+// address). Google returns Plus-Code-only results first, so the named
+// components often live in later results — hence the full scan.
+func extractRouteAddressLine(body googleGeocodeResponse) AddressLineResult {
+	var route, sublocality, locality, formatted string
+	for _, result := range body.Results {
+		if formatted == "" {
+			formatted = result.FormattedAddress
+		}
+		for _, comp := range result.AddressComponents {
+			for _, t := range comp.Types {
+				switch t {
+				case "route":
+					if route == "" {
+						route = comp.LongName
+					}
+				case "sublocality", "sublocality_level_1":
+					if sublocality == "" {
+						sublocality = comp.LongName
+					}
+				case "locality":
+					if locality == "" {
+						locality = comp.LongName
+					}
+				}
+			}
+		}
+	}
+
+	var line string
+	switch {
+	case route != "" && sublocality != "":
+		line = route + ", " + sublocality
+	case route != "":
+		line = route
+	case sublocality != "":
+		line = sublocality
+	case locality != "":
+		line = locality
+	default:
+		line = formatted
+	}
+
+	return AddressLineResult{
+		AddressLine:      line,
+		Route:            route,
+		Sublocality:      sublocality,
+		Locality:         locality,
+		FormattedAddress: formatted,
+	}
+}
+
 // GeocodeCacheStore is the persistence contract used by CachedGeocoder for
 // reverse-geocode look-ups and writes. GeocodeCacheRepository satisfies it.
 type GeocodeCacheStore interface {
