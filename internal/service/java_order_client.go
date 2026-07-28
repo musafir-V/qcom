@@ -32,6 +32,8 @@ type JavaOrder struct {
 	Currency      string  `json:"currency"`
 
 	CustomerID string `json:"customerId"`
+
+	DeliveryZone string `json:"deliveryZone"`
 }
 
 // EffectiveOrderID returns orderNumber when set (the stable human-readable key

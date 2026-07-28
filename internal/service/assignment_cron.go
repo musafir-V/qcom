@@ -637,12 +637,13 @@ func buildTripFromOrder(
 		Payment:        paymentFromOrder(order),
 		Tasks: []models.Task{
 			{
-				TaskID:  pickupTaskID,
-				Type:    models.TaskTypePickup,
-				Status:  models.TaskStatusCreated,
-				Address: ds.Name,
-				Lat:     ds.Latitude,
-				Lng:     ds.Longitude,
+				TaskID:       pickupTaskID,
+				Type:         models.TaskTypePickup,
+				Status:       models.TaskStatusCreated,
+				Address:      ds.Name,
+				Lat:          ds.Latitude,
+				Lng:          ds.Longitude,
+				DeliveryZone: order.DeliveryZone,
 			},
 			{
 				TaskID:        dropTaskID,
