@@ -80,11 +80,8 @@ func main() {
 	otpService := service.NewOTPService(otpRepo, vonageService, &cfg.OTP, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
-	geocoder := service.NewCachedGeocoder(
-		service.NewGoogleGeocoder(cfg.Google.MapsAPIKey, logger),
-		geocodeCacheRepo,
-		logger,
-	)
+	googleGeocoder := service.NewGoogleGeocoder(cfg.Google.MapsAPIKey, logger)
+	geocoder := service.NewCachedGeocoder(googleGeocoder, geocodeCacheRepo, logger)
 	etaService := service.NewETAService(etaCacheRepo, cfg.Google.MapsAPIKey, logger)
 	serviceabilityService := service.NewServiceabilityService(darkstoreRepo, addressService, geocoder, etaService, logger, cfg.IsTest, cfg.Serviceability.BypassUserIDs)
 	qrService := service.NewQRService(logger)
@@ -146,6 +143,7 @@ func main() {
 	uploadHandlers := handlers.NewUploadHandlers(uploadService, logger)
 	addressHandlers := handlers.NewAddressHandlers(addressService, logger)
 	serviceabilityHandlers := handlers.NewServiceabilityHandlers(serviceabilityService, logger)
+	geocodeHandlers := handlers.NewGeocodeHandlers(googleGeocoder, logger)
 	deHandlers := handlers.NewDEHandlers(deService, qrService, payoutConfigRepo, cashConfigRepo, logger)
 	referralHandlers := handlers.NewReferralHandlers(referralService, logger)
 	configHandlers := handlers.NewConfigHandlers(payoutConfigRepo, logger)
@@ -202,7 +200,7 @@ func main() {
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -324,6 +322,7 @@ func setupRouter(
 	uploadHandlers *handlers.UploadHandlers,
 	addressHandlers *handlers.AddressHandlers,
 	serviceabilityHandlers *handlers.ServiceabilityHandlers,
+	geocodeHandlers *handlers.GeocodeHandlers,
 	deHandlers *handlers.DEHandlers,
 	referralHandlers *handlers.ReferralHandlers,
 	configHandlers *handlers.ConfigHandlers,
@@ -491,6 +490,7 @@ func setupRouter(
 	serviceability := api.PathPrefix("/").Subrouter()
 	serviceability.Use(authMiddleware.RequireAuthOrGuest)
 	serviceability.HandleFunc("/serviceability", serviceabilityHandlers.CheckServiceability).Methods("POST", "OPTIONS")
+	serviceability.HandleFunc("/geocode/reverse", geocodeHandlers.ReverseGeocode).Methods("POST", "OPTIONS")
 
 	// Address endpoints — specific routes must be registered before the parameterized /:id route
 	protected.HandleFunc("/addresses/suggest", addressHandlers.GetSuggestedAddresses).Methods("GET")
