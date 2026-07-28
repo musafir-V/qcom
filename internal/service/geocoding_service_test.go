@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -308,4 +311,53 @@ func TestExtractRouteAddressLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ── ReverseGeocodeAddressLine ────────────────────────────────────────────
+
+func TestReverseGeocodeAddressLine(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+
+	t.Run("not configured returns ErrGeocoderNotConfigured", func(t *testing.T) {
+		g := NewGoogleGeocoder("", logger)
+		_, err := g.ReverseGeocodeAddressLine(context.Background(), -15.38, 28.32)
+		if !errors.Is(err, ErrGeocoderNotConfigured) {
+			t.Fatalf("err = %v, want ErrGeocoderNotConfigured", err)
+		}
+	})
+
+	t.Run("composes route and sublocality", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.URL.Query().Get("result_type"); got != "" {
+				t.Errorf("result_type should be unset to include route, got %q", got)
+			}
+			w.Write([]byte(`{"status":"OK","results":[{"formatted_address":"Plot 542 Paul Ngozi Road, Lusaka","address_components":[{"long_name":"Paul Ngozi Road","types":["route"]},{"long_name":"Munali","types":["sublocality_level_1"]},{"long_name":"Lusaka","types":["locality"]}]}]}`))
+		}))
+		defer srv.Close()
+
+		g := NewGoogleGeocoder("test-key", logger)
+		g.geocodeURL = srv.URL
+		got, err := g.ReverseGeocodeAddressLine(context.Background(), -15.38, 28.32)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got.AddressLine != "Paul Ngozi Road, Munali" {
+			t.Errorf("AddressLine = %q, want %q", got.AddressLine, "Paul Ngozi Road, Munali")
+		}
+	})
+
+	t.Run("zero results returns ErrNoGeocodeResult", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"status":"ZERO_RESULTS","results":[]}`))
+		}))
+		defer srv.Close()
+
+		g := NewGoogleGeocoder("test-key", logger)
+		g.geocodeURL = srv.URL
+		_, err := g.ReverseGeocodeAddressLine(context.Background(), 0.1, 0.1)
+		if !errors.Is(err, ErrNoGeocodeResult) {
+			t.Fatalf("err = %v, want ErrNoGeocodeResult", err)
+		}
+	})
 }

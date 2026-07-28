@@ -42,6 +42,7 @@ type GoogleGeocoder struct {
 	apiKey     string
 	httpClient *http.Client
 	logger     *logrus.Logger
+	geocodeURL string // overridable in tests; defaults to googleGeocodeURL
 }
 
 func NewGoogleGeocoder(apiKey string, logger *logrus.Logger) *GoogleGeocoder {
@@ -49,6 +50,7 @@ func NewGoogleGeocoder(apiKey string, logger *logrus.Logger) *GoogleGeocoder {
 		apiKey:     apiKey,
 		httpClient: metrics.NewInstrumentedClient("google_geocode", 5*time.Second),
 		logger:     logger,
+		geocodeURL: googleGeocodeURL,
 	}
 }
 
@@ -75,7 +77,7 @@ func (g *GoogleGeocoder) ReverseGeocode(ctx context.Context, lat, lng float64) (
 	q.Set("key", g.apiKey)
 	q.Set("result_type", "sublocality|locality")
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, googleGeocodeURL+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.geocodeURL+"?"+q.Encode(), nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to build geocode request: %w", err)
 	}
@@ -219,6 +221,59 @@ func extractRouteAddressLine(body googleGeocodeResponse) AddressLineResult {
 		Locality:         locality,
 		FormattedAddress: formatted,
 	}
+}
+
+// ReverseGeocodeAddressLine reverse-geocodes a coordinate to a route-aware
+// address line ("<route>, <sublocality>") for the address form. Unlike
+// ReverseGeocode, it does NOT restrict result_type, so Google returns the
+// street (route) component. It is uncached by design — address creation is
+// low-frequency and road-level data must not be served from the coarse
+// serviceability cache.
+func (g *GoogleGeocoder) ReverseGeocodeAddressLine(ctx context.Context, lat, lng float64) (AddressLineResult, error) {
+	if g.apiKey == "" {
+		return AddressLineResult{}, ErrGeocoderNotConfigured
+	}
+
+	q := url.Values{}
+	q.Set("latlng", strconv.FormatFloat(lat, 'f', -1, 64)+","+strconv.FormatFloat(lng, 'f', -1, 64))
+	q.Set("key", g.apiKey)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.geocodeURL+"?"+q.Encode(), nil)
+	if err != nil {
+		return AddressLineResult{}, fmt.Errorf("failed to build geocode request: %w", err)
+	}
+
+	op := logging.Start(ctx, g.logger, "ReverseGeocodeAddressLine", logrus.Fields{"lat": lat, "lng": lng})
+	defer op.End()
+
+	resp, err := g.httpClient.Do(req)
+	if err != nil {
+		return AddressLineResult{}, op.Fail(fmt.Errorf("geocode request failed: %w", err))
+	}
+	defer resp.Body.Close()
+	op.With("status_code", resp.StatusCode)
+
+	if resp.StatusCode != http.StatusOK {
+		return AddressLineResult{}, fmt.Errorf("geocode request returned HTTP %d", resp.StatusCode)
+	}
+
+	var body googleGeocodeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return AddressLineResult{}, fmt.Errorf("failed to decode geocode response: %w", err)
+	}
+
+	if body.Status != "OK" {
+		if body.Status == "ZERO_RESULTS" {
+			return AddressLineResult{}, ErrNoGeocodeResult
+		}
+		return AddressLineResult{}, fmt.Errorf("geocode API status %s: %s", body.Status, body.ErrorMessage)
+	}
+
+	out := extractRouteAddressLine(body)
+	if out.AddressLine == "" {
+		return AddressLineResult{}, ErrNoGeocodeResult
+	}
+	return out, nil
 }
 
 // GeocodeCacheStore is the persistence contract used by CachedGeocoder for
