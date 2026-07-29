@@ -200,7 +200,7 @@ func main() {
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, cfg.Server, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -343,11 +343,13 @@ func setupRouter(
 	voiceHandlers *handlers.VoiceHandlers,
 	qrHandlers *handlers.QRHandlers,
 	authMiddleware *middleware.AuthMiddleware,
+	serverCfg config.ServerConfig,
 	logger *logrus.Logger,
 ) *mux.Router {
 	router := mux.NewRouter()
 
-	router.Use(middleware.CORSMiddleware)
+	router.Use(middleware.NewCORSMiddleware(serverCfg.AllowedOrigins))
+	router.Use(middleware.MaxBodyBytes(middleware.DefaultMaxBodyBytes))
 	router.Use(middleware.TraceIDMiddleware)
 	router.Use(middleware.LoggingMiddleware(logger))
 	router.Use(middleware.MetricsMiddleware)
@@ -387,8 +389,11 @@ func setupRouter(
 	// QR code display endpoint (no auth required — shown on darkstore screen)
 	api.HandleFunc("/stores/{storeId}/qr", deHandlers.GetStoreQR).Methods("GET", "OPTIONS")
 
-	// Payout config update endpoint (no auth — ops/runtime tuning)
-	api.HandleFunc("/config/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH", "OPTIONS")
+	// Payout config update endpoint — admin bearer token required; it rewrites
+	// the money rules every payout is computed from.
+	payoutConfig := api.PathPrefix("/config").Subrouter()
+	payoutConfig.Use(authMiddleware.RequireAdminAuth)
+	payoutConfig.HandleFunc("/payout", configHandlers.UpdatePayoutConfig).Methods("PATCH", "OPTIONS")
 
 	// Admin login (username/password) — public; returns a bearer token. Must be
 	// registered before the /admin subrouter so it is not gated by admin auth.
@@ -527,6 +532,7 @@ func setupRouter(
 		tripHandlers.PresignTaskPhoto).Methods("POST", "OPTIONS")
 
 	internal := router.PathPrefix("/internal/v1").Subrouter()
+	internal.Use(middleware.RequireInternalAPIKey(serverCfg.InternalAPIKey))
 	internal.HandleFunc("/notifications/send", notificationHandlers.SendNotification).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/cancel-by-order", tripHandlers.CancelTripByOrder).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/payment/update", tripHandlers.UpdateTripPaymentByOrder).Methods("POST", "OPTIONS")

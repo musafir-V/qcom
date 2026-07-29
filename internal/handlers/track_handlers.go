@@ -79,6 +79,17 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A customer may only track their own order: the payload carries the drop
+	// OTP and delivery address. Orders whose payload has no customerId are left
+	// visible so tracking does not break on legacy rows.
+	entityType, _ := r.Context().Value("entity_type").(string)
+	entityID, _ := r.Context().Value("entity_id").(string)
+	if owner := orderCustomerID(order); entityType == "customer" && owner != "" && owner != entityID {
+		h.logger.WithField("order_id", orderID).Warn("track: customer requested an order they do not own")
+		h.respondWithError(w, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		return
+	}
+
 	// Trip enrichment is best-effort — a lookup failure degrades to null fields.
 	trip, err := h.tripRepo.GetByOrderID(r.Context(), orderID)
 	if err != nil {
@@ -134,6 +145,20 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 // from the raw order payload. Returns "" when the field is absent or not a string.
 func orderCreatedAt(order map[string]json.RawMessage) string {
 	raw, ok := order["createdAt"]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
+}
+
+// orderCustomerID extracts the owning customer's qcom user id ("customerId")
+// from the raw order payload. Returns "" when absent or not a string.
+func orderCustomerID(order map[string]json.RawMessage) string {
+	raw, ok := order["customerId"]
 	if !ok {
 		return ""
 	}

@@ -3,12 +3,28 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
 )
+
+// payoutConfigFields is the set of attribute names a caller may write, derived
+// from the PayoutConfig dynamodbav tags so it cannot drift from the model.
+var payoutConfigFields = func() map[string]struct{} {
+	t := reflect.TypeOf(models.PayoutConfig{})
+	fields := make(map[string]struct{}, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		if name := strings.Split(t.Field(i).Tag.Get("dynamodbav"), ",")[0]; name != "" && name != "-" {
+			fields[name] = struct{}{}
+		}
+	}
+	return fields
+}()
 
 type ConfigHandlers struct {
 	payoutConfigRepo *repository.PayoutConfigRepository
@@ -21,7 +37,7 @@ func NewConfigHandlers(payoutConfigRepo *repository.PayoutConfigRepository, logg
 
 // PATCH /api/v1/config/payout
 // Body: { "field": "referral_bonus_zmw", "value": "25.5" }
-// Updates a single named field in the payout config. No auth required.
+// Updates a single named field in the payout config. Requires an admin token.
 // Numeric fields are stored as DynamoDB Number type. String fields as String.
 func (h *ConfigHandlers) UpdatePayoutConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -34,6 +50,10 @@ func (h *ConfigHandlers) UpdatePayoutConfig(w http.ResponseWriter, r *http.Reque
 	}
 	if req.Field == "" || req.Value == "" {
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "field and value are required")
+		return
+	}
+	if _, ok := payoutConfigFields[req.Field]; !ok {
+		h.respondWithError(w, http.StatusBadRequest, "UNKNOWN_FIELD", "field is not a payout config attribute")
 		return
 	}
 

@@ -10,25 +10,32 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	DynamoDB DynamoDBConfig
-	JWT      JWTConfig
-	OTP      OTPConfig
-	S3       S3Config
-	Google   GoogleConfig
-	Java     JavaConfig
-	Vonage   VonageConfig
-	Firebase FirebaseConfig
-	Dispute  DisputeConfig
-	VonageVoice VoiceConfig
+	Server         ServerConfig
+	DynamoDB       DynamoDBConfig
+	JWT            JWTConfig
+	OTP            OTPConfig
+	S3             S3Config
+	Google         GoogleConfig
+	Java           JavaConfig
+	Vonage         VonageConfig
+	Firebase       FirebaseConfig
+	Dispute        DisputeConfig
+	VonageVoice    VoiceConfig
 	Serviceability ServiceabilityConfig
-	IsTest   bool
+	IsTest         bool
 }
 
 type ServerConfig struct {
-	Port         string
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	Port string
+	// AllowedOrigins is the CORS origin allowlist (CORS_ALLOWED_ORIGINS,
+	// comma-separated). Empty falls back to the wildcard "*".
+	AllowedOrigins []string
+	// InternalAPIKey, when non-empty, is required in the X-Internal-Api-Key
+	// header on every /internal/v1 route. Empty keeps those routes open and
+	// relying solely on network isolation.
+	InternalAPIKey string
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
 	// MetricsPort is the port for the internal, localhost-only Prometheus
 	// metrics server (/metrics). It is intentionally separate from Port so the
 	// public ALB never routes to it.
@@ -51,6 +58,10 @@ type OTPConfig struct {
 	Length      int
 	Expiry      time.Duration
 	MaxAttempts int
+	// MasterBypassCode, when non-empty, is accepted as a valid OTP for every
+	// phone number. It exists for smoke/QA environments only and MUST stay
+	// unset in production, where an empty value disables the bypass entirely.
+	MasterBypassCode string
 }
 
 type S3Config struct {
@@ -117,10 +128,12 @@ func Load() (*Config, error) {
 	s3Bucket := getEnv("S3_BUCKET", "printdrop-documents")
 	cfg := &Config{
 		Server: ServerConfig{
-			Port:         getEnv("PORT", "8080"),
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
-			MetricsPort:  getEnv("METRICS_PORT", "2112"),
+			Port:           getEnv("PORT", "8080"),
+			ReadTimeout:    15 * time.Second,
+			WriteTimeout:   15 * time.Second,
+			MetricsPort:    getEnv("METRICS_PORT", "2112"),
+			AllowedOrigins: splitAndTrimPreserveCase(getEnv("CORS_ALLOWED_ORIGINS", "")),
+			InternalAPIKey: getEnv("INTERNAL_API_KEY", ""),
 		},
 		DynamoDB: DynamoDBConfig{
 			Endpoint:  getEnv("DYNAMODB_ENDPOINT", ""),
@@ -133,9 +146,10 @@ func Load() (*Config, error) {
 			RefreshExpiry: getEnvAsDuration("JWT_REFRESH_EXPIRY", 7*24*time.Hour),
 		},
 		OTP: OTPConfig{
-			Length:      getEnvAsInt("OTP_LENGTH", 6),
-			Expiry:      getEnvAsDuration("OTP_EXPIRY", 10*time.Minute),
-			MaxAttempts: getEnvAsInt("OTP_MAX_ATTEMPTS", 5),
+			Length:           getEnvAsInt("OTP_LENGTH", 6),
+			Expiry:           getEnvAsDuration("OTP_EXPIRY", 10*time.Minute),
+			MaxAttempts:      getEnvAsInt("OTP_MAX_ATTEMPTS", 5),
+			MasterBypassCode: getEnv("OTP_MASTER_BYPASS_CODE", ""),
 		},
 		S3: S3Config{
 			Endpoint:             getEnv("S3_ENDPOINT", ""),
