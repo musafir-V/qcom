@@ -44,7 +44,5 @@ func (h *WebhookHandlers) logWebhookRequest(webhook string, r *http.Request) {
 }
 
 func (h *WebhookHandlers) respondOK(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
+	writeJSON(w, h.logger, http.StatusOK, map[string]string{"status": "ok"})
 }

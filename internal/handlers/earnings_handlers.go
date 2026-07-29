@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -275,9 +274,7 @@ func (h *EarningsHandlers) computeInKindSummary(ctx context.Context, deID string
 }
 
 func (h *EarningsHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *EarningsHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

@@ -350,9 +350,7 @@ func (h *TripHandlers) UpdateTripPaymentByOrder(w http.ResponseWriter, r *http.R
 }
 
 func (h *TripHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *TripHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

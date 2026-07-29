@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -362,7 +363,9 @@ func setupRouter(
 
 	router.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			logger.WithError(err).Warn("Failed to write health response")
+		}
 	}).Methods("GET", "OPTIONS")
 
 	// Public marketing QR redirect — no auth. Encodes device-aware app-download links.
@@ -477,7 +480,13 @@ func setupRouter(
 		entityType := r.Context().Value("entity_type").(string)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf(`{"entity_id":"%s","entity_type":"%s","phone":"%s"}`, entityID, entityType, phone)))
+		if err := json.NewEncoder(w).Encode(map[string]string{
+			"entity_id":   entityID,
+			"entity_type": entityType,
+			"phone":       phone,
+		}); err != nil {
+			logger.WithError(err).Error("Failed to encode /me response")
+		}
 	}).Methods("GET")
 	// Account deletion (App Store Guideline 5.1.1(v)) — deletes the caller's own account.
 	protected.HandleFunc("/users/me", authHandlers.DeleteAccount).Methods("DELETE", "OPTIONS")

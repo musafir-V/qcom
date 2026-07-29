@@ -67,9 +67,7 @@ func (h *HomeHandlers) GetHome(w http.ResponseWriter, r *http.Request) {
 
 // Helper functions for JSON responses
 func respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, nil, status, payload)
 }
 
 func respondWithError(w http.ResponseWriter, status int, code, message string) {

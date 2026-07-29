@@ -337,9 +337,7 @@ func (h *AddressHandlers) GetSuggestedAddresses(w http.ResponseWriter, r *http.R
 }
 
 func (h *AddressHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *AddressHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

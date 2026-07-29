@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/qcom/qcom/internal/service"
@@ -59,9 +58,7 @@ func (h *ReferralHandlers) GetReferralScreen(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *ReferralHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *ReferralHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

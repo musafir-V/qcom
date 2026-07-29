@@ -21,9 +21,7 @@ func NewQRHandlers(svc *service.MarketingQRService, logger *logrus.Logger) *QRHa
 }
 
 func (h *QRHandlers) respondJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *QRHandlers) respondError(w http.ResponseWriter, status int, code, message string) {

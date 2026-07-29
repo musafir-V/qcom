@@ -172,9 +172,7 @@ func (h *AdminAuthHandlers) handleUserWriteError(w http.ResponseWriter, err erro
 }
 
 func adminAuthRespondJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	writeJSON(w, nil, status, payload)
 }
 
 func adminAuthRespondError(w http.ResponseWriter, status int, code, message string) {

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -119,13 +120,20 @@ func (m *AuthMiddleware) RequireAdminAuth(next http.Handler) http.Handler {
 }
 
 func (m *AuthMiddleware) respondUnauthorized(w http.ResponseWriter, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
-	w.Write([]byte(`{"error":{"code":"UNAUTHORIZED","message":"` + message + `"}}`))
+	m.respondError(w, http.StatusUnauthorized, "UNAUTHORIZED", message)
 }
 
 func (m *AuthMiddleware) respondForbidden(w http.ResponseWriter, message string) {
+	m.respondError(w, http.StatusForbidden, "FORBIDDEN", message)
+}
+
+// respondError writes the error envelope. The status line is already committed
+// when encoding runs, so a write failure is logged rather than discarded.
+func (m *AuthMiddleware) respondError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"` + message + `"}}`))
+	w.WriteHeader(status)
+	body := map[string]map[string]string{"error": {"code": code, "message": message}}
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		m.logger.WithError(err).WithField("status", status).Error("failed to write auth error response")
+	}
 }

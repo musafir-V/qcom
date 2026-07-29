@@ -654,9 +654,7 @@ func (h *AdminDriverHandlers) ListInKindDisbursements(w http.ResponseWriter, r *
 }
 
 func (h *AdminDriverHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *AdminDriverHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

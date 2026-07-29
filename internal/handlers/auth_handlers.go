@@ -169,6 +169,11 @@ func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	valid, err := h.otpService.VerifyOTP(r.Context(), phoneNumber, otp)
+	if err != nil && !service.IsOTPRejection(err) {
+		h.logger.WithError(err).Error("OTP verification failed")
+		h.respondWithError(w, http.StatusInternalServerError, "OTP_VERIFICATION_FAILED", "Something went wrong, please try again")
+		return
+	}
 	if err != nil || !valid {
 		h.respondWithError(w, http.StatusUnauthorized, "INVALID_OTP", "Invalid or expired OTP")
 		return
@@ -183,7 +188,12 @@ func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandlers) verifyOTPForDE(w http.ResponseWriter, r *http.Request, phoneNumber string) {
 	de, err := h.deRepo.GetByPhone(r.Context(), phoneNumber)
-	if err != nil || de == nil {
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to look up DE by phone")
+		h.respondWithError(w, http.StatusInternalServerError, "DE_LOOKUP_FAILED", "Something went wrong, please try again")
+		return
+	}
+	if de == nil {
 		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Delivery executive not found")
 		return
 	}
@@ -211,7 +221,11 @@ func (h *AuthHandlers) verifyOTPForDE(w http.ResponseWriter, r *http.Request, ph
 		familyID,
 		claims.RegisteredClaims.ExpiresAt.Time,
 	); err != nil {
+		// Without the stored row the client's refresh token is unusable, so
+		// handing it back as a success would strand the session.
 		h.logger.WithError(err).Error("Failed to store DE refresh token")
+		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_STORAGE_FAILED", "Something went wrong, please try again")
+		return
 	}
 
 	h.respondWithJSON(w, http.StatusOK, VerifyOTPResponse{
@@ -260,7 +274,11 @@ func (h *AuthHandlers) verifyOTPForCustomer(w http.ResponseWriter, r *http.Reque
 		familyID,
 		claims.RegisteredClaims.ExpiresAt.Time,
 	); err != nil {
+		// Without the stored row the client's refresh token is unusable, so
+		// handing it back as a success would strand the session.
 		h.logger.WithError(err).Error("Failed to store refresh token")
+		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_STORAGE_FAILED", "Something went wrong, please try again")
+		return
 	}
 
 	h.respondWithJSON(w, http.StatusOK, VerifyOTPResponse{
@@ -300,8 +318,15 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fail closed: an unreadable revocation state must not let a revoked token
+	// mint a fresh pair.
 	revoked, err := h.refreshTokenService.IsRevoked(r.Context(), claims.JTI)
-	if err == nil && revoked {
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to check refresh token revocation")
+		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_CHECK_FAILED", "Something went wrong, please try again")
+		return
+	}
+	if revoked {
 		h.respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
 		return
 	}
@@ -312,7 +337,13 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if tokenData != nil {
-		h.refreshTokenService.Revoke(r.Context(), claims.JTI)
+		if err := h.refreshTokenService.Revoke(r.Context(), claims.JTI); err != nil {
+			// The old token stays usable until its TTL if this fails, so the
+			// rotation must not be reported as successful.
+			h.logger.WithError(err).WithField("jti", claims.JTI).Error("Failed to revoke rotated refresh token")
+			h.respondWithError(w, http.StatusInternalServerError, "TOKEN_REVOKE_FAILED", "Something went wrong, please try again")
+			return
+		}
 	}
 
 	familyID := ""
@@ -364,12 +395,21 @@ func (h *AuthHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RefreshToken string `json:"refresh_token"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
 
 	if req.RefreshToken != "" {
 		refreshClaims, err := h.jwtService.VerifyToken(req.RefreshToken)
 		if err == nil && refreshClaims.Type == "refresh" {
-			h.refreshTokenService.Revoke(r.Context(), refreshClaims.JTI)
+			// Reporting a successful logout while the refresh token still works
+			// would leave the caller with a live session they think is gone.
+			if err := h.refreshTokenService.Revoke(r.Context(), refreshClaims.JTI); err != nil {
+				h.logger.WithError(err).WithField("jti", refreshClaims.JTI).Error("Failed to revoke refresh token on logout")
+				h.respondWithError(w, http.StatusInternalServerError, "LOGOUT_FAILED", "Failed to log out, please try again")
+				return
+			}
 		}
 	}
 
@@ -406,7 +446,10 @@ func (h *AuthHandlers) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 
 	// The body is optional. If a user_id is supplied it must be the caller's own.
 	var req DeleteAccountRequest
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := decodeOptionalJSONBody(r, &req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
 	if req.UserID != "" && req.UserID != claims.EntityID {
 		h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Cannot delete a different account")
 		return
@@ -429,9 +472,7 @@ func (h *AuthHandlers) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *AuthHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

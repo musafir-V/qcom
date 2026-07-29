@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"time"
@@ -16,6 +17,24 @@ import (
 )
 
 const masterOTPBypass = "112233"
+
+// Rejections a caller should surface as "invalid OTP", as opposed to the
+// infrastructure failures VerifyOTP also returns.
+var (
+	ErrOTPInvalid     = errors.New("invalid OTP")
+	ErrOTPExpired     = errors.New("OTP expired")
+	ErrOTPMaxAttempts = errors.New("maximum OTP attempts exceeded")
+	ErrOTPNotFound    = repository.ErrOTPNotFound
+)
+
+// IsOTPRejection reports whether err is a credential rejection rather than a
+// failure of the OTP store itself.
+func IsOTPRejection(err error) bool {
+	return errors.Is(err, ErrOTPInvalid) ||
+		errors.Is(err, ErrOTPExpired) ||
+		errors.Is(err, ErrOTPMaxAttempts) ||
+		errors.Is(err, ErrOTPNotFound)
+}
 
 type whatsAppOTPSender interface {
 	SendWhatsAppOTP(ctx context.Context, phoneNumber, otp string) error
@@ -106,27 +125,45 @@ func (s *OTPService) VerifyOTP(ctx context.Context, phoneNumber, otp string) (bo
 
 	otpData, err := s.otpRepo.Get(ctx, phoneNumber)
 	if err != nil {
+		if IsOTPRejection(err) {
+			return false, op.Outcome("not_found", err)
+		}
 		return false, op.Fail(err)
+	}
+	if otpData == nil {
+		return false, op.Outcome("not_found", ErrOTPNotFound)
 	}
 
 	if time.Now().After(otpData.ExpiresAt) {
-		s.otpRepo.Delete(ctx, phoneNumber)
-		return false, op.Outcome("expired", fmt.Errorf("OTP expired"))
+		if derr := s.otpRepo.Delete(ctx, phoneNumber); derr != nil {
+			op.Logger().WithError(derr).WithField("phone", phoneNumber).Warn("failed to delete expired OTP")
+		}
+		return false, op.Outcome("expired", ErrOTPExpired)
 	}
 
 	if otpData.Attempts >= s.cfg.MaxAttempts {
-		s.otpRepo.Delete(ctx, phoneNumber)
-		return false, op.Outcome("max_attempts", fmt.Errorf("maximum attempts exceeded"))
+		if derr := s.otpRepo.Delete(ctx, phoneNumber); derr != nil {
+			op.Logger().WithError(derr).WithField("phone", phoneNumber).Warn("failed to delete exhausted OTP")
+		}
+		return false, op.Outcome("max_attempts", ErrOTPMaxAttempts)
 	}
 
 	err = bcrypt.CompareHashAndPassword([]byte(otpData.OTPHash), []byte(otp))
 	if err != nil {
 		otpData.Attempts++
-		s.otpRepo.Store(ctx, phoneNumber, *otpData)
-		return false, op.Outcome("invalid", fmt.Errorf("invalid OTP"))
+		// The attempt counter is the brute-force guard: if it cannot be
+		// persisted the verification must fail loudly rather than hand the
+		// caller an unlimited-retry window.
+		if serr := s.otpRepo.Store(ctx, phoneNumber, *otpData); serr != nil {
+			return false, op.Fail(fmt.Errorf("failed to record failed OTP attempt: %w", serr))
+		}
+		return false, op.Outcome("invalid", ErrOTPInvalid)
 	}
 
-	s.otpRepo.Delete(ctx, phoneNumber)
+	// A surviving OTP row could be replayed, so a failed delete is an error.
+	if derr := s.otpRepo.Delete(ctx, phoneNumber); derr != nil {
+		return false, op.Fail(fmt.Errorf("failed to consume verified OTP: %w", derr))
+	}
 	op.With("outcome", "verified")
 	return true, nil
 }

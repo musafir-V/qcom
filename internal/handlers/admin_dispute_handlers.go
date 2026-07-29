@@ -231,7 +231,5 @@ func (h *AdminDisputeHandlers) respondErr(w http.ResponseWriter, err error) {
 }
 
 func (h *AdminDisputeHandlers) respondJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }

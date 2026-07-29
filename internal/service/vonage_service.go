@@ -8,7 +8,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -282,7 +284,11 @@ func (s *VonageService) postMessage(ctx context.Context, jwtToken string, bodyBy
 	}
 	defer resp.Body.Close()
 
+	// A non-JSON body is diagnostic only: the status code still drives the
+	// retry/failure decision, so log rather than mask it as a request error.
 	var errBody map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&errBody)
+	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil && !errors.Is(err, io.EOF) {
+		s.logger.WithError(err).WithField("status", resp.StatusCode).Warn("failed to decode Vonage response body")
+	}
 	return resp.StatusCode, errBody, nil
 }

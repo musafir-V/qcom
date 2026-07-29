@@ -274,9 +274,7 @@ func (h *InKindDisbursementHandlers) notifyDriver(deID string, sku models.InKind
 }
 
 func (h *InKindDisbursementHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *InKindDisbursementHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
