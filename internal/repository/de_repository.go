@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -23,46 +22,15 @@ import (
 
 // encodeCursor serializes a DynamoDB LastEvaluatedKey into an opaque, URL-safe
 // pagination token. The AssignedStoreIndex keys (table PK/SK + GSI hash/sort)
-// are all string attributes, so we flatten to a string map before encoding.
-// Returns "" for an empty/absent key (i.e. the last page).
+// are all string attributes, so a non-string attribute is treated as an error.
 func encodeCursor(lastKey map[string]types.AttributeValue) (string, error) {
-	if len(lastKey) == 0 {
-		return "", nil
-	}
-	flat := make(map[string]string, len(lastKey))
-	for k, v := range lastKey {
-		s, ok := v.(*types.AttributeValueMemberS)
-		if !ok {
-			return "", fmt.Errorf("unexpected non-string key attribute %q in cursor", k)
-		}
-		flat[k] = s.Value
-	}
-	raw, err := json.Marshal(flat)
-	if err != nil {
-		return "", err
-	}
-	return base64.URLEncoding.EncodeToString(raw), nil
+	return encodeStringKeyCursor(base64.URLEncoding, lastKey, true)
 }
 
 // decodeCursor reverses encodeCursor. An empty token yields a nil start key
 // (first page).
 func decodeCursor(cursor string) (map[string]types.AttributeValue, error) {
-	if strings.TrimSpace(cursor) == "" {
-		return nil, nil
-	}
-	raw, err := base64.URLEncoding.DecodeString(cursor)
-	if err != nil {
-		return nil, err
-	}
-	var flat map[string]string
-	if err := json.Unmarshal(raw, &flat); err != nil {
-		return nil, err
-	}
-	key := make(map[string]types.AttributeValue, len(flat))
-	for k, v := range flat {
-		key[k] = &types.AttributeValueMemberS{Value: v}
-	}
-	return key, nil
+	return decodeStringKeyCursor(base64.URLEncoding, cursor)
 }
 
 // ErrCashDepositConflict is returned when a cash-deposit transaction is

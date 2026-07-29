@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -87,52 +86,51 @@ func darkstoreDTO(ds *models.Darkstore) map[string]interface{} {
 // POST /api/v1/admin/darkstores
 func (h *AdminStoreHandlers) CreateDarkstore(w http.ResponseWriter, r *http.Request) {
 	var req createDarkstoreRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name is required")
 		return
 	}
 	if req.Latitude == nil {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "latitude is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "latitude is required")
 		return
 	}
 	if req.Longitude == nil {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "longitude is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "longitude is required")
 		return
 	}
 	if *req.Latitude < -90 || *req.Latitude > 90 {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Latitude must be between -90 and 90")
+		respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Latitude must be between -90 and 90")
 		return
 	}
 	if *req.Longitude < -180 || *req.Longitude > 180 {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Longitude must be between -180 and 180")
+		respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Longitude must be between -180 and 180")
 		return
 	}
 
 	polygon, err := parsePolygonLines(req.Polygon)
 	if err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_POLYGON", err.Error())
+		respondWithError(w, http.StatusBadRequest, "INVALID_POLYGON", err.Error())
 		return
 	}
 
 	req.OpensAt = strings.TrimSpace(req.OpensAt)
 	req.ClosesAt = strings.TrimSpace(req.ClosesAt)
 	if req.OpensAt == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "opens_at is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "opens_at is required")
 		return
 	}
 	if req.ClosesAt == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "closes_at is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "closes_at is required")
 		return
 	}
 	probe := models.Darkstore{OpensAt: req.OpensAt, ClosesAt: req.ClosesAt}
 	if !probe.ValidOperatingHours() {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_OPERATING_HOURS", "opens_at/closes_at must be HH:MM and closes_at must be after opens_at")
+		respondWithError(w, http.StatusBadRequest, "INVALID_OPERATING_HOURS", "opens_at/closes_at must be HH:MM and closes_at must be after opens_at")
 		return
 	}
 
@@ -146,11 +144,11 @@ func (h *AdminStoreHandlers) CreateDarkstore(w http.ResponseWriter, r *http.Requ
 	})
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to create darkstore")
-		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_CREATE_FAILED", "Failed to create darkstore")
+		respondWithError(w, http.StatusInternalServerError, "DARKSTORE_CREATE_FAILED", "Failed to create darkstore")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
+	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 		"darkstore_id": ds.DarkstoreID,
 		"name":         ds.Name,
 		"is_active":    ds.IsActive,
@@ -176,7 +174,7 @@ func (h *AdminStoreHandlers) ListDarkstores(w http.ResponseWriter, r *http.Reque
 	}
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to list darkstores")
-		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORES_LIST_FAILED", "Failed to list darkstores")
+		respondWithError(w, http.StatusInternalServerError, "DARKSTORES_LIST_FAILED", "Failed to list darkstores")
 		return
 	}
 
@@ -191,7 +189,7 @@ func (h *AdminStoreHandlers) ListDarkstores(w http.ResponseWriter, r *http.Reque
 		items = append(items, darkstoreDTO(&darkstores[i]))
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"darkstores": items})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"darkstores": items})
 }
 
 // GET /api/v1/admin/darkstores/{id}
@@ -200,14 +198,14 @@ func (h *AdminStoreHandlers) GetDarkstore(w http.ResponseWriter, r *http.Request
 	ds, err := h.darkstoreRepo.GetByID(r.Context(), id)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to get darkstore")
-		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
+		respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
 		return
 	}
 	if ds == nil {
-		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
 		return
 	}
-	h.respondWithJSON(w, http.StatusOK, darkstoreDTO(ds))
+	respondWithJSON(w, http.StatusOK, darkstoreDTO(ds))
 }
 
 // PATCH /api/v1/admin/darkstores/{id}
@@ -220,27 +218,26 @@ func (h *AdminStoreHandlers) UpdateDarkstore(w http.ResponseWriter, r *http.Requ
 	current, err := h.darkstoreRepo.GetByID(r.Context(), id)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to load darkstore for update")
-		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
+		respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
 		return
 	}
 	if current == nil {
-		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
 		return
 	}
 
 	var req updateDarkstoreRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Name == nil && req.Latitude == nil && req.Longitude == nil && req.Polygon == nil &&
 		req.OpensAt == nil && req.ClosesAt == nil && req.PresenceRadiusMeters == nil {
-		h.respondWithError(w, http.StatusBadRequest, "EMPTY_UPDATE", "At least one field must be provided")
+		respondWithError(w, http.StatusBadRequest, "EMPTY_UPDATE", "At least one field must be provided")
 		return
 	}
 
 	if (req.Latitude != nil || req.Longitude != nil || req.Polygon != nil) && current.IsActive {
-		h.respondWithError(w, http.StatusConflict, "DARKSTORE_LOCATION_LOCKED",
+		respondWithError(w, http.StatusConflict, "DARKSTORE_LOCATION_LOCKED",
 			"Deactivate the darkstore before editing latitude, longitude, or polygon")
 		return
 	}
@@ -250,21 +247,21 @@ func (h *AdminStoreHandlers) UpdateDarkstore(w http.ResponseWriter, r *http.Requ
 	if req.Name != nil {
 		name := strings.TrimSpace(*req.Name)
 		if name == "" {
-			h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name cannot be empty")
+			respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name cannot be empty")
 			return
 		}
 		in.Name = &name
 	}
 	if req.Latitude != nil {
 		if *req.Latitude < -90 || *req.Latitude > 90 {
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Latitude must be between -90 and 90")
+			respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Latitude must be between -90 and 90")
 			return
 		}
 		in.Latitude = req.Latitude
 	}
 	if req.Longitude != nil {
 		if *req.Longitude < -180 || *req.Longitude > 180 {
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Longitude must be between -180 and 180")
+			respondWithError(w, http.StatusBadRequest, "INVALID_COORDINATES", "Longitude must be between -180 and 180")
 			return
 		}
 		in.Longitude = req.Longitude
@@ -272,7 +269,7 @@ func (h *AdminStoreHandlers) UpdateDarkstore(w http.ResponseWriter, r *http.Requ
 	if req.Polygon != nil {
 		polygon, perr := parsePolygonLines(*req.Polygon)
 		if perr != nil {
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_POLYGON", perr.Error())
+			respondWithError(w, http.StatusBadRequest, "INVALID_POLYGON", perr.Error())
 			return
 		}
 		in.Polygon = &polygon
@@ -287,7 +284,7 @@ func (h *AdminStoreHandlers) UpdateDarkstore(w http.ResponseWriter, r *http.Requ
 		}
 		probe := models.Darkstore{OpensAt: opens, ClosesAt: closes}
 		if !probe.ValidOperatingHours() {
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_OPERATING_HOURS",
+			respondWithError(w, http.StatusBadRequest, "INVALID_OPERATING_HOURS",
 				"opens_at/closes_at must be HH:MM and closes_at must be after opens_at")
 			return
 		}
@@ -300,7 +297,7 @@ func (h *AdminStoreHandlers) UpdateDarkstore(w http.ResponseWriter, r *http.Requ
 	}
 	if req.PresenceRadiusMeters != nil {
 		if *req.PresenceRadiusMeters < 0 {
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_PRESENCE_RADIUS", "presence_radius_meters cannot be negative")
+			respondWithError(w, http.StatusBadRequest, "INVALID_PRESENCE_RADIUS", "presence_radius_meters cannot be negative")
 			return
 		}
 		in.PresenceRadiusMeters = req.PresenceRadiusMeters
@@ -309,14 +306,14 @@ func (h *AdminStoreHandlers) UpdateDarkstore(w http.ResponseWriter, r *http.Requ
 	updated, err := h.darkstoreRepo.Update(r.Context(), id, in)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to update darkstore")
-		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_UPDATE_FAILED", "Failed to update darkstore")
+		respondWithError(w, http.StatusInternalServerError, "DARKSTORE_UPDATE_FAILED", "Failed to update darkstore")
 		return
 	}
 	if updated == nil {
-		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
 		return
 	}
-	h.respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
+	respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
 }
 
 // POST /api/v1/admin/darkstores/{id}/activate
@@ -328,15 +325,15 @@ func (h *AdminStoreHandlers) ActivateDarkstore(w http.ResponseWriter, r *http.Re
 	ds, err := h.darkstoreRepo.GetByID(r.Context(), id)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to load darkstore for activation")
-		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
+		respondWithError(w, http.StatusInternalServerError, "DARKSTORE_FETCH_FAILED", "Failed to fetch darkstore")
 		return
 	}
 	if ds == nil {
-		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
 		return
 	}
 	if blockers := ds.ActivationBlockers(); len(blockers) > 0 {
-		h.respondWithError(w, http.StatusConflict, "DARKSTORE_INCOMPLETE",
+		respondWithError(w, http.StatusConflict, "DARKSTORE_INCOMPLETE",
 			"Darkstore is missing required fields: "+strings.Join(blockers, "; "))
 		return
 	}
@@ -344,14 +341,14 @@ func (h *AdminStoreHandlers) ActivateDarkstore(w http.ResponseWriter, r *http.Re
 	updated, err := h.darkstoreRepo.SetActive(r.Context(), id, true)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to activate darkstore")
-		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_ACTIVATE_FAILED", "Failed to activate darkstore")
+		respondWithError(w, http.StatusInternalServerError, "DARKSTORE_ACTIVATE_FAILED", "Failed to activate darkstore")
 		return
 	}
 	if updated == nil {
-		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
 		return
 	}
-	h.respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
+	respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
 }
 
 // POST /api/v1/admin/darkstores/{id}/deactivate
@@ -361,14 +358,14 @@ func (h *AdminStoreHandlers) DeactivateDarkstore(w http.ResponseWriter, r *http.
 	updated, err := h.darkstoreRepo.SetActive(r.Context(), id, false)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to deactivate darkstore")
-		h.respondWithError(w, http.StatusInternalServerError, "DARKSTORE_DEACTIVATE_FAILED", "Failed to deactivate darkstore")
+		respondWithError(w, http.StatusInternalServerError, "DARKSTORE_DEACTIVATE_FAILED", "Failed to deactivate darkstore")
 		return
 	}
 	if updated == nil {
-		h.respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
+		respondWithError(w, http.StatusNotFound, "DARKSTORE_NOT_FOUND", "Darkstore not found")
 		return
 	}
-	h.respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
+	respondWithJSON(w, http.StatusOK, darkstoreDTO(updated))
 }
 
 // parsePolygonLines parses one "lat,lng" pair per non-blank line. Empty input
@@ -407,14 +404,4 @@ func parsePolygonLines(raw string) ([]models.PolygonPoint, error) {
 		return nil, fmt.Errorf("polygon must have at least 3 points (got %d)", len(points))
 	}
 	return points, nil
-}
-
-func (h *AdminStoreHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *AdminStoreHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{Error: ErrorDetail{Code: code, Message: message}})
 }

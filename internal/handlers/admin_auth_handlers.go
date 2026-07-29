@@ -91,7 +91,7 @@ func (h *AdminAuthHandlers) Login(w http.ResponseWriter, r *http.Request) {
 
 // Me returns the currently authenticated admin user.
 func (h *AdminAuthHandlers) Me(w http.ResponseWriter, r *http.Request) {
-	username, _ := r.Context().Value("entity_id").(string)
+	username := entityIDFrom(r)
 	user, err := h.users.Get(r.Context(), username)
 	if err != nil {
 		h.logger.WithError(err).Error("admin me: lookup failed")

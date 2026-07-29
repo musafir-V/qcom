@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
@@ -36,16 +35,15 @@ type geocodeReverseRequest struct {
 // address form. It fails open: no result → 200 with empty address_line; a
 // geocoder error → 502 (the app proceeds with an empty building_and_floor).
 func (h *GeocodeHandlers) ReverseGeocode(w http.ResponseWriter, r *http.Request) {
-	entityType, _ := r.Context().Value("entity_type").(string)
-	userID, _ := r.Context().Value("entity_id").(string)
+	entityType := entityTypeFrom(r)
+	userID := entityIDFrom(r)
 	if entityType != middleware.EntityTypeGuest && userID == "" {
 		respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
 		return
 	}
 
 	var req geocodeReverseRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Latitude == nil {

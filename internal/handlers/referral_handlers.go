@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/qcom/qcom/internal/service"
@@ -20,13 +19,13 @@ func NewReferralHandlers(referralService *service.ReferralService, logger *logru
 // GET /api/v1/de/referral
 // Returns the DE's referral code and the list of DEs they have referred with status.
 func (h *ReferralHandlers) GetReferralScreen(w http.ResponseWriter, r *http.Request) {
-	deID, _ := r.Context().Value("entity_id").(string)
-	phone, _ := r.Context().Value("phone").(string)
+	deID := entityIDFrom(r)
+	phone := phoneFrom(r)
 
 	code, refs, rewardZMW, err := h.referralService.GetReferralScreen(r.Context(), deID, phone)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to get referral screen")
-		h.respondWithError(w, http.StatusInternalServerError, "REFERRAL_FETCH_FAILED", "Failed to fetch referral details")
+		respondWithError(w, http.StatusInternalServerError, "REFERRAL_FETCH_FAILED", "Failed to fetch referral details")
 		return
 	}
 
@@ -51,21 +50,9 @@ func (h *ReferralHandlers) GetReferralScreen(w http.ResponseWriter, r *http.Requ
 		})
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"referral_code": code,
 		"reward_zmw":    rewardZMW,
 		"referrals":     items,
-	})
-}
-
-func (h *ReferralHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *ReferralHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
 	})
 }

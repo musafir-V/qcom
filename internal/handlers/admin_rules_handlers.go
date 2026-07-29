@@ -32,7 +32,7 @@ func AdminKeyMiddleware(expectedKey string) mux.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if strings.TrimSpace(expectedKey) == "" || r.Header.Get("X-Admin-Key") != expectedKey {
-				adminRulesRespondWithJSON(w, http.StatusUnauthorized, ErrorResponse{
+				respondWithJSON(w, http.StatusUnauthorized, ErrorResponse{
 					Error: ErrorDetail{Code: "UNAUTHORIZED", Message: "Unauthorized"},
 				})
 				return
@@ -46,25 +46,25 @@ func (h *AdminRulesHandlers) ListRules(w http.ResponseWriter, r *http.Request) {
 	rules, err := h.repo.ListAll(r.Context())
 	if err != nil {
 		h.logger.WithError(err).Error("admin rules: list failed")
-		h.respondWithError(w, http.StatusInternalServerError, "RULES_LIST_FAILED", "Failed to list rules")
+		respondWithError(w, http.StatusInternalServerError, "RULES_LIST_FAILED", "Failed to list rules")
 		return
 	}
 	latest := latestRulesByID(rules)
 	sort.Slice(latest, func(i, j int) bool { return latest[i].ID < latest[j].ID })
-	h.respondWithJSON(w, http.StatusOK, latest)
+	respondWithJSON(w, http.StatusOK, latest)
 }
 
 // ListRuleVersions returns every stored version of a rule id, newest first.
 func (h *AdminRulesHandlers) ListRuleVersions(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(mux.Vars(r)["id"])
 	if id == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "id is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "id is required")
 		return
 	}
 	rules, err := h.repo.ListAll(r.Context())
 	if err != nil {
 		h.logger.WithError(err).Error("admin rules: list versions failed")
-		h.respondWithError(w, http.StatusInternalServerError, "RULES_LIST_FAILED", "Failed to list rule versions")
+		respondWithError(w, http.StatusInternalServerError, "RULES_LIST_FAILED", "Failed to list rule versions")
 		return
 	}
 	versions := make([]models.Rule, 0)
@@ -76,38 +76,37 @@ func (h *AdminRulesHandlers) ListRuleVersions(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if len(versions) == 0 {
-		h.respondWithError(w, http.StatusNotFound, "RULE_NOT_FOUND", "rule not found")
+		respondWithError(w, http.StatusNotFound, "RULE_NOT_FOUND", "rule not found")
 		return
 	}
 	sort.Slice(versions, func(i, j int) bool { return versions[i].Version > versions[j].Version })
-	h.respondWithJSON(w, http.StatusOK, versions)
+	respondWithJSON(w, http.StatusOK, versions)
 }
 
 func (h *AdminRulesHandlers) CreateRule(w http.ResponseWriter, r *http.Request) {
 	var req models.Rule
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	req.ID = strings.TrimSpace(req.ID)
 	req.Name = strings.TrimSpace(req.Name)
 	if req.ID == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "id is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "id is required")
 		return
 	}
 	if err := validateRuleRequest(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_RULE", err.Error())
+		respondWithError(w, http.StatusBadRequest, "INVALID_RULE", err.Error())
 		return
 	}
 
 	rules, err := h.repo.ListAll(r.Context())
 	if err != nil {
 		h.logger.WithError(err).Error("admin rules: list before create failed")
-		h.respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to create rule")
+		respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to create rule")
 		return
 	}
 	if latestByIDMap(rules)[req.ID] != nil {
-		h.respondWithError(w, http.StatusConflict, "RULE_EXISTS", "rule id already exists")
+		respondWithError(w, http.StatusConflict, "RULE_EXISTS", "rule id already exists")
 		return
 	}
 
@@ -115,74 +114,73 @@ func (h *AdminRulesHandlers) CreateRule(w http.ResponseWriter, r *http.Request) 
 	req.Spec = cloneRaw(req.Spec)
 	if err := h.repo.Put(r.Context(), &req); err != nil {
 		h.logger.WithError(err).Error("admin rules: create failed")
-		h.respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to create rule")
+		respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to create rule")
 		return
 	}
-	h.respondWithJSON(w, http.StatusCreated, req)
+	respondWithJSON(w, http.StatusCreated, req)
 }
 
 func (h *AdminRulesHandlers) UpdateRule(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(mux.Vars(r)["id"])
 	if id == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "id is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "id is required")
 		return
 	}
 	var req models.Rule
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.ID) != "" && strings.TrimSpace(req.ID) != id {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_RULE", "id in path and body must match")
+		respondWithError(w, http.StatusBadRequest, "INVALID_RULE", "id in path and body must match")
 		return
 	}
 	req.ID = id
 	req.Name = strings.TrimSpace(req.Name)
 	if err := validateRuleRequest(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_RULE", err.Error())
+		respondWithError(w, http.StatusBadRequest, "INVALID_RULE", err.Error())
 		return
 	}
 
 	rules, err := h.repo.ListAll(r.Context())
 	if err != nil {
 		h.logger.WithError(err).Error("admin rules: list before update failed")
-		h.respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to update rule")
+		respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to update rule")
 		return
 	}
 	latest := latestByIDMap(rules)[id]
 	if latest == nil {
-		h.respondWithError(w, http.StatusNotFound, "RULE_NOT_FOUND", "rule not found")
+		respondWithError(w, http.StatusNotFound, "RULE_NOT_FOUND", "rule not found")
 		return
 	}
 	if latest.Family != req.Family {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_RULE", "family cannot change across versions")
+		respondWithError(w, http.StatusBadRequest, "INVALID_RULE", "family cannot change across versions")
 		return
 	}
 	req.Version = latest.Version + 1
 	req.Spec = cloneRaw(req.Spec)
 	if err := h.repo.Put(r.Context(), &req); err != nil {
 		h.logger.WithError(err).Error("admin rules: update failed")
-		h.respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to update rule")
+		respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to update rule")
 		return
 	}
-	h.respondWithJSON(w, http.StatusCreated, req)
+	respondWithJSON(w, http.StatusCreated, req)
 }
 
 func (h *AdminRulesHandlers) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimSpace(mux.Vars(r)["id"])
 	if id == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "id is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "id is required")
 		return
 	}
 	rules, err := h.repo.ListAll(r.Context())
 	if err != nil {
 		h.logger.WithError(err).Error("admin rules: list before delete failed")
-		h.respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to delete rule")
+		respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to delete rule")
 		return
 	}
 	latest := latestByIDMap(rules)[id]
 	if latest == nil {
-		h.respondWithError(w, http.StatusNotFound, "RULE_NOT_FOUND", "rule not found")
+		respondWithError(w, http.StatusNotFound, "RULE_NOT_FOUND", "rule not found")
 		return
 	}
 
@@ -193,10 +191,10 @@ func (h *AdminRulesHandlers) DeleteRule(w http.ResponseWriter, r *http.Request) 
 
 	if err := h.repo.Put(r.Context(), &next); err != nil {
 		h.logger.WithError(err).Error("admin rules: delete failed")
-		h.respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to delete rule")
+		respondWithError(w, http.StatusInternalServerError, "RULES_WRITE_FAILED", "Failed to delete rule")
 		return
 	}
-	h.respondWithJSON(w, http.StatusCreated, next)
+	respondWithJSON(w, http.StatusCreated, next)
 }
 
 func validateRuleRequest(rule *models.Rule) error {
@@ -328,20 +326,4 @@ func latestByIDMap(rules []*models.Rule) map[string]*models.Rule {
 
 func cloneRaw(raw json.RawMessage) json.RawMessage {
 	return append([]byte(nil), raw...)
-}
-
-func (h *AdminRulesHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	adminRulesRespondWithJSON(w, status, payload)
-}
-
-func (h *AdminRulesHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	adminRulesRespondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
-	})
-}
-
-func adminRulesRespondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
 }

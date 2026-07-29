@@ -91,12 +91,11 @@ type voiceTokenResponse struct {
 // middleware context) to a Vonage sub, lazily provisions the Vonage user,
 // signs a per-user RS256 token, and returns {"token","user","ttl":3600}.
 func (h *VoiceHandlers) PostToken(w http.ResponseWriter, r *http.Request) {
-	entityID, _ := r.Context().Value("entity_id").(string)
-	entityType, _ := r.Context().Value("entity_type").(string)
-	if entityID == "" {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing identity")
+	entityID, ok := requireEntityID(w, r, "missing identity")
+	if !ok {
 		return
 	}
+	entityType := entityTypeFrom(r)
 
 	var sub string
 	switch entityType {
@@ -105,24 +104,24 @@ func (h *VoiceHandlers) PostToken(w http.ResponseWriter, r *http.Request) {
 	case "customer":
 		sub = service.CustomerVonageUser(entityID)
 	default:
-		h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "unsupported entity type")
+		respondWithError(w, http.StatusForbidden, "FORBIDDEN", "unsupported entity type")
 		return
 	}
 
 	if err := h.ensurer.EnsureUser(r.Context(), sub); err != nil {
 		h.logger.WithError(err).Error("voice: EnsureUser failed")
-		h.respondWithError(w, http.StatusServiceUnavailable, "PROVISION_FAILED", "failed to provision voice user")
+		respondWithError(w, http.StatusServiceUnavailable, "PROVISION_FAILED", "failed to provision voice user")
 		return
 	}
 
 	token, err := h.tokenSvc.GenerateUserToken(sub)
 	if err != nil {
 		h.logger.WithError(err).Error("voice: GenerateUserToken failed")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GEN_FAILED", "failed to generate voice token")
+		respondWithError(w, http.StatusInternalServerError, "TOKEN_GEN_FAILED", "failed to generate voice token")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, voiceTokenResponse{Token: token, User: sub, TTL: 3600})
+	respondWithJSON(w, http.StatusOK, voiceTokenResponse{Token: token, User: sub, TTL: 3600})
 }
 
 // AnswerWebhook handles POST /webhooks/voice/answer.
@@ -133,7 +132,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.logger.WithError(err).Warn("voice: AnswerWebhook: read body failed")
-		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
+		respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
 		return
 	}
 
@@ -156,7 +155,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 			"custom_data_keys": customDataKeys,
 			"custom_data_raw":  customDataRaw,
 		}).Warn("voice: AnswerWebhook: invalid JSON body")
-		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
+		respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
 		return
 	}
 
@@ -170,7 +169,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 			"custom_data_keys": customDataKeys,
 			"custom_data_raw":  customDataRaw,
 		}).Warn("voice: AnswerWebhook: custom_data.order_id empty")
-		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
+		respondWithJSON(w, http.StatusOK, service.RejectNCCO("bad_request"))
 		return
 	}
 
@@ -191,7 +190,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 			"from":     req.From,
 			"order_id": req.CustomData.OrderID,
 		}).Warn("voice: AnswerWebhook: trip lookup failed")
-		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_found"))
+		respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_found"))
 		return
 	}
 
@@ -206,7 +205,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 			"trip_id":  trip.TripID,
 			"status":   trip.Status,
 		}).Warn("voice: AnswerWebhook: trip not callable")
-		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_callable"))
+		respondWithJSON(w, http.StatusOK, service.RejectNCCO("trip_not_callable"))
 		return
 	}
 
@@ -224,7 +223,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 			"de_id":    trip.DEID,
 			"customer": trip.CustomerUserID,
 		}).Warn("voice: AnswerWebhook: caller does not match trip")
-		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("unknown_caller"))
+		respondWithJSON(w, http.StatusOK, service.RejectNCCO("unknown_caller"))
 		return
 	}
 
@@ -243,7 +242,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 			"direction": direction,
 			"count":     count,
 		}).Warn("voice: AnswerWebhook: per-direction call cap reached")
-		h.respondWithJSON(w, http.StatusOK, service.RejectNCCO("cap_exceeded"))
+		respondWithJSON(w, http.StatusOK, service.RejectNCCO("cap_exceeded"))
 		return
 	}
 
@@ -276,7 +275,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.respondWithJSON(w, http.StatusOK, service.ConnectAppNCCO(toUser))
+	respondWithJSON(w, http.StatusOK, service.ConnectAppNCCO(toUser))
 }
 
 // EventWebhook handles POST /webhooks/voice/event.
@@ -291,14 +290,14 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 			"reason":     "invalid_signature",
 			"has_auth":   r.Header.Get("Authorization") != "",
 		}).Warn("voice: EventWebhook: signature verification failed")
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid signature")
+		respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid signature")
 		return
 	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.logger.WithError(err).Warn("voice: EventWebhook: read body failed")
-		h.respondWithError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body")
+		respondWithError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body")
 		return
 	}
 
@@ -306,7 +305,7 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.WithError(err).WithField("body_preview", truncateForLog(string(body), 512)).
 			Warn("voice: EventWebhook: decode failed")
-		h.respondWithError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body")
+		respondWithError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid body")
 		return
 	}
 
@@ -357,7 +356,7 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 			"custom_data_raw":    customDataRaw,
 			"body_preview":       truncateForLog(string(body), 512),
 		}).Warn("voice: EventWebhook: skipping upsert")
-		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 
@@ -367,7 +366,7 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	trip, tripErr := h.trips.GetByOrderID(r.Context(), orderID)
 	if tripErr != nil || trip == nil {
 		h.logger.WithError(tripErr).Warn("voice: EventWebhook: trip not found by order_id, skipping upsert")
-		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
 
@@ -391,7 +390,7 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.recorder.Upsert(r.Context(), &rec); err != nil {
 		h.logger.WithError(err).Error("voice: EventWebhook: Upsert failed")
-		h.respondWithError(w, http.StatusInternalServerError, "UPSERT_FAILED", "failed to persist call record")
+		respondWithError(w, http.StatusInternalServerError, "UPSERT_FAILED", "failed to persist call record")
 		return
 	}
 
@@ -408,7 +407,7 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 		"direction":         direction,
 		"duration":          dur,
 	}).Info("voice: EventWebhook: call record saved")
-	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // voiceCustomDataDebug extracts custom_data key names and a truncated raw JSON
@@ -444,16 +443,4 @@ func truncateForLog(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
-}
-
-func (h *VoiceHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *VoiceHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
-	})
 }

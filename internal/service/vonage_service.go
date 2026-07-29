@@ -3,18 +3,13 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/config"
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/metrics"
@@ -99,49 +94,13 @@ func (s *VonageService) generateAndCacheJWT(ctx context.Context) (string, error)
 }
 
 // generateJWT creates a signed RS256 JWT for the Vonage Messages API.
-// Uses jwt.MapClaims to guarantee exact claim serialization with no field shadowing.
+// The empty sub/acl claims are what the Messages API expects for an
+// application-level token.
 func (s *VonageService) generateJWT() (string, error) {
-	privateKey, err := s.decodePrivateKey()
-	if err != nil {
-		return "", err
-	}
-
-	now := time.Now().Unix()
-
-	claims := jwt.MapClaims{
-		"application_id": s.appID,
-		"sub":            "",
-		"acl":            "",
-		"iat":            now,
-		"exp":            now + 3600,
-		"jti":            uuid.New().String(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	return token.SignedString(privateKey)
-}
-
-func (s *VonageService) decodePrivateKey() (*rsa.PrivateKey, error) {
-	pemBytes, err := base64.StdEncoding.DecodeString(s.privateKeyB64)
-	if err != nil {
-		return nil, fmt.Errorf("failed to base64-decode Vonage private key: %w", err)
-	}
-
-	block, _ := pem.Decode(pemBytes)
-	if block == nil {
-		return nil, fmt.Errorf("failed to decode PEM block from Vonage private key")
-	}
-
-	// Try PKCS8 first (Vonage typically provides PKCS8), fall back to PKCS1.
-	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
-		rsaKey, ok := key.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("Vonage private key is not an RSA key")
-		}
-		return rsaKey, nil
-	}
-
-	return x509.ParsePKCS1PrivateKey(block.Bytes)
+	return signVonageJWT(s.privateKeyB64, "Vonage private key", s.appID, jwt.MapClaims{
+		"sub": "",
+		"acl": "",
+	})
 }
 
 // SendWhatsAppOTP delivers a 6-digit OTP via the bunzo_login_otp WhatsApp template.

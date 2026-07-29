@@ -63,7 +63,7 @@ type ETAPayload struct {
 func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 	orderID := mux.Vars(r)["orderId"]
 	if strings.TrimSpace(orderID) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "orderId is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "orderId is required")
 		return
 	}
 
@@ -71,11 +71,11 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 	order, err := h.javaClient.GetOrderRaw(r.Context(), orderID)
 	if err != nil {
 		h.logger.WithError(err).Error("track: failed to fetch order from order-service")
-		h.respondWithError(w, http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch order")
+		respondWithError(w, http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch order")
 		return
 	}
 	if order == nil {
-		h.respondWithError(w, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
+		respondWithError(w, http.StatusNotFound, "ORDER_NOT_FOUND", "Order not found")
 		return
 	}
 
@@ -123,11 +123,11 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 
 	if err := enrichOrderWithTracking(order, otp, deName, eta); err != nil {
 		h.logger.WithError(err).Error("track: failed to enrich order payload")
-		h.respondWithError(w, http.StatusInternalServerError, "ENRICH_FAILED", "Failed to build response")
+		respondWithError(w, http.StatusInternalServerError, "ENRICH_FAILED", "Failed to build response")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, order)
+	respondWithJSON(w, http.StatusOK, order)
 }
 
 // orderCreatedAt extracts the order's creation timestamp (the "createdAt" field)
@@ -207,16 +207,4 @@ func enrichOrderWithTracking(order map[string]json.RawMessage, otp *string, deNa
 		order[key] = raw
 	}
 	return nil
-}
-
-func (h *TrackHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *TrackHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
-	})
 }

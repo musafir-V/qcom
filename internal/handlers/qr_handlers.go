@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -18,16 +17,6 @@ type QRHandlers struct {
 
 func NewQRHandlers(svc *service.MarketingQRService, logger *logrus.Logger) *QRHandlers {
 	return &QRHandlers{svc: svc, logger: logger}
-}
-
-func (h *QRHandlers) respondJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func (h *QRHandlers) respondError(w http.ResponseWriter, status int, code, message string) {
-	h.respondJSON(w, status, ErrorResponse{Error: ErrorDetail{Code: code, Message: message}})
 }
 
 // Redirect is the public scan endpoint: GET /q/{slug}
@@ -63,34 +52,33 @@ func (h *QRHandlers) CreateCampaign(w http.ResponseWriter, r *http.Request) {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Name == "" {
-		h.respondError(w, http.StatusBadRequest, "MISSING_NAME", "name is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_NAME", "name is required")
 		return
 	}
 	c, err := h.svc.CreateCampaign(r.Context(), req.Name, req.Description)
 	if err != nil {
 		h.logger.WithError(err).Error("qr: create campaign failed")
-		h.respondError(w, http.StatusInternalServerError, "CREATE_FAILED", "Failed to create campaign")
+		respondWithError(w, http.StatusInternalServerError, "CREATE_FAILED", "Failed to create campaign")
 		return
 	}
-	h.respondJSON(w, http.StatusCreated, c)
+	respondWithJSON(w, http.StatusCreated, c)
 }
 
 func (h *QRHandlers) ListCampaigns(w http.ResponseWriter, r *http.Request) {
 	list, err := h.svc.ListCampaigns(r.Context())
 	if err != nil {
 		h.logger.WithError(err).Error("qr: list campaigns failed")
-		h.respondError(w, http.StatusInternalServerError, "LIST_FAILED", "Failed to list campaigns")
+		respondWithError(w, http.StatusInternalServerError, "LIST_FAILED", "Failed to list campaigns")
 		return
 	}
 	if list == nil {
 		list = []*models.QRCampaign{}
 	}
-	h.respondJSON(w, http.StatusOK, list)
+	respondWithJSON(w, http.StatusOK, list)
 }
 
 type placementView struct {
@@ -108,18 +96,18 @@ func (h *QRHandlers) GetCampaign(w http.ResponseWriter, r *http.Request) {
 	c, placements, err := h.svc.GetCampaignWithPlacements(r.Context(), id)
 	if err != nil {
 		h.logger.WithError(err).Error("qr: get campaign failed")
-		h.respondError(w, http.StatusInternalServerError, "GET_FAILED", "Failed to get campaign")
+		respondWithError(w, http.StatusInternalServerError, "GET_FAILED", "Failed to get campaign")
 		return
 	}
 	if c == nil {
-		h.respondError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
+		respondWithError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
 		return
 	}
 	views := make([]placementView, 0, len(placements))
 	for _, p := range placements {
 		views = append(views, placementView{QRPlacement: p, URL: h.svc.PlacementURL(p.Slug)})
 	}
-	h.respondJSON(w, http.StatusOK, campaignDetailResponse{Campaign: c, Placements: views})
+	respondWithJSON(w, http.StatusOK, campaignDetailResponse{Campaign: c, Placements: views})
 }
 
 func (h *QRHandlers) UpdateCampaign(w http.ResponseWriter, r *http.Request) {
@@ -129,21 +117,20 @@ func (h *QRHandlers) UpdateCampaign(w http.ResponseWriter, r *http.Request) {
 		Description *string `json:"description"`
 		Enabled     *bool   `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	c, err := h.svc.UpdateCampaign(r.Context(), id, req.Name, req.Description, req.Enabled)
 	if err != nil {
 		h.logger.WithError(err).Error("qr: update campaign failed")
-		h.respondError(w, http.StatusInternalServerError, "UPDATE_FAILED", "Failed to update campaign")
+		respondWithError(w, http.StatusInternalServerError, "UPDATE_FAILED", "Failed to update campaign")
 		return
 	}
 	if c == nil {
-		h.respondError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
+		respondWithError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
 		return
 	}
-	h.respondJSON(w, http.StatusOK, c)
+	respondWithJSON(w, http.StatusOK, c)
 }
 
 // --- Admin: placements ---
@@ -154,25 +141,24 @@ func (h *QRHandlers) AddPlacement(w http.ResponseWriter, r *http.Request) {
 		Name     string `json:"name"`
 		Location string `json:"location"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Name == "" {
-		h.respondError(w, http.StatusBadRequest, "MISSING_NAME", "name is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_NAME", "name is required")
 		return
 	}
 	p, err := h.svc.AddPlacement(r.Context(), campaignID, req.Name, req.Location)
 	if err != nil {
 		h.logger.WithError(err).Error("qr: add placement failed")
-		h.respondError(w, http.StatusInternalServerError, "ADD_FAILED", "Failed to add placement")
+		respondWithError(w, http.StatusInternalServerError, "ADD_FAILED", "Failed to add placement")
 		return
 	}
 	if p == nil {
-		h.respondError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
+		respondWithError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
 		return
 	}
-	h.respondJSON(w, http.StatusCreated, placementView{QRPlacement: p, URL: h.svc.PlacementURL(p.Slug)})
+	respondWithJSON(w, http.StatusCreated, placementView{QRPlacement: p, URL: h.svc.PlacementURL(p.Slug)})
 }
 
 func (h *QRHandlers) UpdatePlacement(w http.ResponseWriter, r *http.Request) {
@@ -182,21 +168,20 @@ func (h *QRHandlers) UpdatePlacement(w http.ResponseWriter, r *http.Request) {
 		Location *string `json:"location"`
 		Enabled  *bool   `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	p, err := h.svc.UpdatePlacement(r.Context(), slug, req.Name, req.Location, req.Enabled)
 	if err != nil {
 		h.logger.WithError(err).Error("qr: update placement failed")
-		h.respondError(w, http.StatusInternalServerError, "UPDATE_FAILED", "Failed to update placement")
+		respondWithError(w, http.StatusInternalServerError, "UPDATE_FAILED", "Failed to update placement")
 		return
 	}
 	if p == nil {
-		h.respondError(w, http.StatusNotFound, "NOT_FOUND", "Placement not found")
+		respondWithError(w, http.StatusNotFound, "NOT_FOUND", "Placement not found")
 		return
 	}
-	h.respondJSON(w, http.StatusOK, placementView{QRPlacement: p, URL: h.svc.PlacementURL(p.Slug)})
+	respondWithJSON(w, http.StatusOK, placementView{QRPlacement: p, URL: h.svc.PlacementURL(p.Slug)})
 }
 
 func (h *QRHandlers) Analytics(w http.ResponseWriter, r *http.Request) {
@@ -213,12 +198,12 @@ func (h *QRHandlers) Analytics(w http.ResponseWriter, r *http.Request) {
 	res, err := h.svc.Analytics(r.Context(), id, from, to)
 	if err != nil {
 		h.logger.WithError(err).Error("qr: analytics failed")
-		h.respondError(w, http.StatusInternalServerError, "ANALYTICS_FAILED", "Failed to load analytics")
+		respondWithError(w, http.StatusInternalServerError, "ANALYTICS_FAILED", "Failed to load analytics")
 		return
 	}
 	if res == nil {
-		h.respondError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
+		respondWithError(w, http.StatusNotFound, "NOT_FOUND", "Campaign not found")
 		return
 	}
-	h.respondJSON(w, http.StatusOK, res)
+	respondWithJSON(w, http.StatusOK, res)
 }

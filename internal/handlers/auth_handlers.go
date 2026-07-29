@@ -84,15 +84,6 @@ type RefreshTokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 }
 
-type ErrorResponse struct {
-	Error ErrorDetail `json:"error"`
-}
-
-type ErrorDetail struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
 func appType(r *http.Request) string {
 	t := strings.TrimSpace(r.Header.Get("X-App-Type"))
 	if t == "de" {
@@ -105,13 +96,13 @@ func (h *AuthHandlers) InitiateOTP(w http.ResponseWriter, r *http.Request) {
 	var req InitiateOTPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.logger.WithError(err).Error("Failed to decode OTP request")
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
 		return
 	}
 
 	phoneNumber := strings.TrimSpace(req.PhoneNumber)
 	if !isValidPhoneNumber(phoneNumber) {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
+		respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
 		return
 	}
 
@@ -124,30 +115,29 @@ func (h *AuthHandlers) InitiateOTP(w http.ResponseWriter, r *http.Request) {
 		exists, err := h.deRepo.Exists(r.Context(), phoneNumber)
 		if err != nil {
 			h.logger.WithError(err).Error("Failed to check DE existence")
-			h.respondWithError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process request")
+			respondWithError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process request")
 			return
 		}
 		if !exists {
-			h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "No delivery executive registered with this number")
+			respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "No delivery executive registered with this number")
 			return
 		}
 	}
 
 	if _, err := h.otpService.GenerateOTP(r.Context(), phoneNumber); err != nil {
 		h.logger.WithError(err).Error("Failed to generate OTP")
-		h.respondWithError(w, http.StatusInternalServerError, "OTP_GENERATION_FAILED", "Failed to generate OTP")
+		respondWithError(w, http.StatusInternalServerError, "OTP_GENERATION_FAILED", "Failed to generate OTP")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, InitiateOTPResponse{
+	respondWithJSON(w, http.StatusOK, InitiateOTPResponse{
 		Message: "OTP sent successfully",
 	})
 }
 
 func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	var req VerifyOTPRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -159,18 +149,18 @@ func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isValidPhoneNumber(phoneNumber) {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
+		respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
 		return
 	}
 
 	if len(otp) < 4 || len(otp) > 8 {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_OTP", "Invalid OTP format")
+		respondWithError(w, http.StatusBadRequest, "INVALID_OTP", "Invalid OTP format")
 		return
 	}
 
 	valid, err := h.otpService.VerifyOTP(r.Context(), phoneNumber, otp)
 	if err != nil || !valid {
-		h.respondWithError(w, http.StatusUnauthorized, "INVALID_OTP", "Invalid or expired OTP")
+		respondWithError(w, http.StatusUnauthorized, "INVALID_OTP", "Invalid or expired OTP")
 		return
 	}
 
@@ -184,21 +174,21 @@ func (h *AuthHandlers) VerifyOTP(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandlers) verifyOTPForDE(w http.ResponseWriter, r *http.Request, phoneNumber string) {
 	de, err := h.deRepo.GetByPhone(r.Context(), phoneNumber)
 	if err != nil || de == nil {
-		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Delivery executive not found")
+		respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Delivery executive not found")
 		return
 	}
 
 	tokenPair, familyID, err := h.jwtService.GenerateAccessToken(phoneNumber, de.DEID, "de")
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to generate tokens for DE")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
+		respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
 		return
 	}
 
 	claims, err := h.jwtService.VerifyToken(tokenPair.RefreshToken)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to verify DE refresh token")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
+		respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
 		return
 	}
 
@@ -214,7 +204,7 @@ func (h *AuthHandlers) verifyOTPForDE(w http.ResponseWriter, r *http.Request, ph
 		h.logger.WithError(err).Error("Failed to store DE refresh token")
 	}
 
-	h.respondWithJSON(w, http.StatusOK, VerifyOTPResponse{
+	respondWithJSON(w, http.StatusOK, VerifyOTPResponse{
 		AccessToken:  tokenPair.AccessToken,
 		RefreshToken: tokenPair.RefreshToken,
 		TokenType:    tokenPair.TokenType,
@@ -233,21 +223,21 @@ func (h *AuthHandlers) verifyOTPForCustomer(w http.ResponseWriter, r *http.Reque
 	user, err := h.userRepo.GetOrCreate(r.Context(), phoneNumber)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to get or create user")
-		h.respondWithError(w, http.StatusInternalServerError, "USER_CREATION_FAILED", "Failed to create user")
+		respondWithError(w, http.StatusInternalServerError, "USER_CREATION_FAILED", "Failed to create user")
 		return
 	}
 
 	tokenPair, familyID, err := h.jwtService.GenerateAccessToken(phoneNumber, user.UserID, "customer")
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to generate tokens")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
+		respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
 		return
 	}
 
 	claims, err := h.jwtService.VerifyToken(tokenPair.RefreshToken)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to verify refresh token")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
+		respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
 		return
 	}
 
@@ -263,7 +253,7 @@ func (h *AuthHandlers) verifyOTPForCustomer(w http.ResponseWriter, r *http.Reque
 		h.logger.WithError(err).Error("Failed to store refresh token")
 	}
 
-	h.respondWithJSON(w, http.StatusOK, VerifyOTPResponse{
+	respondWithJSON(w, http.StatusOK, VerifyOTPResponse{
 		AccessToken:  tokenPair.AccessToken,
 		RefreshToken: tokenPair.RefreshToken,
 		TokenType:    tokenPair.TokenType,
@@ -279,30 +269,29 @@ func (h *AuthHandlers) verifyOTPForCustomer(w http.ResponseWriter, r *http.Reque
 
 func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	var req RefreshTokenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
 	if req.RefreshToken == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_TOKEN", "Refresh token is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_TOKEN", "Refresh token is required")
 		return
 	}
 
 	claims, err := h.jwtService.VerifyToken(req.RefreshToken)
 	if err != nil {
-		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid refresh token")
+		respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid refresh token")
 		return
 	}
 
 	if claims.Type != "refresh" {
-		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN_TYPE", "Token is not a refresh token")
+		respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN_TYPE", "Token is not a refresh token")
 		return
 	}
 
 	revoked, err := h.refreshTokenService.IsRevoked(r.Context(), claims.JTI)
 	if err == nil && revoked {
-		h.respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
+		respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
 		return
 	}
 
@@ -323,14 +312,14 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	newTokenPair, newFamilyID, err := h.jwtService.RefreshTokens(req.RefreshToken, familyID)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to generate new tokens")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
+		respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
 		return
 	}
 
 	newClaims, err := h.jwtService.VerifyToken(newTokenPair.RefreshToken)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to verify new refresh token")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
+		respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
 		return
 	}
 
@@ -346,7 +335,7 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		h.logger.WithError(err).Error("Failed to store new refresh token")
 	}
 
-	h.respondWithJSON(w, http.StatusOK, RefreshTokenResponse{
+	respondWithJSON(w, http.StatusOK, RefreshTokenResponse{
 		AccessToken:  newTokenPair.AccessToken,
 		RefreshToken: newTokenPair.RefreshToken,
 		TokenType:    newTokenPair.TokenType,
@@ -357,7 +346,7 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 	_, ok := r.Context().Value("claims").(*service.Claims)
 	if !ok {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token")
+		respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token")
 		return
 	}
 
@@ -373,7 +362,7 @@ func (h *AuthHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{
+	respondWithJSON(w, http.StatusOK, map[string]string{
 		"message": "Logged out successfully",
 	})
 }
@@ -394,13 +383,13 @@ type DeleteAccountRequest struct {
 func (h *AuthHandlers) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	claims, ok := r.Context().Value("claims").(*service.Claims)
 	if !ok {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token")
+		respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token")
 		return
 	}
 
 	// Customers only — DE accounts are operational and must not self-delete here.
 	if claims.EntityType != "customer" {
-		h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Only customer accounts can be deleted")
+		respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Only customer accounts can be deleted")
 		return
 	}
 
@@ -408,13 +397,13 @@ func (h *AuthHandlers) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 	var req DeleteAccountRequest
 	json.NewDecoder(r.Body).Decode(&req)
 	if req.UserID != "" && req.UserID != claims.EntityID {
-		h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Cannot delete a different account")
+		respondWithError(w, http.StatusForbidden, "FORBIDDEN", "Cannot delete a different account")
 		return
 	}
 
 	if err := h.userRepo.DeleteByPhone(r.Context(), claims.Phone); err != nil {
 		h.logger.WithError(err).Error("Failed to delete user account")
-		h.respondWithError(w, http.StatusInternalServerError, "DELETE_FAILED", "Failed to delete account")
+		respondWithError(w, http.StatusInternalServerError, "DELETE_FAILED", "Failed to delete account")
 		return
 	}
 
@@ -423,23 +412,8 @@ func (h *AuthHandlers) DeleteAccount(w http.ResponseWriter, r *http.Request) {
 		h.logger.WithError(err).Error("Failed to revoke refresh tokens on account deletion")
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{
+	respondWithJSON(w, http.StatusOK, map[string]string{
 		"message": "Account deleted successfully",
-	})
-}
-
-func (h *AuthHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *AuthHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{
-			Code:    code,
-			Message: message,
-		},
 	})
 }
 

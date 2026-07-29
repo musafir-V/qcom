@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -35,8 +34,7 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 		DriverLicenseURL string `json:"driver_license_url"` // optional
 		ReferralCode     string `json:"referral_code"`      // optional
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -45,23 +43,23 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 		req.PhoneNumber = "+" + req.PhoneNumber
 	}
 	if !isValidPhoneNumber(req.PhoneNumber) {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
+		respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name is required")
 		return
 	}
 	if strings.TrimSpace(req.ProfileURL) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "profile_url is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "profile_url is required")
 		return
 	}
 	if strings.TrimSpace(req.NRCURL) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_url is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_url is required")
 		return
 	}
 	if strings.TrimSpace(req.DriverLicenseURL) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "driver_license_url is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "driver_license_url is required")
 		return
 	}
 
@@ -75,15 +73,15 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already registered") {
-			h.respondWithError(w, http.StatusConflict, "DE_ALREADY_EXISTS", err.Error())
+			respondWithError(w, http.StatusConflict, "DE_ALREADY_EXISTS", err.Error())
 			return
 		}
 		h.logger.WithError(err).Error("Failed to register DE")
-		h.respondWithError(w, http.StatusInternalServerError, "REGISTRATION_FAILED", "Failed to register delivery executive")
+		respondWithError(w, http.StatusInternalServerError, "REGISTRATION_FAILED", "Failed to register delivery executive")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
+	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 		"de_id":         de.DEID,
 		"phone_number":  de.PhoneNumber,
 		"name":          de.Name,
@@ -95,11 +93,11 @@ func (h *DEHandlers) Register(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/de/me
 func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
-	phone, _ := r.Context().Value("phone").(string)
+	phone := phoneFrom(r)
 
 	de, err := h.deService.GetDE(r.Context(), phone)
 	if err != nil {
-		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Delivery executive not found")
+		respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Delivery executive not found")
 		return
 	}
 
@@ -141,12 +139,12 @@ func (h *DEHandlers) GetMe(w http.ResponseWriter, r *http.Request) {
 	resp["cash_limit_zmw"] = cashCfg.EffectiveLimitZMW()
 	resp["cash_blocked"] = de.CashExceeds(cashCfg.EffectiveLimitZMW())
 
-	h.respondWithJSON(w, http.StatusOK, resp)
+	respondWithJSON(w, http.StatusOK, resp)
 }
 
 // POST /api/v1/de/duty/start
 func (h *DEHandlers) StartDuty(w http.ResponseWriter, r *http.Request) {
-	phone, _ := r.Context().Value("phone").(string)
+	phone := phoneFrom(r)
 
 	var req struct {
 		QRCode    string  `json:"qr_code"`
@@ -155,12 +153,11 @@ func (h *DEHandlers) StartDuty(w http.ResponseWriter, r *http.Request) {
 		AccuracyM float64 `json:"accuracy_m"`
 		IsMocked  bool    `json:"is_mocked"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.QRCode) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "qr_code is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "qr_code is required")
 		return
 	}
 
@@ -193,11 +190,11 @@ func (h *DEHandlers) StartDuty(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusConflict
 			code = "CASH_LIMIT_EXCEEDED"
 		}
-		h.respondWithError(w, status, code, errStr)
+		respondWithError(w, status, code, errStr)
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"status":   "eligible",
 		"store_id": storeID,
 		"message":  "Duty started. You are now eligible for order assignment.",
@@ -208,14 +205,14 @@ func (h *DEHandlers) StartDuty(w http.ResponseWriter, r *http.Request) {
 func (h *DEHandlers) GetStoreQR(w http.ResponseWriter, r *http.Request) {
 	storeID := mux.Vars(r)["storeId"]
 	if storeID == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "storeId is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "storeId is required")
 		return
 	}
 
 	qrCode := h.qrService.GenerateQRCode(storeID)
 	validUntil := h.qrService.ValidUntil()
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"store_id":    storeID,
 		"qr_code":     qrCode,
 		"valid_until": validUntil.Format("2006-01-02T15:04:05Z07:00"),
@@ -224,7 +221,7 @@ func (h *DEHandlers) GetStoreQR(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/de/duty/end
 func (h *DEHandlers) EndDuty(w http.ResponseWriter, r *http.Request) {
-	phone, _ := r.Context().Value("phone").(string)
+	phone := phoneFrom(r)
 
 	if err := h.deService.EndDuty(r.Context(), phone); err != nil {
 		errStr := err.Error()
@@ -235,24 +232,12 @@ func (h *DEHandlers) EndDuty(w http.ResponseWriter, r *http.Request) {
 		} else if strings.Contains(errStr, "already offline") {
 			code = "ALREADY_OFFLINE"
 		}
-		h.respondWithError(w, status, code, errStr)
+		respondWithError(w, status, code, errStr)
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{
+	respondWithJSON(w, http.StatusOK, map[string]string{
 		"status":  "offline",
 		"message": "Duty ended.",
-	})
-}
-
-func (h *DEHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *DEHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
 	})
 }

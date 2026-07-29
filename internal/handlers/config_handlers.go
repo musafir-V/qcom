@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -28,12 +27,11 @@ func (h *ConfigHandlers) UpdatePayoutConfig(w http.ResponseWriter, r *http.Reque
 		Field string `json:"field"`
 		Value string `json:"value"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.Field == "" || req.Value == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "field and value are required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "field and value are required")
 		return
 	}
 
@@ -47,25 +45,13 @@ func (h *ConfigHandlers) UpdatePayoutConfig(w http.ResponseWriter, r *http.Reque
 
 	if err := h.payoutConfigRepo.UpdateField(r.Context(), req.Field, attrValue); err != nil {
 		h.logger.WithError(err).Error("failed to update payout config")
-		h.respondWithError(w, http.StatusInternalServerError, "UPDATE_FAILED", "Failed to update config")
+		respondWithError(w, http.StatusInternalServerError, "UPDATE_FAILED", "Failed to update config")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{
+	respondWithJSON(w, http.StatusOK, map[string]string{
 		"field":  req.Field,
 		"value":  req.Value,
 		"status": "updated",
-	})
-}
-
-func (h *ConfigHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *ConfigHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
 	})
 }
