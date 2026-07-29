@@ -199,6 +199,9 @@ For detailed testing documentation, see [TESTING_HOME_API.md](TESTING_HOME_API.m
 | `OTP_LENGTH` | `6` | OTP length |
 | `OTP_EXPIRY` | `10m` | OTP expiration |
 | `OTP_MAX_ATTEMPTS` | `5` | Max OTP verification attempts |
+| `OTP_MASTER_BYPASS_CODE` | `` | Code accepted as a valid OTP for every phone number. Smoke/QA only — leave unset in production |
+| `CORS_ALLOWED_ORIGINS` | `` | Comma-separated CORS origin allowlist. Empty falls back to `*` |
+| `INTERNAL_API_KEY` | `` | Shared secret required in `X-Internal-Api-Key` on `/internal/v1/*`. Empty disables the check |
 
 ## API Usage Examples
 

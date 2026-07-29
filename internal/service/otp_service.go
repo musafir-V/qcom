@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"math/big"
 	"time"
@@ -14,8 +15,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
-
-const masterOTPBypass = "112233"
 
 type whatsAppOTPSender interface {
 	SendWhatsAppOTP(ctx context.Context, phoneNumber, otp string) error
@@ -99,7 +98,11 @@ func (s *OTPService) VerifyOTP(ctx context.Context, phoneNumber, otp string) (bo
 	op := logging.Start(ctx, s.logger, "VerifyOTP", logrus.Fields{"phone": phoneNumber})
 	defer op.End()
 
-	if otp == masterOTPBypass {
+	// A master bypass code is honoured only when explicitly configured
+	// (OTP_MASTER_BYPASS_CODE). It is empty in production, so the branch is dead
+	// there; smoke/QA environments opt in.
+	if s.cfg.MasterBypassCode != "" &&
+		subtle.ConstantTimeCompare([]byte(otp), []byte(s.cfg.MasterBypassCode)) == 1 {
 		op.With("outcome", "master_bypass")
 		return true, nil
 	}

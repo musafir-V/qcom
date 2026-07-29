@@ -168,15 +168,28 @@ func TestGenerateOTP_CreatesNewOTPWhenPlaintextMissing(t *testing.T) {
 	}
 }
 
-func TestVerifyOTP_MasterBypass(t *testing.T) {
+func TestVerifyOTP_MasterBypassWhenConfigured(t *testing.T) {
 	svc := newTestOTPService(&stubOTPRepo{}, &stubWhatsAppSender{})
+	svc.cfg.MasterBypassCode = "112233"
 
-	valid, err := svc.VerifyOTP(context.Background(), "+919515365236", masterOTPBypass)
+	valid, err := svc.VerifyOTP(context.Background(), "+919515365236", "112233")
 	if err != nil {
 		t.Fatalf("VerifyOTP returned error: %v", err)
 	}
 	if !valid {
 		t.Fatal("expected master OTP bypass to succeed")
+	}
+}
+
+func TestVerifyOTP_MasterBypassDisabledByDefault(t *testing.T) {
+	svc := newTestOTPService(&stubOTPRepo{}, &stubWhatsAppSender{})
+
+	valid, err := svc.VerifyOTP(context.Background(), "+919515365236", "112233")
+	if err == nil {
+		t.Fatal("expected an error when no OTP was issued")
+	}
+	if valid {
+		t.Fatal("master OTP bypass must be disabled unless configured")
 	}
 }
 
