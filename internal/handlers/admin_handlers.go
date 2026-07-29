@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -27,12 +26,11 @@ func (h *AdminHandlers) AssignOrder(w http.ResponseWriter, r *http.Request) {
 		OrderID     string `json:"order_id"`
 		DriverPhone string `json:"driver_phone"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.OrderID) == "" || strings.TrimSpace(req.DriverPhone) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id and driver_phone are required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id and driver_phone are required")
 		return
 	}
 
@@ -40,14 +38,14 @@ func (h *AdminHandlers) AssignOrder(w http.ResponseWriter, r *http.Request) {
 		status, code := classifyAdminAssignError(err)
 		if status == http.StatusInternalServerError {
 			h.logger.WithError(err).Error("admin assign failed")
-			h.respondWithError(w, status, code, "Failed to assign order")
+			respondWithError(w, status, code, "Failed to assign order")
 			return
 		}
-		h.respondWithError(w, status, code, err.Error())
+		respondWithError(w, status, code, err.Error())
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "assigned"})
+	respondWithJSON(w, http.StatusOK, map[string]string{"status": "assigned"})
 }
 
 func classifyAdminAssignError(err error) (status int, code string) {
@@ -70,7 +68,7 @@ func classifyAdminAssignError(err error) (status int, code string) {
 func (h *AdminHandlers) ReassignCandidates(w http.ResponseWriter, r *http.Request) {
 	tripID := strings.TrimSpace(mux.Vars(r)["trip_id"])
 	if tripID == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "trip_id is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "trip_id is required")
 		return
 	}
 
@@ -79,14 +77,14 @@ func (h *AdminHandlers) ReassignCandidates(w http.ResponseWriter, r *http.Reques
 		status, code := classifyReassignError(err)
 		if status == http.StatusInternalServerError {
 			h.logger.WithError(err).Error("admin: failed to list reassign candidates")
-			h.respondWithError(w, status, code, "Failed to list candidates")
+			respondWithError(w, status, code, "Failed to list candidates")
 			return
 		}
-		h.respondWithError(w, status, code, err.Error())
+		respondWithError(w, status, code, err.Error())
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"candidates": candidates})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"candidates": candidates})
 }
 
 // POST /api/v1/admin/trips/{trip_id}/reassign
@@ -94,7 +92,7 @@ func (h *AdminHandlers) ReassignCandidates(w http.ResponseWriter, r *http.Reques
 func (h *AdminHandlers) ReassignTrip(w http.ResponseWriter, r *http.Request) {
 	tripID := strings.TrimSpace(mux.Vars(r)["trip_id"])
 	if tripID == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "trip_id is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "trip_id is required")
 		return
 	}
 
@@ -103,8 +101,7 @@ func (h *AdminHandlers) ReassignTrip(w http.ResponseWriter, r *http.Request) {
 		ReasonCode string `json:"reason_code"`
 		Note       string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	phone := strings.TrimSpace(req.ToDEPhone)
@@ -112,12 +109,12 @@ func (h *AdminHandlers) ReassignTrip(w http.ResponseWriter, r *http.Request) {
 		phone = "+" + phone
 	}
 	if phone == "" || strings.TrimSpace(req.ReasonCode) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "to_de_phone and reason_code are required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "to_de_phone and reason_code are required")
 		return
 	}
 
 	// Set by RequireAdminAuth; same pattern as the dispute handlers.
-	adminUsername, _ := r.Context().Value("entity_id").(string)
+	adminUsername := entityIDFrom(r)
 
 	// note is persisted onto the trip item, which riders poll on every
 	// GetCurrentTrip — bound it so an admin can't balloon that payload.
@@ -130,14 +127,14 @@ func (h *AdminHandlers) ReassignTrip(w http.ResponseWriter, r *http.Request) {
 		status, code := classifyReassignError(err)
 		if status == http.StatusInternalServerError {
 			h.logger.WithError(err).Error("admin: trip reassignment failed")
-			h.respondWithError(w, status, code, "Failed to reassign trip")
+			respondWithError(w, status, code, "Failed to reassign trip")
 			return
 		}
-		h.respondWithError(w, status, code, err.Error())
+		respondWithError(w, status, code, err.Error())
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "reassigned"})
+	respondWithJSON(w, http.StatusOK, map[string]string{"status": "reassigned"})
 }
 
 func classifyReassignError(err error) (status int, code string) {
@@ -176,16 +173,4 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(runes[:n])
-}
-
-func (h *AdminHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *AdminHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
-	})
 }

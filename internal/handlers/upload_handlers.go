@@ -64,17 +64,16 @@ func (h *UploadHandlers) GeneratePrintUploadURL(w http.ResponseWriter, r *http.R
 
 // GetViewURL returns a short-lived presigned GET URL for an object the caller owns.
 func (h *UploadHandlers) GetViewURL(w http.ResponseWriter, r *http.Request) {
-	entityID, _ := r.Context().Value("entity_id").(string)
-	entityType, _ := r.Context().Value("entity_type").(string)
-	if entityID == "" {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
+	entityID, ok := requireEntityID(w, r, "Entity ID not found in token")
+	if !ok {
 		return
 	}
+	entityType := entityTypeFrom(r)
 
 	useCase := r.URL.Query().Get("use_case")
 	objectKey := r.URL.Query().Get("object_key")
 	if useCase == "" || objectKey == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "use_case and object_key query params are required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "use_case and object_key query params are required")
 		return
 	}
 
@@ -86,7 +85,7 @@ func (h *UploadHandlers) GetViewURL(w http.ResponseWriter, r *http.Request) {
 		if status >= 500 {
 			msg = "Something went wrong, please try again"
 		}
-		h.respondWithError(w, status, code, msg)
+		respondWithError(w, status, code, msg)
 		return
 	}
 
@@ -104,12 +103,11 @@ func (h *UploadHandlers) GetViewURL(w http.ResponseWriter, r *http.Request) {
 // the picker id is supplied by the trusted internal caller (order-service).
 func (h *UploadHandlers) GenerateInternalPickerUploadURL(w http.ResponseWriter, r *http.Request) {
 	var req InternalPickerUploadURLRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if strings.TrimSpace(req.EntityID) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "entity_id is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "entity_id is required")
 		return
 	}
 
@@ -121,7 +119,7 @@ func (h *UploadHandlers) GenerateInternalPickerUploadURL(w http.ResponseWriter, 
 		if status >= 500 {
 			msg = "Something went wrong, please try again"
 		}
-		h.respondWithError(w, status, code, msg)
+		respondWithError(w, status, code, msg)
 		return
 	}
 
@@ -143,7 +141,7 @@ func (h *UploadHandlers) GetInternalPickerViewURL(w http.ResponseWriter, r *http
 	entityID := r.URL.Query().Get("entity_id")
 	objectKey := r.URL.Query().Get("object_key")
 	if strings.TrimSpace(entityID) == "" || strings.TrimSpace(objectKey) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "entity_id and object_key query params are required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "entity_id and object_key query params are required")
 		return
 	}
 
@@ -155,7 +153,7 @@ func (h *UploadHandlers) GetInternalPickerViewURL(w http.ResponseWriter, r *http
 		if status >= 500 {
 			msg = "Something went wrong, please try again"
 		}
-		h.respondWithError(w, status, code, msg)
+		respondWithError(w, status, code, msg)
 		return
 	}
 
@@ -169,16 +167,14 @@ func (h *UploadHandlers) GetInternalPickerViewURL(w http.ResponseWriter, r *http
 }
 
 func (h *UploadHandlers) generate(w http.ResponseWriter, r *http.Request, forcedUseCase string) {
-	entityID, _ := r.Context().Value("entity_id").(string)
-	entityType, _ := r.Context().Value("entity_type").(string)
-	if entityID == "" {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
+	entityID, ok := requireEntityID(w, r, "Entity ID not found in token")
+	if !ok {
 		return
 	}
+	entityType := entityTypeFrom(r)
 
 	var req GenerateUploadURLRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	useCase := req.UseCase
@@ -186,7 +182,7 @@ func (h *UploadHandlers) generate(w http.ResponseWriter, r *http.Request, forced
 		useCase = forcedUseCase
 	}
 	if useCase == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "use_case is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "use_case is required")
 		return
 	}
 
@@ -198,7 +194,7 @@ func (h *UploadHandlers) generate(w http.ResponseWriter, r *http.Request, forced
 		if status >= 500 {
 			msg = "Something went wrong, please try again"
 		}
-		h.respondWithError(w, status, code, msg)
+		respondWithError(w, status, code, msg)
 		return
 	}
 
@@ -230,10 +226,4 @@ func classifyUploadError(err error) (int, string) {
 	default:
 		return http.StatusInternalServerError, "PRESIGN_FAILED"
 	}
-}
-
-func (h *UploadHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: ErrorDetail{Code: code, Message: message}})
 }

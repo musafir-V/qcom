@@ -4,7 +4,6 @@ package repository
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -141,39 +140,19 @@ func (r *DisputeRepository) GetLatestByOrderNumber(ctx context.Context, orderNum
 }
 
 func encodeDisputeCursor(key map[string]types.AttributeValue) string {
-	if len(key) == 0 {
-		return ""
-	}
-	m := make(map[string]string, len(key))
-	for k, v := range key {
-		if s, ok := v.(*types.AttributeValueMemberS); ok {
-			m[k] = s.Value
-		}
-	}
-	b, err := json.Marshal(m)
+	cursor, err := encodeStringKeyCursor(base64.StdEncoding, key, false)
 	if err != nil {
 		return ""
 	}
-	return base64.StdEncoding.EncodeToString(b)
+	return cursor
 }
 
 func decodeDisputeCursor(cursor string) (map[string]types.AttributeValue, error) {
-	if cursor == "" {
-		return nil, nil
-	}
-	raw, err := base64.StdEncoding.DecodeString(cursor)
+	key, err := decodeStringKeyCursor(base64.StdEncoding, cursor)
 	if err != nil {
 		return nil, fmt.Errorf("invalid cursor: %w", err)
 	}
-	var m map[string]string
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, fmt.Errorf("invalid cursor: %w", err)
-	}
-	out := make(map[string]types.AttributeValue, len(m))
-	for k, v := range m {
-		out[k] = &types.AttributeValueMemberS{Value: v}
-	}
-	return out, nil
+	return key, nil
 }
 
 // disputeStatusIndexFor picks the index backing a dispute list/count. An empty

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -86,18 +85,18 @@ func normalizePhone(raw string) string {
 func (h *AdminDriverHandlers) GetDriver(w http.ResponseWriter, r *http.Request) {
 	phone := normalizePhone(mux.Vars(r)["phone"])
 	if phone == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
 		return
 	}
 
 	de, err := h.deRepo.GetByPhone(r.Context(), phone)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to fetch driver")
-		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
 		return
 	}
 	if de == nil {
-		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
 		return
 	}
 
@@ -152,7 +151,7 @@ func (h *AdminDriverHandlers) GetDriver(w http.ResponseWriter, r *http.Request) 
 	resp["cash_limit_zmw"] = cashCfg.EffectiveLimitZMW()
 	resp["cash_blocked"] = de.CashExceeds(cashCfg.EffectiveLimitZMW())
 
-	h.respondWithJSON(w, http.StatusOK, resp)
+	respondWithJSON(w, http.StatusOK, resp)
 }
 
 // docViewURL returns a displayable URL for a stored document value. Legacy
@@ -179,18 +178,18 @@ func (h *AdminDriverHandlers) docViewURL(ctx context.Context, stored string) str
 func (h *AdminDriverHandlers) GetDriverTrip(w http.ResponseWriter, r *http.Request) {
 	phone := normalizePhone(mux.Vars(r)["phone"])
 	if phone == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
 		return
 	}
 
 	trip, err := h.tripService.GetCurrentTrip(r.Context(), phone)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to fetch driver trip")
-		h.respondWithError(w, http.StatusInternalServerError, "TRIP_FETCH_FAILED", "Failed to fetch trip")
+		respondWithError(w, http.StatusInternalServerError, "TRIP_FETCH_FAILED", "Failed to fetch trip")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"trip": redactTripForAdmin(trip),
 	})
 }
@@ -207,8 +206,7 @@ func (h *AdminDriverHandlers) AdminCompleteDrop(w http.ResponseWriter, r *http.R
 	var req struct {
 		OTP string `json:"otp"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	h.adminCompleteTask(w, r, models.TaskTypeDrop, req.OTP)
@@ -217,7 +215,7 @@ func (h *AdminDriverHandlers) AdminCompleteDrop(w http.ResponseWriter, r *http.R
 func (h *AdminDriverHandlers) adminCompleteTask(w http.ResponseWriter, r *http.Request, taskType models.TaskType, otp string) {
 	phone := normalizePhone(mux.Vars(r)["phone"])
 	if phone == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
 		return
 	}
 
@@ -226,14 +224,14 @@ func (h *AdminDriverHandlers) adminCompleteTask(w http.ResponseWriter, r *http.R
 		status, code := classifyTaskUpdateError(err)
 		if status == http.StatusInternalServerError {
 			h.logger.WithError(err).Error("admin: failed to complete trip task")
-			h.respondWithError(w, status, code, "Failed to complete trip task")
+			respondWithError(w, status, code, "Failed to complete trip task")
 			return
 		}
-		h.respondWithError(w, status, code, err.Error())
+		respondWithError(w, status, code, err.Error())
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
 // adminTripView is the trip as ops sees it: OTP stripped, reassignment history
@@ -280,11 +278,11 @@ func (h *AdminDriverHandlers) GetDriverReferrals(w http.ResponseWriter, r *http.
 	de, err := h.deRepo.GetByPhone(r.Context(), phone)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to fetch driver for referrals")
-		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
 		return
 	}
 	if de == nil {
-		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
 		return
 	}
 	ctx := context.WithValue(r.Context(), "phone", phone)
@@ -299,18 +297,18 @@ func (h *AdminDriverHandlers) GetDriverCashLedger(w http.ResponseWriter, r *http
 	de, err := h.deRepo.GetByPhone(r.Context(), phone)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to fetch driver for cash ledger")
-		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
 		return
 	}
 	if de == nil {
-		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
 		return
 	}
 
 	entries, err := h.cashLedgerRepo.ListByDE(r.Context(), de.DEID)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to list cash ledger")
-		h.respondWithError(w, http.StatusInternalServerError, "CASH_LEDGER_FETCH_FAILED", "Failed to fetch cash deposits")
+		respondWithError(w, http.StatusInternalServerError, "CASH_LEDGER_FETCH_FAILED", "Failed to fetch cash deposits")
 		return
 	}
 
@@ -330,7 +328,7 @@ func (h *AdminDriverHandlers) GetDriverCashLedger(w http.ResponseWriter, r *http
 		})
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"in_hand_cash_zmw": de.InHandCashZMW,
 		"deposits":         items,
 	})
@@ -342,14 +340,14 @@ func (h *AdminDriverHandlers) GetDriverCashLedger(w http.ResponseWriter, r *http
 func (h *AdminDriverHandlers) GetDriverPresence(w http.ResponseWriter, r *http.Request) {
 	phone := normalizePhone(mux.Vars(r)["phone"])
 	if phone == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
 		return
 	}
 
 	date := strings.TrimSpace(r.URL.Query().Get("date"))
 	if date != "" {
 		if _, err := time.Parse("2006-01-02", date); err != nil {
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_DATE", "date must be YYYY-MM-DD")
+			respondWithError(w, http.StatusBadRequest, "INVALID_DATE", "date must be YYYY-MM-DD")
 			return
 		}
 	}
@@ -357,11 +355,11 @@ func (h *AdminDriverHandlers) GetDriverPresence(w http.ResponseWriter, r *http.R
 	report, err := h.presenceService.GetDayPresence(r.Context(), phone, date)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to compute driver presence")
-		h.respondWithError(w, http.StatusInternalServerError, "PRESENCE_FETCH_FAILED", "Failed to compute presence")
+		respondWithError(w, http.StatusInternalServerError, "PRESENCE_FETCH_FAILED", "Failed to compute presence")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, report)
+	respondWithJSON(w, http.StatusOK, report)
 }
 
 // uploadDocExt maps allowed MIME types to a canonical extension for onboarding docs.
@@ -383,8 +381,7 @@ func (h *AdminDriverHandlers) PresignDriverDoc(w http.ResponseWriter, r *http.Re
 		FileType string `json:"file_type"`
 		FileSize int64  `json:"file_size"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -392,17 +389,17 @@ func (h *AdminDriverHandlers) PresignDriverDoc(w http.ResponseWriter, r *http.Re
 	switch kind {
 	case "profile", "nrc", "license":
 	default:
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_KIND", "kind must be one of: profile, nrc, license")
+		respondWithError(w, http.StatusBadRequest, "INVALID_KIND", "kind must be one of: profile, nrc, license")
 		return
 	}
 
 	phone := normalizePhone(req.Phone)
 	if phone == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "phone is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "phone is required")
 		return
 	}
 	if strings.TrimSpace(req.FileType) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "file_type is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "file_type is required")
 		return
 	}
 
@@ -418,11 +415,11 @@ func (h *AdminDriverHandlers) PresignDriverDoc(w http.ResponseWriter, r *http.Re
 	result, err := h.uploadService.GeneratePresignedPutURL(r.Context(), h.bucket, objectKey, req.FileType, req.FileSize)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to presign driver doc")
-		h.respondWithError(w, http.StatusInternalServerError, "PRESIGN_FAILED", "Failed to generate upload URL")
+		respondWithError(w, http.StatusInternalServerError, "PRESIGN_FAILED", "Failed to generate upload URL")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"upload_url":         result.UploadURL,
 		"object_key":         result.ObjectKey,
 		"expires_in_seconds": result.ExpiresInSeconds,
@@ -447,50 +444,49 @@ func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Reques
 		AssignedStoreID   string `json:"assigned_store_id"`
 		ReferralCode      string `json:"referral_code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
 	req.PhoneNumber = normalizePhone(req.PhoneNumber)
 	if !isValidPhoneNumber(req.PhoneNumber) {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
+		respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "name is required")
 		return
 	}
 	if strings.TrimSpace(req.ProfileURL) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "profile_url is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "profile_url is required")
 		return
 	}
 	if strings.TrimSpace(req.NRCURL) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_url is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_url is required")
 		return
 	}
 	if strings.TrimSpace(req.DriverLicenseURL) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "driver_license_url is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "driver_license_url is required")
 		return
 	}
 	if strings.TrimSpace(req.NRCNumber) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_number is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "nrc_number is required")
 		return
 	}
 	if strings.TrimSpace(req.AirtelMoneyNumber) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "airtel_money_number is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "airtel_money_number is required")
 		return
 	}
 	if strings.TrimSpace(req.BikeNumber) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "bike_number is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "bike_number is required")
 		return
 	}
 	if strings.TrimSpace(req.BikeBrand) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "bike_brand is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "bike_brand is required")
 		return
 	}
 	if strings.TrimSpace(req.AssignedStoreID) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "assigned_store_id is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "assigned_store_id is required")
 		return
 	}
 
@@ -509,19 +505,19 @@ func (h *AdminDriverHandlers) CreateDriver(w http.ResponseWriter, r *http.Reques
 	})
 	if err != nil {
 		if strings.Contains(err.Error(), "already registered") {
-			h.respondWithError(w, http.StatusConflict, "DE_ALREADY_EXISTS", err.Error())
+			respondWithError(w, http.StatusConflict, "DE_ALREADY_EXISTS", err.Error())
 			return
 		}
 		if strings.Contains(err.Error(), "not found") {
-			h.respondWithError(w, http.StatusBadRequest, "STORE_NOT_FOUND", err.Error())
+			respondWithError(w, http.StatusBadRequest, "STORE_NOT_FOUND", err.Error())
 			return
 		}
 		h.logger.WithError(err).Error("admin: failed to register driver")
-		h.respondWithError(w, http.StatusInternalServerError, "REGISTRATION_FAILED", "Failed to register driver")
+		respondWithError(w, http.StatusInternalServerError, "REGISTRATION_FAILED", "Failed to register driver")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
+	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 		"de_id":         de.DEID,
 		"phone_number":  de.PhoneNumber,
 		"name":          de.Name,
@@ -544,7 +540,7 @@ const (
 func (h *AdminDriverHandlers) ListDrivers(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	if _, ok := q["assigned_store_id"]; !ok {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "assigned_store_id is required (use UNASSIGNED for unassigned drivers)")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "assigned_store_id is required (use UNASSIGNED for unassigned drivers)")
 		return
 	}
 	storeID := strings.TrimSpace(q.Get("assigned_store_id"))
@@ -567,11 +563,11 @@ func (h *AdminDriverHandlers) ListDrivers(w http.ResponseWriter, r *http.Request
 	des, nextCursor, err := h.deService.ListDriversByStore(r.Context(), storeID, namePrefix, cursor, limit)
 	if err != nil {
 		if strings.Contains(err.Error(), "invalid cursor") {
-			h.respondWithError(w, http.StatusBadRequest, "INVALID_CURSOR", "Invalid pagination cursor")
+			respondWithError(w, http.StatusBadRequest, "INVALID_CURSOR", "Invalid pagination cursor")
 			return
 		}
 		h.logger.WithError(err).Error("admin: failed to list drivers")
-		h.respondWithError(w, http.StatusInternalServerError, "DRIVER_LIST_FAILED", "Failed to list drivers")
+		respondWithError(w, http.StatusInternalServerError, "DRIVER_LIST_FAILED", "Failed to list drivers")
 		return
 	}
 
@@ -597,7 +593,7 @@ func (h *AdminDriverHandlers) ListDrivers(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"drivers":     items,
 		"next_cursor": nextCursor,
 	})
@@ -610,15 +606,14 @@ func (h *AdminDriverHandlers) ListDrivers(w http.ResponseWriter, r *http.Request
 func (h *AdminDriverHandlers) UpdateAssignedStore(w http.ResponseWriter, r *http.Request) {
 	phone := normalizePhone(mux.Vars(r)["phone"])
 	if phone == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
 		return
 	}
 
 	var req struct {
 		AssignedStoreID string `json:"assigned_store_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	storeID := strings.TrimSpace(req.AssignedStoreID)
@@ -627,17 +622,17 @@ func (h *AdminDriverHandlers) UpdateAssignedStore(w http.ResponseWriter, r *http
 		errStr := err.Error()
 		switch {
 		case strings.Contains(errStr, "delivery executive not found"):
-			h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+			respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
 		case strings.Contains(errStr, "not found"):
-			h.respondWithError(w, http.StatusBadRequest, "STORE_NOT_FOUND", errStr)
+			respondWithError(w, http.StatusBadRequest, "STORE_NOT_FOUND", errStr)
 		default:
 			h.logger.WithError(err).Error("admin: failed to reassign driver store")
-			h.respondWithError(w, http.StatusInternalServerError, "REASSIGN_FAILED", "Failed to update assigned store")
+			respondWithError(w, http.StatusInternalServerError, "REASSIGN_FAILED", "Failed to update assigned store")
 		}
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"phone_number":      phone,
 		"assigned_store_id": storeID,
 	})
@@ -651,16 +646,4 @@ func (h *AdminDriverHandlers) RecordInKindDisbursement(w http.ResponseWriter, r 
 // ListInKindDisbursements handles GET /api/v1/admin/drivers/{phone}/inkind-disbursements
 func (h *AdminDriverHandlers) ListInKindDisbursements(w http.ResponseWriter, r *http.Request) {
 	h.inKindHandlers.ListInKindDisbursements(w, r)
-}
-
-func (h *AdminDriverHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *AdminDriverHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
-	})
 }

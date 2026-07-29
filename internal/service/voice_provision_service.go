@@ -3,17 +3,11 @@ package service
 import (
 	"bytes"
 	"context"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	"github.com/qcom/qcom/internal/metrics"
 	"github.com/sirupsen/logrus"
 )
@@ -107,35 +101,6 @@ func (s *VoiceProvisionService) EnsureUser(ctx context.Context, sub string) erro
 // signAppLevelJWT produces an app-level RS256 JWT (empty sub/acl) used to
 // authenticate calls to the Vonage REST API on behalf of the application.
 func (s *VoiceProvisionService) signAppLevelJWT() (string, error) {
-	key, err := s.decodeProvisionKey()
-	if err != nil {
-		return "", err
-	}
-	now := time.Now().Unix()
-	claims := jwt.MapClaims{
-		"application_id": s.appID,
-		"iat":            now,
-		"exp":            now + 3600,
-		"jti":            uuid.New().String(),
-	}
-	return jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(key)
+	return signVonageJWT(s.privateKeyB64, "provision key", s.appID, nil)
 }
 
-// decodeProvisionKey base64-decodes the stored PEM, then tries PKCS8 then PKCS1.
-// This mirrors voice_token_service.go decodeKey.
-func (s *VoiceProvisionService) decodeProvisionKey() (*rsa.PrivateKey, error) {
-	der, err := base64.StdEncoding.DecodeString(s.privateKeyB64)
-	if err != nil {
-		return nil, fmt.Errorf("provision key not base64: %w", err)
-	}
-	block, _ := pem.Decode(der)
-	if block == nil {
-		return nil, fmt.Errorf("provision key not PEM")
-	}
-	if k, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
-		if rk, ok := k.(*rsa.PrivateKey); ok {
-			return rk, nil
-		}
-	}
-	return x509.ParsePKCS1PrivateKey(block.Bytes)
-}

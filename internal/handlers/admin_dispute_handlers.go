@@ -120,28 +120,28 @@ func (h *AdminDisputeHandlers) List(w http.ResponseWriter, r *http.Request) {
 	for i := range disputes {
 		out = append(out, h.toDTO(r.Context(), &disputes[i], titles))
 	}
-	h.respondJSON(w, http.StatusOK, map[string]interface{}{"disputes": out, "next_cursor": next})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"disputes": out, "next_cursor": next})
 }
 
 func (h *AdminDisputeHandlers) Summary(w http.ResponseWriter, r *http.Request) {
 	sum, err := h.service.Summary(r.Context(), storeFilterFrom(r))
 	if err != nil {
 		h.logger.WithError(err).Error("dispute summary failed")
-		h.respondJSON(w, http.StatusInternalServerError, ErrorResponse{Error: ErrorDetail{Code: "INTERNAL_ERROR", Message: "Failed to load dispute summary"}})
+		respondWithJSON(w, http.StatusInternalServerError, ErrorResponse{Error: ErrorDetail{Code: "INTERNAL_ERROR", Message: "Failed to load dispute summary"}})
 		return
 	}
-	h.respondJSON(w, http.StatusOK, sum)
+	respondWithJSON(w, http.StatusOK, sum)
 }
 
 func (h *AdminDisputeHandlers) UpdateStatus(w http.ResponseWriter, r *http.Request) {
-	actor, _ := r.Context().Value("entity_id").(string)
+	actor := entityIDFrom(r)
 	id := mux.Vars(r)["id"]
 	var req struct {
 		Status         string `json:"status"`
 		ResolutionNote string `json:"resolution_note"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondJSON(w, http.StatusBadRequest, ErrorResponse{Error: ErrorDetail{Code: "INVALID_REQUEST", Message: "Invalid request body"}})
+		respondWithJSON(w, http.StatusBadRequest, ErrorResponse{Error: ErrorDetail{Code: "INVALID_REQUEST", Message: "Invalid request body"}})
 		return
 	}
 	newStatus := models.DisputeStatus(strings.ToUpper(strings.TrimSpace(req.Status)))
@@ -151,7 +151,7 @@ func (h *AdminDisputeHandlers) UpdateStatus(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	titles := h.service.TitlesFor(r.Context(), []string{d.DispositionCode})
-	h.respondJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDTO(r.Context(), d, titles)})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDTO(r.Context(), d, titles)})
 }
 
 // GET /admin/disputes/{id}
@@ -202,7 +202,7 @@ func (h *AdminDisputeHandlers) Get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.respondJSON(w, http.StatusOK, map[string]interface{}{"dispute": out})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": out})
 }
 
 func classifyAdminDisputeError(err error) (int, string) {
@@ -227,11 +227,5 @@ func (h *AdminDisputeHandlers) respondErr(w http.ResponseWriter, err error) {
 		h.logger.WithError(err).Error("admin dispute request failed")
 		msg = "Something went wrong, please try again"
 	}
-	h.respondJSON(w, status, ErrorResponse{Error: ErrorDetail{Code: code, Message: msg}})
-}
-
-func (h *AdminDisputeHandlers) respondJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	respondWithJSON(w, status, ErrorResponse{Error: ErrorDetail{Code: code, Message: msg}})
 }

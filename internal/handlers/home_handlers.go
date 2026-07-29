@@ -64,19 +64,3 @@ func (h *HomeHandlers) GetHome(w http.ResponseWriter, r *http.Request) {
 		Data: pageData,
 	})
 }
-
-// Helper functions for JSON responses
-func respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func respondWithError(w http.ResponseWriter, status int, code, message string) {
-	respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{
-			Code:    code,
-			Message: message,
-		},
-	})
-}

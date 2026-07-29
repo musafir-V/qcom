@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -121,13 +120,12 @@ func classifyDisbursementError(err error) (int, string) {
 func (h *DisbursementHandlers) RecordDisbursement(w http.ResponseWriter, r *http.Request) {
 	deID := mux.Vars(r)["deId"]
 	if strings.TrimSpace(deID) == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "deId is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "deId is required")
 		return
 	}
 
 	var req disbursementRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -136,25 +134,25 @@ func (h *DisbursementHandlers) RecordDisbursement(w http.ResponseWriter, r *http
 		req.DEPhone = "+" + req.DEPhone
 	}
 	if req.DEPhone != "" && !isValidPhoneNumber(req.DEPhone) {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
+		respondWithError(w, http.StatusBadRequest, "INVALID_PHONE", "Invalid phone number format")
 		return
 	}
 
 	if err := validateDisbursementRequest(req); err != nil {
 		status, code := classifyDisbursementError(err)
-		h.respondWithError(w, status, code, err.Error())
+		respondWithError(w, status, code, err.Error())
 		return
 	}
 
 	de, err := h.deRepo.GetByPhone(r.Context(), req.DEPhone)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to fetch DE for disbursement")
-		h.respondWithError(w, http.StatusInternalServerError, "DISBURSEMENT_FAILED", "Failed to fetch delivery executive")
+		respondWithError(w, http.StatusInternalServerError, "DISBURSEMENT_FAILED", "Failed to fetch delivery executive")
 		return
 	}
 	if err := validateDEIdentity(deID, de); err != nil {
 		status, code := classifyDisbursementError(err)
-		h.respondWithError(w, status, code, err.Error())
+		respondWithError(w, status, code, err.Error())
 		return
 	}
 
@@ -171,7 +169,7 @@ func (h *DisbursementHandlers) RecordDisbursement(w http.ResponseWriter, r *http
 
 	if err := h.disbursementRepo.Create(r.Context(), disbursement); err != nil {
 		h.logger.WithError(err).Error("failed to record disbursement")
-		h.respondWithError(w, http.StatusInternalServerError, "DISBURSEMENT_FAILED", "Failed to record disbursement")
+		respondWithError(w, http.StatusInternalServerError, "DISBURSEMENT_FAILED", "Failed to record disbursement")
 		return
 	}
 
@@ -179,7 +177,7 @@ func (h *DisbursementHandlers) RecordDisbursement(w http.ResponseWriter, r *http
 		h.logger.WithError(err).WithFields(logrus.Fields{
 			"de_phone": req.DEPhone, "de_id": deID, "disbursed_at": disbursedAt,
 		}).Error("disbursement recorded but failed to update last_disbursed_at")
-		h.respondWithError(w, http.StatusInternalServerError, "WATERMARK_UPDATE_FAILED",
+		respondWithError(w, http.StatusInternalServerError, "WATERMARK_UPDATE_FAILED",
 			fmt.Sprintf("Disbursement recorded (%s) but failed to update earnings watermark — fix last_disbursed_at manually",
 				disbursement.DisbursementID))
 		return
@@ -202,23 +200,11 @@ func (h *DisbursementHandlers) RecordDisbursement(w http.ResponseWriter, r *http
 		}).Error("disbursement recorded but failed to append earnings mirror entry")
 	}
 
-	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
+	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 		"disbursement_id": disbursement.DisbursementID,
 		"amount_zmw":      disbursement.AmountZMW,
 		"disbursed_at":    disbursement.DisbursedAt,
 		"period_from":     disbursement.PeriodFrom,
 		"period_to":       disbursement.PeriodTo,
-	})
-}
-
-func (h *DisbursementHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *DisbursementHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
 	})
 }

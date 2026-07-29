@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -29,22 +28,20 @@ type upsertDeviceTokenRequest struct {
 
 // PutDeviceToken handles PUT /api/v1/device-token for customer and driver JWTs.
 func (h *NotificationHandlers) PutDeviceToken(w http.ResponseWriter, r *http.Request) {
-	entityID, _ := r.Context().Value("entity_id").(string)
-	entityType, _ := r.Context().Value("entity_type").(string)
-	if entityID == "" {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "missing identity")
+	entityID, ok := requireEntityID(w, r, "missing identity")
+	if !ok {
 		return
 	}
+	entityType := entityTypeFrom(r)
 
 	recipientType, err := service.RecipientTypeFromJWT(entityType)
 	if err != nil {
-		h.respondWithError(w, http.StatusForbidden, "FORBIDDEN", "unsupported token type for device registration")
+		respondWithError(w, http.StatusForbidden, "FORBIDDEN", "unsupported token type for device registration")
 		return
 	}
 
 	var req upsertDeviceTokenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
@@ -56,34 +53,21 @@ func (h *NotificationHandlers) PutDeviceToken(w http.ResponseWriter, r *http.Req
 		strings.TrimSpace(req.Platform),
 	); err != nil {
 		h.logger.WithError(err).Error("failed to upsert device token")
-		h.respondWithError(w, http.StatusInternalServerError, "DEVICE_TOKEN_UPDATE_FAILED", "Failed to update device token")
+		respondWithError(w, http.StatusInternalServerError, "DEVICE_TOKEN_UPDATE_FAILED", "Failed to update device token")
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // SendNotification handles POST /internal/v1/notifications/send (private network only).
 func (h *NotificationHandlers) SendNotification(w http.ResponseWriter, r *http.Request) {
 	var req models.NotificationSendRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
 	result := h.notificationService.Send(r.Context(), req)
 	status := http.StatusAccepted
-	h.respondWithJSON(w, status, result)
-}
-
-func (h *NotificationHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *NotificationHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
-	})
+	respondWithJSON(w, status, result)
 }

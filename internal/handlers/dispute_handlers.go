@@ -3,7 +3,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -43,7 +42,7 @@ func (h *DisputeHandlers) ListDispositions(w http.ResponseWriter, r *http.Reques
 	items, err := h.disputeService.ListDispositions(r.Context())
 	if err != nil {
 		h.logger.WithError(err).Error("failed to list dispositions")
-		h.respondWithError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load dispositions")
+		respondWithError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load dispositions")
 		return
 	}
 	out := make([]dispositionDTO, 0, len(items))
@@ -53,21 +52,20 @@ func (h *DisputeHandlers) ListDispositions(w http.ResponseWriter, r *http.Reques
 			PhotosRequired: d.PhotosRequired, PhotoMin: d.PhotoMin, DescriptionRequired: d.DescriptionRequired,
 		})
 	}
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispositions": out})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispositions": out})
 }
 
 func (h *DisputeHandlers) CreateDispute(w http.ResponseWriter, r *http.Request) {
-	customerID, ok := h.customerID(w, r)
+	customerID, ok := requireEntityID(w, r, "Entity ID not found in token")
 	if !ok {
 		return
 	}
 	var req createDisputeRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	if req.OrderNumber == "" || req.DispositionCode == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_number and disposition_code are required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_number and disposition_code are required")
 		return
 	}
 	d, err := h.disputeService.CreateDispute(r.Context(), service.CreateDisputeInput{
@@ -86,14 +84,14 @@ func (h *DisputeHandlers) CreateDispute(w http.ResponseWriter, r *http.Request) 
 		if status >= 500 {
 			msg = "Something went wrong, please try again"
 		}
-		h.respondWithError(w, status, code, msg)
+		respondWithError(w, status, code, msg)
 		return
 	}
-	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
+	respondWithJSON(w, http.StatusCreated, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
 }
 
 func (h *DisputeHandlers) GetDispute(w http.ResponseWriter, r *http.Request) {
-	customerID, ok := h.customerID(w, r)
+	customerID, ok := requireEntityID(w, r, "Entity ID not found in token")
 	if !ok {
 		return
 	}
@@ -105,20 +103,20 @@ func (h *DisputeHandlers) GetDispute(w http.ResponseWriter, r *http.Request) {
 		if status >= 500 {
 			msg = "Something went wrong, please try again"
 		}
-		h.respondWithError(w, status, code, msg)
+		respondWithError(w, status, code, msg)
 		return
 	}
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
 }
 
 func (h *DisputeHandlers) GetDisputeByOrder(w http.ResponseWriter, r *http.Request) {
-	customerID, ok := h.customerID(w, r)
+	customerID, ok := requireEntityID(w, r, "Entity ID not found in token")
 	if !ok {
 		return
 	}
 	orderNumber := r.URL.Query().Get("order_number")
 	if orderNumber == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_number query param is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_number query param is required")
 		return
 	}
 	d, err := h.disputeService.GetDisputeByOrder(r.Context(), customerID, orderNumber)
@@ -128,10 +126,10 @@ func (h *DisputeHandlers) GetDisputeByOrder(w http.ResponseWriter, r *http.Reque
 		if status >= 500 {
 			msg = "Something went wrong, please try again"
 		}
-		h.respondWithError(w, status, code, msg)
+		respondWithError(w, status, code, msg)
 		return
 	}
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"dispute": h.toDisputeDTO(r.Context(), customerID, d)})
 }
 
 type disputeDTO struct {
@@ -165,15 +163,6 @@ func (h *DisputeHandlers) toDisputeDTO(ctx context.Context, customerID string, d
 	return dto
 }
 
-func (h *DisputeHandlers) customerID(w http.ResponseWriter, r *http.Request) (string, bool) {
-	id, _ := r.Context().Value("entity_id").(string)
-	if id == "" {
-		h.respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
-		return "", false
-	}
-	return id, true
-}
-
 func classifyDisputeError(err error) (int, string) {
 	switch {
 	case errors.Is(err, service.ErrOrderNotFound):
@@ -203,14 +192,4 @@ func classifyDisputeError(err error) (int, string) {
 	default:
 		return http.StatusInternalServerError, "INTERNAL_ERROR"
 	}
-}
-
-func (h *DisputeHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{Error: ErrorDetail{Code: code, Message: message}})
-}
-
-func (h *DisputeHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
 }

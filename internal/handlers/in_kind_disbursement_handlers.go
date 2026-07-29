@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -77,47 +76,46 @@ type inKindDisbursementRequest struct {
 func (h *InKindDisbursementHandlers) RecordInKindDisbursement(w http.ResponseWriter, r *http.Request) {
 	phone := normalizePhone(mux.Vars(r)["phone"])
 	if phone == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
 		return
 	}
 
-	adminID, _ := r.Context().Value("entity_id").(string)
+	adminID := entityIDFrom(r)
 
 	var req inKindDisbursementRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
 	sku := models.InKindSKU(strings.TrimSpace(req.SKU))
 	if !models.ValidInKindSKU(sku) {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_SKU", errInKindInvalidSKU.Error())
+		respondWithError(w, http.StatusBadRequest, "INVALID_SKU", errInKindInvalidSKU.Error())
 		return
 	}
 	if req.Quantity < 1 {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_QUANTITY", errInKindInvalidQuantity.Error())
+		respondWithError(w, http.StatusBadRequest, "INVALID_QUANTITY", errInKindInvalidQuantity.Error())
 		return
 	}
 
 	de, err := h.deRepo.GetByPhone(r.Context(), phone)
 	if err != nil {
 		h.logger.WithError(err).Error("inkind: failed to fetch DE")
-		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
 		return
 	}
 	if de == nil {
-		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", errInKindDENotFound.Error())
+		respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", errInKindDENotFound.Error())
 		return
 	}
 
 	outstanding, err := h.computeOutstanding(r.Context(), de.DEID, sku)
 	if err != nil {
 		h.logger.WithError(err).Error("inkind: failed to compute outstanding")
-		h.respondWithError(w, http.StatusInternalServerError, "OUTSTANDING_FAILED", "Failed to compute outstanding count")
+		respondWithError(w, http.StatusInternalServerError, "OUTSTANDING_FAILED", "Failed to compute outstanding count")
 		return
 	}
 	if req.Quantity > outstanding {
-		h.respondWithError(w, http.StatusBadRequest, "OVER_DISBURSEMENT", errInKindOverDisbursement.Error())
+		respondWithError(w, http.StatusBadRequest, "OVER_DISBURSEMENT", errInKindOverDisbursement.Error())
 		return
 	}
 
@@ -133,13 +131,13 @@ func (h *InKindDisbursementHandlers) RecordInKindDisbursement(w http.ResponseWri
 
 	if err := h.inKindDisbRepo.Create(r.Context(), record); err != nil {
 		h.logger.WithError(err).Error("inkind: failed to create record")
-		h.respondWithError(w, http.StatusInternalServerError, "CREATE_FAILED", "Failed to record disbursement")
+		respondWithError(w, http.StatusInternalServerError, "CREATE_FAILED", "Failed to record disbursement")
 		return
 	}
 
 	go h.notifyDriver(de.DEID, sku, req.Quantity)
 
-	h.respondWithJSON(w, http.StatusCreated, map[string]interface{}{
+	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 		"disbursement_id": record.DisbursementID,
 		"sku":             string(record.SKU),
 		"quantity":        record.Quantity,
@@ -151,25 +149,25 @@ func (h *InKindDisbursementHandlers) RecordInKindDisbursement(w http.ResponseWri
 func (h *InKindDisbursementHandlers) ListInKindDisbursements(w http.ResponseWriter, r *http.Request) {
 	phone := normalizePhone(mux.Vars(r)["phone"])
 	if phone == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
 		return
 	}
 
 	de, err := h.deRepo.GetByPhone(r.Context(), phone)
 	if err != nil {
 		h.logger.WithError(err).Error("inkind: failed to fetch DE")
-		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
 		return
 	}
 	if de == nil {
-		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
 		return
 	}
 
 	records, err := h.inKindDisbRepo.ListByDE(r.Context(), de.DEID)
 	if err != nil {
 		h.logger.WithError(err).Error("inkind: failed to list disbursements")
-		h.respondWithError(w, http.StatusInternalServerError, "LIST_FAILED", "Failed to list disbursements")
+		respondWithError(w, http.StatusInternalServerError, "LIST_FAILED", "Failed to list disbursements")
 		return
 	}
 
@@ -193,7 +191,7 @@ func (h *InKindDisbursementHandlers) ListInKindDisbursements(w http.ResponseWrit
 		})
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"disbursements": items})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"disbursements": items})
 }
 
 // computeOutstanding returns how many undisbursed items of a given SKU this DE has earned.
@@ -270,17 +268,5 @@ func (h *InKindDisbursementHandlers) notifyDriver(deID string, sku models.InKind
 			"type": "INKIND_DISBURSEMENT",
 			"sku":  string(sku),
 		},
-	})
-}
-
-func (h *InKindDisbursementHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *InKindDisbursementHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
 	})
 }

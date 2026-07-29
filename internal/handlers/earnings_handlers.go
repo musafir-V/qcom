@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -55,13 +54,13 @@ func NewEarningsHandlers(
 // Returns outstanding balance (sum since last disbursement), category breakdown
 // (live order earnings vs bonuses), and a paginated, newest-first list of line items.
 func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Request) {
-	dePhone, _ := r.Context().Value("phone").(string)
+	dePhone := phoneFrom(r)
 	cursor := r.URL.Query().Get("cursor")
 
 	de, err := h.deRepo.GetByPhone(r.Context(), dePhone)
 	if err != nil || de == nil {
 		h.logger.WithError(err).Error("failed to fetch DE for earnings summary")
-		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch DE")
+		respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch DE")
 		return
 	}
 
@@ -79,21 +78,21 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 	entries, nextKey, err := h.earningsLedgerRepo.QueryByDE(r.Context(), deID, afterTimestamp, 20, lastKey)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to query earnings ledger")
-		h.respondWithError(w, http.StatusInternalServerError, "EARNINGS_FETCH_FAILED", "Failed to fetch earnings")
+		respondWithError(w, http.StatusInternalServerError, "EARNINGS_FETCH_FAILED", "Failed to fetch earnings")
 		return
 	}
 
 	liveOrderTotal, bonusTotal, outstandingZMW, err := h.computeBreakdown(r.Context(), deID, afterTimestamp)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to compute earnings breakdown")
-		h.respondWithError(w, http.StatusInternalServerError, "EARNINGS_SUM_FAILED", "Failed to compute balance")
+		respondWithError(w, http.StatusInternalServerError, "EARNINGS_SUM_FAILED", "Failed to compute balance")
 		return
 	}
 
 	inKindItems, err := h.computeInKindSummary(r.Context(), deID)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to compute in-kind summary")
-		h.respondWithError(w, http.StatusInternalServerError, "IN_KIND_SUMMARY_FAILED", "Failed to compute in-kind summary")
+		respondWithError(w, http.StatusInternalServerError, "IN_KIND_SUMMARY_FAILED", "Failed to compute in-kind summary")
 		return
 	}
 
@@ -126,7 +125,7 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"outstanding_balance_zmw": outstandingZMW,
 		"live_order_total_zmw":    liveOrderTotal,
 		"bonus_total_zmw":         bonusTotal,
@@ -139,19 +138,19 @@ func (h *EarningsHandlers) GetEarningsSummary(w http.ResponseWriter, r *http.Req
 // GET /api/v1/de/earnings/disbursements
 // Returns all disbursements for the calling DE, newest first.
 func (h *EarningsHandlers) GetDisbursements(w http.ResponseWriter, r *http.Request) {
-	dePhone, _ := r.Context().Value("phone").(string)
+	dePhone := phoneFrom(r)
 
 	de, err := h.deRepo.GetByPhone(r.Context(), dePhone)
 	if err != nil || de == nil {
 		h.logger.WithError(err).Error("failed to fetch DE for disbursements")
-		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch DE")
+		respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch DE")
 		return
 	}
 
 	disbursements, err := h.disbursementRepo.ListByDE(r.Context(), de.DEID)
 	if err != nil {
 		h.logger.WithError(err).Error("failed to list disbursements")
-		h.respondWithError(w, http.StatusInternalServerError, "DISBURSEMENT_FETCH_FAILED", "Failed to fetch disbursements")
+		respondWithError(w, http.StatusInternalServerError, "DISBURSEMENT_FETCH_FAILED", "Failed to fetch disbursements")
 		return
 	}
 
@@ -173,7 +172,7 @@ func (h *EarningsHandlers) GetDisbursements(w http.ResponseWriter, r *http.Reque
 		})
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{"disbursements": items})
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"disbursements": items})
 }
 
 // computeBreakdown sums ledger entries by category (trip vs bonus) across all
@@ -272,16 +271,4 @@ func (h *EarningsHandlers) computeInKindSummary(ctx context.Context, deID string
 		})
 	}
 	return result, nil
-}
-
-func (h *EarningsHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (h *EarningsHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	h.respondWithJSON(w, status, ErrorResponse{
-		Error: ErrorDetail{Code: code, Message: message},
-	})
 }

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/qcom/qcom/internal/middleware"
@@ -29,16 +28,15 @@ type ServiceabilityRequest struct {
 }
 
 func (h *ServiceabilityHandlers) CheckServiceability(w http.ResponseWriter, r *http.Request) {
-	entityType, _ := r.Context().Value("entity_type").(string)
-	userID, _ := r.Context().Value("entity_id").(string)
+	entityType := entityTypeFrom(r)
+	userID := entityIDFrom(r)
 	if entityType != middleware.EntityTypeGuest && userID == "" {
 		respondWithError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Entity ID not found in token")
 		return
 	}
 
 	var req ServiceabilityRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 
