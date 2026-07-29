@@ -210,7 +210,5 @@ func (h *DisputeHandlers) respondWithError(w http.ResponseWriter, status int, co
 }
 
 func (h *DisputeHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }

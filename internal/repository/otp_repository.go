@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
+
+// ErrOTPNotFound is returned by Get when no (unexpired) OTP row exists.
+var ErrOTPNotFound = errors.New("OTP not found or expired")
 
 type OTPRepository struct {
 	client    *dynamodb.Client
@@ -75,7 +79,7 @@ func (r *OTPRepository) Get(ctx context.Context, phoneNumber string) (*models.OT
 	}
 
 	if result.Item == nil {
-		return nil, op.Outcome("not_found", fmt.Errorf("OTP not found or expired"))
+		return nil, op.Outcome("not_found", ErrOTPNotFound)
 	}
 
 	var otpData models.OTPData

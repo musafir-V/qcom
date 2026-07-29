@@ -8,15 +8,21 @@ import (
 
 	"github.com/qcom/qcom/internal/config"
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/repository"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type stubOTPRepo struct {
-	data map[string]models.OTPData
+	data      map[string]models.OTPData
+	storeErr  error
+	deleteErr error
 }
 
 func (s *stubOTPRepo) Store(_ context.Context, phoneNumber string, otpData models.OTPData) error {
+	if s.storeErr != nil {
+		return s.storeErr
+	}
 	if s.data == nil {
 		s.data = make(map[string]models.OTPData)
 	}
@@ -27,13 +33,16 @@ func (s *stubOTPRepo) Store(_ context.Context, phoneNumber string, otpData model
 func (s *stubOTPRepo) Get(_ context.Context, phoneNumber string) (*models.OTPData, error) {
 	data, ok := s.data[phoneNumber]
 	if !ok {
-		return nil, errors.New("OTP not found or expired")
+		return nil, repository.ErrOTPNotFound
 	}
 	copy := data
 	return &copy, nil
 }
 
 func (s *stubOTPRepo) Delete(_ context.Context, phoneNumber string) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
 	delete(s.data, phoneNumber)
 	return nil
 }
@@ -213,6 +222,73 @@ func TestIsOTPReusable(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isOTPReusable(tt.data, now, 5); got != tt.want {
 				t.Fatalf("isOTPReusable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func storedOTPFixture(t *testing.T, phone string) *stubOTPRepo {
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte("123456"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatalf("hash otp: %v", err)
+	}
+	return &stubOTPRepo{data: map[string]models.OTPData{
+		phone: {
+			OTP:       "123456",
+			OTPHash:   string(hash),
+			Phone:     phone,
+			ExpiresAt: time.Now().Add(5 * time.Minute),
+		},
+	}}
+}
+
+func TestVerifyOTP_AttemptCounterWriteFailurePropagates(t *testing.T) {
+	const phone = "+919515365236"
+	repo := storedOTPFixture(t, phone)
+	repo.storeErr = errors.New("dynamodb down")
+
+	valid, err := newTestOTPService(repo, &stubWhatsAppSender{}).VerifyOTP(context.Background(), phone, "000000")
+	if valid {
+		t.Fatal("expected verification to fail")
+	}
+	if err == nil || IsOTPRejection(err) {
+		t.Fatalf("err = %v, want a non-rejection infrastructure error", err)
+	}
+}
+
+func TestVerifyOTP_ConsumeFailurePropagates(t *testing.T) {
+	const phone = "+919515365236"
+	repo := storedOTPFixture(t, phone)
+	repo.deleteErr = errors.New("dynamodb down")
+
+	valid, err := newTestOTPService(repo, &stubWhatsAppSender{}).VerifyOTP(context.Background(), phone, "123456")
+	if valid {
+		t.Fatal("expected verification to fail when the OTP cannot be consumed")
+	}
+	if err == nil || IsOTPRejection(err) {
+		t.Fatalf("err = %v, want a non-rejection infrastructure error", err)
+	}
+}
+
+func TestVerifyOTP_RejectionsAreClassified(t *testing.T) {
+	const phone = "+919515365236"
+	tests := []struct {
+		name string
+		repo *stubOTPRepo
+		otp  string
+	}{
+		{name: "not found", repo: &stubOTPRepo{}, otp: "123456"},
+		{name: "wrong otp", repo: storedOTPFixture(t, phone), otp: "000000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			valid, err := newTestOTPService(tt.repo, &stubWhatsAppSender{}).VerifyOTP(context.Background(), phone, tt.otp)
+			if valid {
+				t.Fatal("expected verification to fail")
+			}
+			if !IsOTPRejection(err) {
+				t.Fatalf("err = %v, want an OTP rejection", err)
 			}
 		})
 	}

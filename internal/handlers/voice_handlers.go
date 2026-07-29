@@ -447,9 +447,7 @@ func truncateForLog(s string, max int) string {
 }
 
 func (h *VoiceHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *VoiceHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

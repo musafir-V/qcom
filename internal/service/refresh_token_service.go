@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -69,6 +70,9 @@ func (s *RefreshTokenService) Revoke(ctx context.Context, jti string) error {
 	if err != nil {
 		return op.Fail(err)
 	}
+	if tokenData == nil {
+		return op.Outcome("not_found", fmt.Errorf("refresh token %s not found", jti))
+	}
 
 	tokenData.Revoked = true
 	if err := s.tokenRepo.Store(ctx, *tokenData); err != nil {
@@ -102,13 +106,18 @@ func (s *RefreshTokenService) RevokeFamily(ctx context.Context, familyID string)
 		return op.Fail(err)
 	}
 
+	var revokeErrs []error
 	for _, token := range tokens {
 		if err := s.Revoke(ctx, token.JTI); err != nil {
 			op.Logger().WithError(err).WithField("jti", token.JTI).Error("Failed to revoke token in family")
+			revokeErrs = append(revokeErrs, fmt.Errorf("jti %s: %w", token.JTI, err))
 		}
 	}
 
 	op.With("count", len(tokens))
+	if len(revokeErrs) > 0 {
+		return op.Fail(fmt.Errorf("failed to revoke %d/%d tokens in family: %w", len(revokeErrs), len(tokens), errors.Join(revokeErrs...)))
+	}
 	return nil
 }
 
@@ -124,13 +133,18 @@ func (s *RefreshTokenService) RevokeAllForEntity(ctx context.Context, entityID s
 		return op.Fail(err)
 	}
 
+	var revokeErrs []error
 	for _, token := range tokens {
 		if err := s.Revoke(ctx, token.JTI); err != nil {
 			op.Logger().WithError(err).WithField("jti", token.JTI).Error("Failed to revoke token for entity")
+			revokeErrs = append(revokeErrs, fmt.Errorf("jti %s: %w", token.JTI, err))
 		}
 	}
 
 	op.With("count", len(tokens))
+	if len(revokeErrs) > 0 {
+		return op.Fail(fmt.Errorf("failed to revoke %d/%d tokens for entity: %w", len(revokeErrs), len(tokens), errors.Join(revokeErrs...)))
+	}
 	return nil
 }
 

@@ -341,7 +341,5 @@ func (h *AdminRulesHandlers) respondWithError(w http.ResponseWriter, status int,
 }
 
 func adminRulesRespondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	writeJSON(w, nil, status, payload)
 }

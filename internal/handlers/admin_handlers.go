@@ -179,9 +179,7 @@ func truncateRunes(s string, n int) string {
 }
 
 func (h *AdminHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *AdminHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

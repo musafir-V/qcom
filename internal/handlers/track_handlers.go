@@ -210,9 +210,7 @@ func enrichOrderWithTracking(order map[string]json.RawMessage, otp *string, deNa
 }
 
 func (h *TrackHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *TrackHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

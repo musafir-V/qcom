@@ -64,9 +64,7 @@ func (h *CashDepositHandlers) RecordCashDeposit(w http.ResponseWriter, r *http.R
 }
 
 func (h *CashDepositHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
+	writeJSON(w, h.logger, status, payload)
 }
 
 func (h *CashDepositHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {

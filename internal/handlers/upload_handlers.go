@@ -90,9 +90,7 @@ func (h *UploadHandlers) GetViewURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(GenerateViewURLResponse{
+	writeJSON(w, h.logger, http.StatusOK, GenerateViewURLResponse{
 		ViewURL:          result.ViewURL,
 		ObjectKey:        objectKey,
 		ExpiresInSeconds: result.ExpiresInSeconds,
@@ -125,9 +123,7 @@ func (h *UploadHandlers) GenerateInternalPickerUploadURL(w http.ResponseWriter, 
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(GenerateUploadURLResponse{
+	writeJSON(w, h.logger, http.StatusOK, GenerateUploadURLResponse{
 		FileID:           result.FileID,
 		UploadURL:        result.UploadURL,
 		ObjectKey:        result.ObjectKey,
@@ -159,9 +155,7 @@ func (h *UploadHandlers) GetInternalPickerViewURL(w http.ResponseWriter, r *http
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(GenerateViewURLResponse{
+	writeJSON(w, h.logger, http.StatusOK, GenerateViewURLResponse{
 		ViewURL:          result.ViewURL,
 		ObjectKey:        objectKey,
 		ExpiresInSeconds: result.ExpiresInSeconds,
@@ -202,9 +196,7 @@ func (h *UploadHandlers) generate(w http.ResponseWriter, r *http.Request, forced
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(GenerateUploadURLResponse{
+	writeJSON(w, h.logger, http.StatusOK, GenerateUploadURLResponse{
 		FileID:           result.FileID,
 		UploadURL:        result.UploadURL,
 		ObjectKey:        result.ObjectKey,
@@ -233,7 +225,5 @@ func classifyUploadError(err error) (int, string) {
 }
 
 func (h *UploadHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: ErrorDetail{Code: code, Message: message}})
+	writeJSON(w, h.logger, status, ErrorResponse{Error: ErrorDetail{Code: code, Message: message}})
 }
