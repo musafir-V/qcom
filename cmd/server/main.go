@@ -439,6 +439,9 @@ func setupRouter(
 	admin.HandleFunc("/drivers/{phone}/trip/pickup/complete", adminDriverHandlers.AdminCompletePickup).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/drop/complete", adminDriverHandlers.AdminCompleteDrop).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip", adminDriverHandlers.GetDriverTrip).Methods("GET", "OPTIONS")
+	// Order-scoped drop complete for the order-detail "Mark Delivered" action,
+	// which has the order id but not the driver's phone on hand.
+	admin.HandleFunc("/orders/{orderId}/drop/complete", adminDriverHandlers.AdminCompleteDropByOrder).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/assigned-store", adminDriverHandlers.UpdateAssignedStore).Methods("PATCH", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}", adminDriverHandlers.GetDriver).Methods("GET", "OPTIONS")
 

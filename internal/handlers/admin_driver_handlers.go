@@ -198,35 +198,59 @@ func (h *AdminDriverHandlers) GetDriverTrip(w http.ResponseWriter, r *http.Reque
 // POST /api/v1/admin/drivers/{phone}/trip/pickup/complete
 // Marks pickup done without bill QR verification.
 func (h *AdminDriverHandlers) AdminCompletePickup(w http.ResponseWriter, r *http.Request) {
-	h.adminCompleteTask(w, r, models.TaskTypePickup, "")
+	h.adminCompleteTask(w, r, models.TaskTypePickup)
 }
 
 // POST /api/v1/admin/drivers/{phone}/trip/drop/complete
-// Body: { "otp": "1234" }
+// Body is optional and, if present, ignored — admin-driven drop completion
+// never requires the customer OTP (ops must be able to close a drop without
+// contacting the customer). Accepts an empty body, "{}", or a legacy
+// {"otp": "..."} payload identically.
 func (h *AdminDriverHandlers) AdminCompleteDrop(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		OTP string `json:"otp"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
-		return
-	}
-	h.adminCompleteTask(w, r, models.TaskTypeDrop, req.OTP)
+	h.adminCompleteTask(w, r, models.TaskTypeDrop)
 }
 
-func (h *AdminDriverHandlers) adminCompleteTask(w http.ResponseWriter, r *http.Request, taskType models.TaskType, otp string) {
+func (h *AdminDriverHandlers) adminCompleteTask(w http.ResponseWriter, r *http.Request, taskType models.TaskType) {
 	phone := normalizePhone(mux.Vars(r)["phone"])
 	if phone == "" {
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
 		return
 	}
+	adminUsername, _ := r.Context().Value("entity_id").(string)
 
-	err := h.tripService.AdminCompleteTask(r.Context(), phone, taskType, otp)
+	err := h.tripService.AdminCompleteTask(r.Context(), phone, taskType, adminUsername)
 	if err != nil {
 		status, code := classifyTaskUpdateError(err)
 		if status == http.StatusInternalServerError {
 			h.logger.WithError(err).Error("admin: failed to complete trip task")
 			h.respondWithError(w, status, code, "Failed to complete trip task")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// POST /api/v1/admin/orders/{orderId}/drop/complete
+// Order-scoped counterpart to AdminCompleteDrop, for the admin order-detail
+// "Mark Delivered" action which only has the order id on hand. Body is
+// optional and ignored, same as the phone-scoped endpoint.
+func (h *AdminDriverHandlers) AdminCompleteDropByOrder(w http.ResponseWriter, r *http.Request) {
+	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
+	if orderID == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "orderId is required")
+		return
+	}
+	adminUsername, _ := r.Context().Value("entity_id").(string)
+
+	err := h.tripService.AdminCompleteDropByOrder(r.Context(), orderID, adminUsername)
+	if err != nil {
+		status, code := classifyTaskUpdateError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("admin: failed to complete order drop")
+			h.respondWithError(w, status, code, "Failed to complete order drop")
 			return
 		}
 		h.respondWithError(w, status, code, err.Error())

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -784,5 +786,291 @@ func TestNotifyCustomer_LogsSkippedOutcome(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log missing %q; got: %s", want, got)
 		}
+	}
+}
+
+// --- Admin drop-complete (no OTP) tests ---
+
+func TestJavaActor_RiderVsAdmin(t *testing.T) {
+	de := &models.DeliveryExecutive{DEID: "de-1"}
+	if got := javaActor(de, ""); got != "DE:de-1" {
+		t.Fatalf("javaActor(rider) = %q, want %q", got, "DE:de-1")
+	}
+	if got := javaActor(de, "shivang"); got != "ADMIN:shivang" {
+		t.Fatalf("javaActor(admin) = %q, want %q", got, "ADMIN:shivang")
+	}
+}
+
+// TestAdminCompleteTask_Drop_SkipsOTP pins the requirement that admin-driven
+// drop completion never checks the customer OTP: the drop task below carries
+// a real OTP, AdminCompleteTask is called with no OTP at all (the signature
+// no longer accepts one), and completion still succeeds.
+func TestAdminCompleteTask_Drop_SkipsOTP(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t1",
+			OrderID: "ORD-ADMIN-1",
+			DEID:    "de-1",
+			DEPhone: "+260971000001",
+			Status:  models.TripStatusOutForDelivery,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000001", CurrentOrderID: "ORD-ADMIN-1",
+	}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	err := svc.AdminCompleteTask(context.Background(), "+260971000001", models.TaskTypeDrop, "some-admin")
+	if err != nil {
+		t.Fatalf("expected admin drop to succeed without OTP, got: %v", err)
+	}
+
+	var dropTask *models.Task
+	for i := range repo.capturedTasks {
+		if repo.capturedTasks[i].Type == models.TaskTypeDrop {
+			dropTask = &repo.capturedTasks[i]
+			break
+		}
+	}
+	if dropTask == nil || dropTask.Status != models.TaskStatusCompleted {
+		t.Fatalf("expected drop task completed via CompleteTripAndFreeDE, got: %+v", repo.capturedTasks)
+	}
+}
+
+// TestAdminCompleteTask_Drop_RequiresOutForDelivery pins the trip-status gate:
+// admin completion still hard-fails when pickup has not been done yet.
+func TestAdminCompleteTask_Drop_RequiresOutForDelivery(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t2",
+			OrderID: "ORD-ADMIN-2",
+			DEID:    "de-1",
+			DEPhone: "+260971000002",
+			Status:  models.TripStatusAccepted, // pickup not done yet
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000002", CurrentOrderID: "ORD-ADMIN-2",
+	}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	err := svc.AdminCompleteTask(context.Background(), "+260971000002", models.TaskTypeDrop, "some-admin")
+	if !errors.Is(err, ErrPrerequisiteIncomplete) {
+		t.Fatalf("expected ErrPrerequisiteIncomplete, got: %v", err)
+	}
+	if repo.capturedTasks != nil {
+		t.Fatal("must not complete the trip when pickup is not done")
+	}
+}
+
+// TestAdminCompleteDropByOrder_FindsTripAndCompletes covers the order-scoped
+// endpoint: given only an order id, it looks the trip up via GetByOrderID,
+// resolves the assigned DE from the trip, and completes the drop.
+func TestAdminCompleteDropByOrder_FindsTripAndCompletes(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t3",
+			OrderID: "ORD-ADMIN-3",
+			DEID:    "de-1",
+			DEPhone: "+260971000003",
+			Status:  models.TripStatusOutForDelivery,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "5678"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000003"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-3", "ops-user")
+	if err != nil {
+		t.Fatalf("expected order-scoped complete to succeed, got: %v", err)
+	}
+
+	var dropTask *models.Task
+	for i := range repo.capturedTasks {
+		if repo.capturedTasks[i].Type == models.TaskTypeDrop {
+			dropTask = &repo.capturedTasks[i]
+			break
+		}
+	}
+	if dropTask == nil || dropTask.Status != models.TaskStatusCompleted {
+		t.Fatalf("expected drop task completed, got: %+v", repo.capturedTasks)
+	}
+}
+
+func TestAdminCompleteDropByOrder_NoTrip_NotFound(t *testing.T) {
+	repo := &stubTripRepo{trip: nil}
+	deRepo := &stubDERepo{}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-MISSING", "ops-user")
+	if !errors.Is(err, ErrTripNotFound) {
+		t.Fatalf("expected ErrTripNotFound, got: %v", err)
+	}
+}
+
+func TestAdminCompleteDropByOrder_TerminalTrip_Rejected(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t4",
+			OrderID: "ORD-ADMIN-4",
+			DEID:    "de-1",
+			DEPhone: "+260971000004",
+			Status:  models.TripStatusCompleted,
+			Tasks: []models.Task{
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCompleted},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000004"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-4", "ops-user")
+	if !errors.Is(err, ErrTripClosed) {
+		t.Fatalf("expected ErrTripClosed, got: %v", err)
+	}
+}
+
+func TestAdminCompleteDropByOrder_RequiresOutForDelivery(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t5",
+			OrderID: "ORD-ADMIN-5",
+			DEID:    "de-1",
+			DEPhone: "+260971000005",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000005"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-5", "ops-user")
+	if !errors.Is(err, ErrPrerequisiteIncomplete) {
+		t.Fatalf("expected ErrPrerequisiteIncomplete, got: %v", err)
+	}
+}
+
+// newCapturingJavaClient spins up a local httptest server standing in for the
+// Java order-service and records the Actor-Id header of the last request it
+// received, so tests can assert the actor string threaded all the way through
+// syncJavaWithRetry without a real network dependency.
+func newCapturingJavaClient(t *testing.T) (*JavaOrderClient, func() string) {
+	t.Helper()
+	var mu sync.Mutex
+	var actor string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		actor = r.Header.Get("Actor-Id")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	return NewJavaOrderClient(server.URL, logrus.New()), func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return actor
+	}
+}
+
+// waitForActor polls getActor for up to ~500ms since the Java sync runs on a
+// goroutine (syncJavaWithRetry).
+func waitForActor(getActor func() string) string {
+	for i := 0; i < 50; i++ {
+		if v := getActor(); v != "" {
+			return v
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return ""
+}
+
+// TestAdminCompleteTask_Drop_JavaActorIsAdminUsername pins the actor-string
+// contract end to end: admin-driven drop completion must sync Java with
+// ADMIN:{username}, not DE:{deId}.
+func TestAdminCompleteTask_Drop_JavaActorIsAdminUsername(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t6",
+			OrderID: "ORD-ADMIN-6",
+			DEID:    "de-1",
+			DEPhone: "+260971000006",
+			Status:  models.TripStatusOutForDelivery,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000006", CurrentOrderID: "ORD-ADMIN-6",
+	}}
+	javaClient, getActor := newCapturingJavaClient(t)
+	svc := &TripService{
+		tripRepo:   repo,
+		deRepo:     deRepo,
+		notifier:   &stubNotifier{},
+		javaClient: javaClient,
+		logger:     logrus.New(),
+	}
+
+	err := svc.AdminCompleteTask(context.Background(), "+260971000006", models.TaskTypeDrop, "shivang")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := waitForActor(getActor)
+	if got != "ADMIN:shivang" {
+		t.Fatalf("Java actor = %q, want %q", got, "ADMIN:shivang")
+	}
+}
+
+// TestUpdateTaskStatus_Drop_JavaActorIsRiderDEID is the rider-path mirror:
+// driver-initiated completion (no admin username) must keep syncing Java as
+// DE:{deId}.
+func TestUpdateTaskStatus_Drop_JavaActorIsRiderDEID(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t7",
+			OrderID: "ORD-RIDER-1",
+			DEID:    "de-2",
+			Status:  models.TripStatusOutForDelivery,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-2", PhoneNumber: "+260971000007"}}
+	javaClient, getActor := newCapturingJavaClient(t)
+	svc := &TripService{
+		tripRepo:   repo,
+		deRepo:     deRepo,
+		notifier:   &stubNotifier{},
+		javaClient: javaClient,
+		logger:     logrus.New(),
+	}
+
+	err := svc.UpdateTaskStatus(context.Background(), "t7", "task-drop", "+260971000007", models.TaskStatusCompleted, "1234", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := waitForActor(getActor)
+	if got != "DE:de-2" {
+		t.Fatalf("Java actor = %q, want %q", got, "DE:de-2")
 	}
 }

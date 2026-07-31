@@ -362,14 +362,19 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 	if photoS3Key != "" {
 		task.PhotoS3Key = photoS3Key
 	}
-	return s.applyTaskCompletion(ctx, trip, task, de, newStatus, otp)
+	return s.applyTaskCompletion(ctx, trip, task, de, newStatus, otp, "")
 }
 
 // AdminCompleteTask marks pickup or drop done for a driver's current trip.
-// Pickup skips bill QR verification; drop still requires the customer OTP.
-func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string, taskType models.TaskType, otp string) error {
+// Admin-driven completion always skips OTP verification (pickup already had
+// no OTP; drop's customer OTP is intentionally not checked here — ops must be
+// able to close a drop without contacting the customer). Trip-status gating
+// and task transition validation are unchanged. When adminUsername is
+// non-empty the Java sync records the actor as ADMIN:{username} instead of
+// DE:{deId} (see applyTaskCompletion / javaActor).
+func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string, taskType models.TaskType, adminUsername string) error {
 	op := logging.Start(ctx, s.logger, "TripService.AdminCompleteTask", logrus.Fields{
-		"phone": driverPhone, "task_type": string(taskType),
+		"phone": driverPhone, "task_type": string(taskType), "admin": adminUsername,
 	})
 	defer op.End()
 
@@ -389,17 +394,9 @@ func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string,
 		return op.Outcome("not_found", fmt.Errorf("%w: no active trip", ErrTripNotFound))
 	}
 
-	var task *models.Task
-	switch taskType {
-	case models.TaskTypePickup:
-		task = trip.PickupTask()
-	case models.TaskTypeDrop:
-		task = trip.DropTask()
-	default:
-		return op.Outcome("not_found", fmt.Errorf("%w: unsupported task type", ErrTaskNotFound))
-	}
-	if task == nil {
-		return op.Outcome("not_found", fmt.Errorf("%w: %s task missing", ErrTaskNotFound, taskType))
+	task, err := adminSelectTask(trip, taskType)
+	if err != nil {
+		return op.Outcome("not_found", err)
 	}
 
 	if err := validateTaskTransition(*task, models.TaskStatusCompleted); err != nil {
@@ -408,20 +405,91 @@ func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string,
 	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
 		return op.Outcome("prerequisite_incomplete", err)
 	}
-	if task.Type == models.TaskTypeDrop {
-		if err := validateDropOTP(*task, otp); err != nil {
-			return op.Outcome("invalid_otp", err)
-		}
-	}
 
-	return s.applyTaskCompletion(ctx, trip, task, de, models.TaskStatusCompleted, otp)
+	return s.applyTaskCompletion(ctx, trip, task, de, models.TaskStatusCompleted, "", adminUsername)
 }
 
-func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip, task *models.Task, de *models.DeliveryExecutive, newStatus models.TaskStatus, otp string) error {
+// AdminCompleteDropByOrder completes the drop task for the trip attached to
+// orderID, skipping the customer OTP just like AdminCompleteTask. It exists
+// for the admin order-detail "Mark Delivered" action, which only has the
+// order id on hand (not the driver's phone), so it looks the trip up via
+// GetByOrderID and resolves the assigned DE from the trip itself. It shares
+// applyTaskCompletion with the phone-scoped admin path so both admin entry
+// points produce identical side effects (trip close, DE freed, COD accrual,
+// customer push, Java DELIVERED sync).
+func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adminUsername string) error {
+	op := logging.Start(ctx, s.logger, "TripService.AdminCompleteDropByOrder", logrus.Fields{
+		"order_id": orderID, "admin": adminUsername,
+	})
+	defer op.End()
+
+	trip, err := s.tripRepo.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return op.Fail(err)
+	}
+	if trip == nil {
+		return op.Outcome("not_found", fmt.Errorf("%w: no trip for order %s", ErrTripNotFound, orderID))
+	}
+	if trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled {
+		return op.Outcome("trip_closed", fmt.Errorf("%w: %s", ErrTripClosed, trip.Status))
+	}
+
+	task, err := adminSelectTask(trip, models.TaskTypeDrop)
+	if err != nil {
+		return op.Outcome("not_found", err)
+	}
+	if err := validateTaskTransition(*task, models.TaskStatusCompleted); err != nil {
+		return op.Outcome("invalid_transition", err)
+	}
+	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
+		return op.Outcome("prerequisite_incomplete", err)
+	}
+
+	de, err := s.deRepo.GetByPhone(ctx, trip.DEPhone)
+	if err != nil {
+		return op.Fail(err)
+	}
+	if de == nil {
+		return op.Outcome("not_found", fmt.Errorf("%w: assigned DE not found for trip %s", ErrTripNotFound, trip.TripID))
+	}
+
+	return s.applyTaskCompletion(ctx, trip, task, de, models.TaskStatusCompleted, "", adminUsername)
+}
+
+// adminSelectTask resolves the pickup/drop task an admin completion targets.
+func adminSelectTask(trip *models.Trip, taskType models.TaskType) (*models.Task, error) {
+	var task *models.Task
+	switch taskType {
+	case models.TaskTypePickup:
+		task = trip.PickupTask()
+	case models.TaskTypeDrop:
+		task = trip.DropTask()
+	default:
+		return nil, fmt.Errorf("%w: unsupported task type", ErrTaskNotFound)
+	}
+	if task == nil {
+		return nil, fmt.Errorf("%w: %s task missing", ErrTaskNotFound, taskType)
+	}
+	return task, nil
+}
+
+// javaActor formats the actor string recorded against a Java order-status
+// sync. Admin-driven completions (adminUsername non-empty) record
+// ADMIN:{username}; rider-driven completions record DE:{deId}.
+func javaActor(de *models.DeliveryExecutive, adminUsername string) string {
+	if adminUsername != "" {
+		return "ADMIN:" + adminUsername
+	}
+	return "DE:" + de.DEID
+}
+
+func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip, task *models.Task, de *models.DeliveryExecutive, newStatus models.TaskStatus, otp, adminUsername string) error {
 	task.Status = newStatus
 	if (task.Type == models.TaskTypePickup || task.Type == models.TaskTypeDrop) && newStatus == models.TaskStatusCompleted {
 		task.CompletedAt = timezone.Now().Format(time.RFC3339)
 	}
+
+	actor := javaActor(de, adminUsername)
 
 	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
 		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, trip.TripID, de.PhoneNumber, trip.StoreID, trip.Tasks, codAccrualAmount(trip)); err != nil {
@@ -435,7 +503,7 @@ func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip
 			StoreID:   trip.StoreID,
 			TS:        timezone.Now().UTC().Format(time.RFC3339),
 		})
-		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", de.DEID)
+		go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", actor)
 		s.notifyCustomer(trip, de, eventDelivered)
 		s.recordTripPayout(trip, de)
 		return nil
@@ -445,12 +513,12 @@ func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip
 		return err
 	}
 
-	s.onTaskCompleted(ctx, trip, task, de)
+	s.onTaskCompleted(ctx, trip, task, de, actor)
 	return nil
 }
 
 // onTaskCompleted updates trip status and asynchronously syncs Java when needed.
-func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, task *models.Task, de *models.DeliveryExecutive) {
+func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, task *models.Task, de *models.DeliveryExecutive, actor string) {
 	// Use a detached context for all writes — the request context may be cancelled
 	// if the client disconnects before these writes complete.
 	bgCtx := context.Background()
@@ -461,7 +529,7 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
 		}
 		// Async: notify Java OUT_FOR_DELIVERY
-		go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", de.DEID)
+		go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", actor)
 		s.notifyCustomer(trip, de, eventOutForDelivery)
 
 	}
@@ -530,15 +598,17 @@ func tripOrderID(trip *models.Trip) string {
 }
 
 // syncJavaWithRetry retries the Java status update up to 3 times with backoff.
-// Runs in a goroutine — does not block the DE response.
-func (s *TripService) syncJavaWithRetry(orderID, status, deID string) {
+// Runs in a goroutine — does not block the DE response. actor is the fully
+// formatted Java actor string (e.g. "DE:{deId}" or "ADMIN:{username}"); see
+// javaActor.
+func (s *TripService) syncJavaWithRetry(orderID, status, actor string) {
 	if s.javaClient == nil {
 		return
 	}
 	ctx := context.Background()
 	backoff := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
 	for i, delay := range backoff {
-		if err := s.javaClient.UpdateOrderStatus(ctx, orderID, status, "DE:"+deID); err != nil {
+		if err := s.javaClient.UpdateOrderStatus(ctx, orderID, status, actor); err != nil {
 			s.logger.WithError(err).WithFields(logrus.Fields{
 				"order_id": orderID, "status": status, "attempt": i + 1,
 			}).Warn("java sync retry")
