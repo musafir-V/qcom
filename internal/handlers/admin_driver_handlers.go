@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -10,9 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/money"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/qcom/qcom/internal/timezone"
@@ -23,10 +27,18 @@ import (
 // lookup-by-phone detail aggregation, paginated sub-resource reads (earnings,
 // disbursements, referrals, cash ledger), onboarding photo presign, and
 // admin-driven driver creation. All routes sit behind AdminKeyMiddleware.
+// cashCollectionsTripLister is the narrow subset of TripRepository that
+// GetDriverCashCollections needs, letting tests fake DynamoDB paging without a
+// real client. *repository.TripRepository satisfies this implicitly.
+type cashCollectionsTripLister interface {
+	ListByDECompletedBetween(ctx context.Context, deID, startTimestamp, endTimestamp string, pageSize int32, lastKey map[string]types.AttributeValue) ([]*models.Trip, map[string]types.AttributeValue, error)
+}
+
 type AdminDriverHandlers struct {
 	deService        *service.DEService
 	deRepo           *repository.DERepository
 	tripService      *service.TripService
+	tripRepo         cashCollectionsTripLister
 	payoutConfigRepo *repository.PayoutConfigRepository
 	cashConfigRepo   *repository.CashConfigRepository
 	cashLedgerRepo   *repository.CashDepositLedgerRepository
@@ -43,6 +55,7 @@ func NewAdminDriverHandlers(
 	deService *service.DEService,
 	deRepo *repository.DERepository,
 	tripService *service.TripService,
+	tripRepo *repository.TripRepository,
 	payoutConfigRepo *repository.PayoutConfigRepository,
 	cashConfigRepo *repository.CashConfigRepository,
 	cashLedgerRepo *repository.CashDepositLedgerRepository,
@@ -58,6 +71,7 @@ func NewAdminDriverHandlers(
 		deService:        deService,
 		deRepo:           deRepo,
 		tripService:      tripService,
+		tripRepo:         tripRepo,
 		payoutConfigRepo: payoutConfigRepo,
 		cashConfigRepo:   cashConfigRepo,
 		cashLedgerRepo:   cashLedgerRepo,
@@ -357,6 +371,245 @@ func (h *AdminDriverHandlers) GetDriverCashLedger(w http.ResponseWriter, r *http
 	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"in_hand_cash_zmw": de.InHandCashZMW,
 		"deposits":         items,
+	})
+}
+
+// cashCollectionsMaxRangeDays is the widest inclusive custom date span the
+// admin cash-collections endpoint accepts. It bounds ListByDECompletedBetween
+// query pagination and the in-memory COD filter/sum to a safe amount of work.
+const cashCollectionsMaxRangeDays = 31
+
+// cashCollectionsQueryPageSize is the DynamoDB page size used internally while
+// draining the full window; it is unrelated to the caller's items-per-page
+// limit, which slices the already-fetched, already-summed result.
+const cashCollectionsQueryPageSize = 100
+
+const (
+	cashCollectionsDefaultLimit = 50
+	cashCollectionsMaxLimit     = 100
+)
+
+// dateOnlyLayout is the required format for the from/to query params.
+const dateOnlyLayout = "2006-01-02"
+
+// catWindowRFC3339 validates a calendar-date range and converts it into the
+// inclusive [startTS, endTS] RFC3339 (UTC) bounds that match the format
+// completed_at is stored in (time.Now().UTC().Format(time.RFC3339)). The CAT
+// day boundaries are computed in Africa/Lusaka (UTC+2) and then converted to
+// UTC so the resulting strings compare correctly against stored values.
+func catWindowRFC3339(fromStr, toStr string) (startTS, endTS string, err error) {
+	loc := timezone.ZambiaLocation()
+
+	from, err := time.ParseInLocation(dateOnlyLayout, fromStr, loc)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: from must be YYYY-MM-DD", errCashCollectionsInvalidDate)
+	}
+	to, err := time.ParseInLocation(dateOnlyLayout, toStr, loc)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: to must be YYYY-MM-DD", errCashCollectionsInvalidDate)
+	}
+	if to.Before(from) {
+		return "", "", fmt.Errorf("%w: to is before from", errCashCollectionsInvalidRange)
+	}
+
+	spanDays := int(to.Sub(from).Hours()/24) + 1
+	if spanDays > cashCollectionsMaxRangeDays {
+		return "", "", fmt.Errorf("%w: range spans %d days, max %d", errCashCollectionsRangeTooWide, spanDays, cashCollectionsMaxRangeDays)
+	}
+
+	start := from // already midnight CAT via ParseInLocation
+	endExclusive := to.AddDate(0, 0, 1)
+	endInclusive := endExclusive.Add(-time.Second)
+
+	return start.UTC().Format(time.RFC3339), endInclusive.UTC().Format(time.RFC3339), nil
+}
+
+var (
+	errCashCollectionsInvalidDate   = fmt.Errorf("invalid date")
+	errCashCollectionsInvalidRange  = fmt.Errorf("invalid range")
+	errCashCollectionsRangeTooWide  = fmt.Errorf("range too wide")
+	errCashCollectionsInvalidCursor = fmt.Errorf("invalid cursor")
+)
+
+// encodeCashCollectionsCursor opaquely encodes the next-page offset. Offset 0
+// (first page) never needs a cursor, so it encodes to "".
+func encodeCashCollectionsCursor(offset int) string {
+	if offset <= 0 {
+		return ""
+	}
+	return base64.URLEncoding.EncodeToString([]byte(strconv.Itoa(offset)))
+}
+
+// decodeCashCollectionsCursor reverses encodeCashCollectionsCursor. An empty
+// cursor decodes to offset 0 (first page).
+func decodeCashCollectionsCursor(cursor string) (int, error) {
+	if cursor == "" {
+		return 0, nil
+	}
+	raw, err := base64.URLEncoding.DecodeString(cursor)
+	if err != nil {
+		return 0, errCashCollectionsInvalidCursor
+	}
+	offset, err := strconv.Atoi(string(raw))
+	if err != nil || offset < 0 {
+		return 0, errCashCollectionsInvalidCursor
+	}
+	return offset, nil
+}
+
+// clampCashCollectionsLimit parses the caller's limit query param, defaulting
+// to cashCollectionsDefaultLimit and capping at cashCollectionsMaxLimit.
+// Invalid/non-positive input also falls back to the default.
+func clampCashCollectionsLimit(raw string) int {
+	limit := cashCollectionsDefaultLimit
+	if raw = strings.TrimSpace(raw); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > cashCollectionsMaxLimit {
+		limit = cashCollectionsMaxLimit
+	}
+	return limit
+}
+
+// cashCollectionItem is one delivered-COD row in the cash-collections response.
+type cashCollectionItem struct {
+	DeliveredAt string  `json:"delivered_at"`
+	OrderNumber string  `json:"order_number"`
+	OrderID     string  `json:"order_id"`
+	AmountZMW   float64 `json:"amount_zmw"`
+}
+
+// cashCollectionsResult is the full-window summary plus one page of items.
+type cashCollectionsResult struct {
+	TotalZMW   float64
+	OrderCount int
+	Items      []cashCollectionItem
+	NextCursor string
+}
+
+// fetchCashCollections drains every trip in [startTS, endTS] for deID via
+// lister (paginating the DynamoDB query as needed — safe because the caller
+// already capped the window to cashCollectionsMaxRangeDays), filters to
+// delivered COD trips (payment != nil && payment.collect_cash), and computes
+// totals across the *entire* window before slicing out the requested page.
+// This keeps total_zmw/order_count correct even while items are paginated.
+func fetchCashCollections(ctx context.Context, lister cashCollectionsTripLister, deID, startTS, endTS string, offset, limit int) (*cashCollectionsResult, error) {
+	var allTrips []*models.Trip
+	var lastKey map[string]types.AttributeValue
+	for {
+		trips, next, err := lister.ListByDECompletedBetween(ctx, deID, startTS, endTS, cashCollectionsQueryPageSize, lastKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list trips: %w", err)
+		}
+		allTrips = append(allTrips, trips...)
+		if len(next) == 0 {
+			break
+		}
+		lastKey = next
+	}
+
+	var total float64
+	items := make([]cashCollectionItem, 0, len(allTrips))
+	for _, trip := range allTrips {
+		if trip.Payment == nil || !trip.Payment.CollectCash {
+			continue
+		}
+		amount := money.Round2ZMW(trip.Payment.AmountZMW)
+		total += amount
+		items = append(items, cashCollectionItem{
+			DeliveredAt: trip.CompletedAt,
+			OrderNumber: trip.OrderID,
+			OrderID:     trip.OrderID,
+			AmountZMW:   amount,
+		})
+	}
+
+	result := &cashCollectionsResult{
+		TotalZMW:   money.Round2ZMW(total),
+		OrderCount: len(items),
+		Items:      []cashCollectionItem{},
+	}
+
+	if offset < len(items) {
+		end := offset + limit
+		if end > len(items) {
+			end = len(items)
+		}
+		result.Items = items[offset:end]
+		if end < len(items) {
+			result.NextCursor = encodeCashCollectionsCursor(end)
+		}
+	}
+
+	return result, nil
+}
+
+// GET /api/v1/admin/drivers/{phone}/cash-collections?from=YYYY-MM-DD&to=YYYY-MM-DD&cursor=&limit=
+// Lists delivered COD trips for a driver within an inclusive calendar-date
+// range (Africa/Lusaka), newest first, with the full-range total_zmw and
+// order_count alongside a paginated items page.
+func (h *AdminDriverHandlers) GetDriverCashCollections(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	de, err := h.deRepo.GetByPhone(r.Context(), phone)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to fetch driver for cash collections")
+		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		return
+	}
+	if de == nil {
+		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		return
+	}
+
+	q := r.URL.Query()
+	from := strings.TrimSpace(q.Get("from"))
+	to := strings.TrimSpace(q.Get("to"))
+	if from == "" || to == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "from and to are required (YYYY-MM-DD)")
+		return
+	}
+
+	startTS, endTS, err := catWindowRFC3339(from, to)
+	if err != nil {
+		switch {
+		case errors.Is(err, errCashCollectionsInvalidDate):
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_DATE", err.Error())
+		case errors.Is(err, errCashCollectionsInvalidRange):
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_RANGE", err.Error())
+		case errors.Is(err, errCashCollectionsRangeTooWide):
+			h.respondWithError(w, http.StatusBadRequest, "RANGE_TOO_WIDE", err.Error())
+		default:
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_DATE", err.Error())
+		}
+		return
+	}
+
+	offset, err := decodeCashCollectionsCursor(strings.TrimSpace(q.Get("cursor")))
+	if err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_CURSOR", "Invalid pagination cursor")
+		return
+	}
+	limit := clampCashCollectionsLimit(q.Get("limit"))
+
+	result, err := fetchCashCollections(r.Context(), h.tripRepo, de.DEID, startTS, endTS, offset, limit)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to fetch cash collections")
+		h.respondWithError(w, http.StatusInternalServerError, "CASH_COLLECTIONS_FETCH_FAILED", "Failed to fetch cash collections")
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"total_zmw":   result.TotalZMW,
+		"order_count": result.OrderCount,
+		"items":       result.Items,
+		"next_cursor": result.NextCursor,
 	})
 }
 

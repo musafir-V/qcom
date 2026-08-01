@@ -468,6 +468,57 @@ func (r *TripRepository) ListByDEAfter(ctx context.Context, deID, afterTimestamp
 	return trips, result.LastEvaluatedKey, nil
 }
 
+// ListByDECompletedBetween queries the DETripsIndex GSI for trips completed by
+// a DE within [startTimestamp, endTimestamp] (inclusive RFC3339 bounds),
+// newest first. Used by the admin cash-collections endpoint, where the caller
+// bounds the window to a calendar date range (capped at 31 days) so pulling
+// every matching trip via pagination is safe — unlike ListByDEWindow, this
+// uses the indexed query (not a filtered scan) since completed_at is always
+// present for the trips this endpoint cares about.
+func (r *TripRepository) ListByDECompletedBetween(
+	ctx context.Context,
+	deID, startTimestamp, endTimestamp string,
+	pageSize int32,
+	lastKey map[string]types.AttributeValue,
+) ([]*models.Trip, map[string]types.AttributeValue, error) {
+	op := logging.Start(ctx, r.logger, "TripRepository.ListByDECompletedBetween", logrus.Fields{
+		"de_id": deID, "start": startTimestamp, "end": endTimestamp,
+	})
+	defer op.End()
+
+	input := &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		IndexName:              aws.String("DETripsIndex"),
+		KeyConditionExpression: aws.String("de_id = :de AND completed_at BETWEEN :start AND :end"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":de":    &types.AttributeValueMemberS{Value: deID},
+			":start": &types.AttributeValueMemberS{Value: startTimestamp},
+			":end":   &types.AttributeValueMemberS{Value: endTimestamp},
+		},
+		ScanIndexForward:  aws.Bool(false), // newest first
+		Limit:             aws.Int32(pageSize),
+		ExclusiveStartKey: lastKey,
+	}
+
+	result, err := r.client.Query(ctx, input)
+	if err != nil {
+		return nil, nil, op.Fail(fmt.Errorf("failed to query DETripsIndex: %w", err))
+	}
+
+	var trips []*models.Trip
+	for _, item := range result.Items {
+		var trip models.Trip
+		if err := attributevalue.UnmarshalMap(item, &trip); err != nil {
+			op.Logger().WithError(err).Warn("failed to unmarshal trip from DETripsIndex; skipping")
+			continue
+		}
+		trips = append(trips, &trip)
+	}
+
+	op.With("count", len(trips))
+	return trips, result.LastEvaluatedKey, nil
+}
+
 // ListByDEWindow returns trips assigned to a DE that were either completed or
 // cancelled inside [startTimestamp, endTimestamp] (inclusive). The method uses
 // a filtered table scan to include cancelled trips (which may not have

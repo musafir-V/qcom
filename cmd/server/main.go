@@ -160,6 +160,7 @@ func main() {
 		deService,
 		deRepo,
 		tripService,
+		tripRepo,
 		payoutConfigRepo,
 		cashConfigRepo,
 		cashDepositLedgerRepo,
@@ -435,6 +436,7 @@ func setupRouter(
 	admin.HandleFunc("/drivers/{phone}/inkind-disbursements", adminDriverHandlers.ListInKindDisbursements).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/referrals", adminDriverHandlers.GetDriverReferrals).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/cash-ledger", adminDriverHandlers.GetDriverCashLedger).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/cash-collections", adminDriverHandlers.GetDriverCashCollections).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/presence", adminDriverHandlers.GetDriverPresence).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/pickup/complete", adminDriverHandlers.AdminCompletePickup).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/drop/complete", adminDriverHandlers.AdminCompleteDrop).Methods("POST", "OPTIONS")
