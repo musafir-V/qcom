@@ -407,6 +407,126 @@ func TestUpdateTripPayment_ActiveNoCashChange_NoPush(t *testing.T) {
 	}
 }
 
+func TestEditTripByOrder_NoTrip_NoOp(t *testing.T) {
+	repo := &stubTripRepo{trip: nil}
+	svc := newTestTripService(repo, &stubNotifier{})
+
+	res, err := svc.EditTripByOrder(context.Background(), TripEditInput{
+		OrderID: "ORD-100", PaymentMethod: "COD", GrandTotal: 25.5, Currency: "ZMW",
+		DeliveryZone: "Blue Rack 2",
+		Items:        []models.TripItem{{Sku: "SKU-1", Name: "Bread", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.Updated || res.Reason != "no_active_trip" {
+		t.Fatalf("expected no_active_trip, got %+v", res)
+	}
+	if repo.editCalled {
+		t.Fatal("must not call UpdateItemsPaymentAndZone when no trip exists")
+	}
+}
+
+func TestEditTripByOrder_ActiveTrip_UpdatesItemsPaymentZone(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "TRIP-EDIT-1", OrderID: "ORD-101", Status: models.TripStatusAssigned,
+		Items:   []models.TripItem{{Sku: "OLD", Name: "Old", Quantity: 2}},
+		Payment: &models.Payment{CollectCash: false, AmountZMW: 10, Method: "AIRTEL_MONEY"},
+		Tasks: []models.Task{
+			{TaskID: "p1", Type: models.TaskTypePickup, DeliveryZone: "Old Zone"},
+			{TaskID: "d1", Type: models.TaskTypeDrop},
+		},
+	}}
+	svc := newTestTripService(repo, &stubNotifier{})
+
+	items := []models.TripItem{{Sku: "ALERT-BREAD-500G", Name: "Alert Test Bread 500g", Quantity: 1}}
+	res, err := svc.EditTripByOrder(context.Background(), TripEditInput{
+		OrderID: "ORD-101", PaymentMethod: "COD", GrandTotal: 25.5, Currency: "ZMW",
+		DeliveryZone: "Blue Rack 2",
+		Items:        items,
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !res.Updated || res.Reason != "" {
+		t.Fatalf("expected updated, got %+v", res)
+	}
+	if !repo.editCalled {
+		t.Fatal("expected UpdateItemsPaymentAndZone call")
+	}
+	if len(repo.capturedEditItems) != 1 || repo.capturedEditItems[0].Sku != "ALERT-BREAD-500G" {
+		t.Fatalf("expected items overwritten, got %+v", repo.capturedEditItems)
+	}
+	if repo.capturedEditPayment == nil || !repo.capturedEditPayment.CollectCash ||
+		repo.capturedEditPayment.AmountZMW != 25.5 || repo.capturedEditPayment.Method != "COD" {
+		t.Fatalf("expected COD payment snapshot, got %+v", repo.capturedEditPayment)
+	}
+	var zone string
+	for _, task := range repo.capturedEditTasks {
+		if task.Type == models.TaskTypePickup {
+			zone = task.DeliveryZone
+		}
+	}
+	if zone != "Blue Rack 2" {
+		t.Fatalf("expected pickup delivery_zone Blue Rack 2, got %q", zone)
+	}
+}
+
+func TestEditTripByOrder_TerminalTrip_Rejected(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID: "TRIP-EDIT-2", OrderID: "ORD-102", Status: models.TripStatusCompleted,
+			Tasks: []models.Task{{TaskID: "p1", Type: models.TaskTypePickup, DeliveryZone: "Z"}},
+		},
+		editErr: repository.ErrTripTerminal,
+	}
+	svc := newTestTripService(repo, &stubNotifier{})
+
+	res, err := svc.EditTripByOrder(context.Background(), TripEditInput{
+		OrderID: "ORD-102", PaymentMethod: "COD", GrandTotal: 10, Currency: "ZMW",
+		DeliveryZone: "Blue Rack 2",
+		Items:        []models.TripItem{{Sku: "S", Name: "N", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if res.Updated || res.Reason != "trip_terminal" {
+		t.Fatalf("expected trip_terminal, got %+v", res)
+	}
+}
+
+func TestEditTripByOrder_EmptyDeliveryZone_PreservesExisting(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "TRIP-EDIT-3", OrderID: "ORD-103", Status: models.TripStatusAccepted,
+		Tasks: []models.Task{
+			{TaskID: "p1", Type: models.TaskTypePickup, DeliveryZone: "Blue Rack 2"},
+			{TaskID: "d1", Type: models.TaskTypeDrop},
+		},
+	}}
+	svc := newTestTripService(repo, &stubNotifier{})
+
+	res, err := svc.EditTripByOrder(context.Background(), TripEditInput{
+		OrderID: "ORD-103", PaymentMethod: "COD", GrandTotal: 12, Currency: "ZMW",
+		DeliveryZone: "", // must not clear existing zone
+		Items:        []models.TripItem{{Sku: "S", Name: "N", Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if !res.Updated {
+		t.Fatalf("expected updated, got %+v", res)
+	}
+	var zone string
+	for _, task := range repo.capturedEditTasks {
+		if task.Type == models.TaskTypePickup {
+			zone = task.DeliveryZone
+		}
+	}
+	if zone != "Blue Rack 2" {
+		t.Fatalf("empty delivery_zone must preserve existing zone, got %q", zone)
+	}
+}
+
 // --- test helpers ---
 
 // stubTripRepo satisfies tripRepoI. GetByOrderID and CancelByOrderID are used by
@@ -422,6 +542,11 @@ type stubTripRepo struct {
 	updatePaymentCalled bool
 	updatePaymentErr    error
 	capturedPayment     *models.Payment
+	editCalled          bool
+	editErr             error
+	capturedEditItems   []models.TripItem
+	capturedEditPayment *models.Payment
+	capturedEditTasks   []models.Task
 	updateStatusCalled  bool
 	updateStatusTripID  string
 	updateStatusStatus  models.TripStatus
@@ -474,6 +599,16 @@ func (s *stubTripRepo) UpdatePayment(_ context.Context, _ string, payment *model
 	s.updatePaymentCalled = true
 	s.capturedPayment = payment
 	return s.updatePaymentErr
+}
+
+func (s *stubTripRepo) UpdateItemsPaymentAndZone(_ context.Context, _ string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error {
+	s.editCalled = true
+	s.capturedEditItems = make([]models.TripItem, len(items))
+	copy(s.capturedEditItems, items)
+	s.capturedEditPayment = payment
+	s.capturedEditTasks = make([]models.Task, len(tasks))
+	copy(s.capturedEditTasks, tasks)
+	return s.editErr
 }
 
 // stubDERepo satisfies deRepoI for unit tests.

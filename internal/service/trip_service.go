@@ -45,6 +45,7 @@ type tripRepoI interface {
 	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
 	CancelByOrderID(ctx context.Context, tripID, dePhone, storeID string) error
 	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
+	UpdateItemsPaymentAndZone(ctx context.Context, tripID string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error
 }
 
 // deRepoI is the subset of DERepository methods used by TripService.
@@ -218,6 +219,76 @@ func (s *TripService) UpdateTripPayment(ctx context.Context, in PaymentUpdateInp
 	op.With("collect_cash", payment.CollectCash)
 	s.notifyDriverPaymentUpdated(ctx, trip, payment)
 	return PaymentUpdateResult{Updated: true}, nil
+}
+
+// TripEditInput is an upstream (order-service) packed-order snapshot for a trip.
+type TripEditInput struct {
+	OrderID       string
+	PaymentMethod string
+	GrandTotal    float64
+	Currency      string
+	DeliveryZone  string
+	Items         []models.TripItem
+}
+
+// TripEditResult describes the outcome of EditTripByOrder so the HTTP handler
+// can pick the right status code.
+type TripEditResult struct {
+	Updated bool
+	// Reason is empty when Updated is true; otherwise "no_active_trip" (no trip
+	// exists yet for the order) or "trip_terminal" (trip already closed).
+	Reason string
+}
+
+// EditTripByOrder overwrites a trip's items, payment snapshot, and pickup
+// delivery zone after packing completes. Same fail-open shape as UpdateTripPayment:
+//   - no trip yet  -> no-op
+//   - active trip  -> overwrite items/payment/zone
+//   - terminal trip-> rejected (cash may already be collected/accrued)
+//
+// An empty DeliveryZone leaves the existing pickup zone unchanged.
+func (s *TripService) EditTripByOrder(ctx context.Context, in TripEditInput) (TripEditResult, error) {
+	op := logging.Start(ctx, s.logger, "TripService.EditTripByOrder", logrus.Fields{
+		"order_id": in.OrderID, "payment_method": in.PaymentMethod,
+	})
+	defer op.End()
+
+	trip, err := s.tripRepo.GetByOrderID(ctx, in.OrderID)
+	if err != nil {
+		return TripEditResult{}, op.Fail(err)
+	}
+	if trip == nil {
+		op.Outcome("no_active_trip", nil)
+		return TripEditResult{Updated: false, Reason: "no_active_trip"}, nil
+	}
+
+	payment := paymentFromOrder(JavaOrder{
+		PaymentMethod: in.PaymentMethod,
+		GrandTotal:    in.GrandTotal,
+		Currency:      in.Currency,
+	})
+
+	tasks := make([]models.Task, len(trip.Tasks))
+	copy(tasks, trip.Tasks)
+	if in.DeliveryZone != "" {
+		for i := range tasks {
+			if tasks[i].Type == models.TaskTypePickup {
+				tasks[i].DeliveryZone = in.DeliveryZone
+				break
+			}
+		}
+	}
+
+	if err := s.tripRepo.UpdateItemsPaymentAndZone(ctx, trip.TripID, in.Items, payment, tasks); err != nil {
+		if errors.Is(err, repository.ErrTripTerminal) {
+			op.Outcome("trip_terminal", nil)
+			return TripEditResult{Updated: false, Reason: "trip_terminal"}, nil
+		}
+		return TripEditResult{}, op.Fail(err)
+	}
+
+	op.With("item_count", len(in.Items)).With("collect_cash", payment.CollectCash)
+	return TripEditResult{Updated: true}, nil
 }
 
 // notifyDriverPaymentUpdated sends the assigned rider a quiet heads-up so their
