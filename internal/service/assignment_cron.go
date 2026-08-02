@@ -20,10 +20,6 @@ const (
 	cronInterval    = 10 * time.Second
 	cronLockTTLSecs = 30
 
-	// eligibleOrderStatus is the Java order status that makes an order eligible
-	// for rider assignment. Only fully-packed orders should enter the delivery pipeline.
-	eligibleOrderStatus = "READY_FOR_DELIVERY"
-
 	// recipientFallback is used for the drop task when the order has no
 	// delivery name yet (Java may send it absent/empty for now).
 	recipientFallback = "Customer"
@@ -192,10 +188,10 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 }
 
 // processStore runs the order→trip→DE assignment pipeline for a single
-// darkstore: fetch its READY_FOR_DELIVERY orders and eligible DEs, create any
-// missing trips, assign pooled trips FIFO, and sweep missed scans. Errors are
-// logged with the store id and cause only this store to be skipped; other
-// active stores in the same tick are unaffected.
+// darkstore: fetch its assignable orders (CONFIRMED/PACKING/READY_FOR_DELIVERY)
+// and eligible DEs, create any missing trips, assign pooled trips FIFO, and
+// sweep missed scans. Errors are logged with the store id and cause only this
+// store to be skipped; other active stores in the same tick are unaffected.
 func (c *AssignmentCron) processStore(
 	ctx context.Context,
 	storeID string,
@@ -204,12 +200,12 @@ func (c *AssignmentCron) processStore(
 	cashLimit float64,
 	now time.Time,
 ) {
-	// Fetch READY_FOR_DELIVERY orders from Java for this store.
-	orders, err := c.javaClient.GetReadyForDeliveryOrders(ctx, storeID)
+	// Fetch assignable orders from Java for this store.
+	orders, err := c.javaClient.GetAssignableOrders(ctx, storeID)
 	if err != nil {
 		metrics.IncCronStoreError(storeID, "fetch_orders")
 		c.logger.WithError(err).WithField("store_id", storeID).
-			Error("assignment cron: failed to fetch READY_FOR_DELIVERY orders — skipping store")
+			Error("assignment cron: failed to fetch assignable orders — skipping store")
 		return
 	}
 
@@ -233,7 +229,7 @@ func (c *AssignmentCron) processStore(
 		metrics.SetCronRidersAtPod(storeID, len(onDuty))
 	}
 
-	// For each READY_FOR_DELIVERY order: check trip existence in parallel
+	// For each assignable order: check trip existence in parallel
 	type orderResult struct {
 		order       JavaOrder
 		trip        *models.Trip
@@ -262,7 +258,7 @@ func (c *AssignmentCron) processStore(
 	}
 	wg.Wait()
 
-	// Detect cancellations: check active trips whose order is no longer READY_FOR_DELIVERY
+	// Cancellation is owned by Java cancel-by-order; this remains a no-op stub.
 	c.detectCancellations(ctx, orders)
 
 	// Auto-reject trips whose accept window expired — revert to pool so the
@@ -592,18 +588,14 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 	return trip, nil
 }
 
-// detectCancellations checks active trips for orders that Java has marked
-// CANCELLED so the trip can be cancelled and the DE freed.
-//
-// A full cancellation check would query all active trips and verify each
-// against Java. For now we rely on the cron seeing orders disappear from the
-// READY_FOR_DELIVERY list — an order leaves that list either by cancellation
-// or by progressing to OUT_FOR_DELIVERY on rider pickup. The DynamoDB
-// transaction protects correctness. This is a best-effort stub completed in a
-// later phase.
-func (c *AssignmentCron) detectCancellations(ctx context.Context, currentReadyOrders []JavaOrder) {
+// detectCancellations is a no-op stub. Order cancellation is owned by Java via
+// cancel-by-order (which cancels the trip in qcom). The cron does not detect
+// cancellations by set-diff against the assignable-order list, because early
+// assignment means orders leave that list on OUT_FOR_DELIVERY / delivery as
+// well as on cancel.
+func (c *AssignmentCron) detectCancellations(ctx context.Context, currentAssignableOrders []JavaOrder) {
 	_ = ctx
-	_ = currentReadyOrders
+	_ = currentAssignableOrders
 }
 
 // sortTripsByCreatedAt sorts trips ascending by created_at (oldest first = FIFO).

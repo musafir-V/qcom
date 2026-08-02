@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -198,39 +199,73 @@ func TestGetOrderRaw_ServerErrorReturnsError(t *testing.T) {
 	}
 }
 
-// The order-service serializes storeId as a JSON number (it's a Java Long), or
-// omits it entirely. Decoding must not fail on the number, and every returned
-// order must be stamped with the store the cron queried — since the per-store
-// endpoint only ever returns orders for that store.
-func TestGetReadyForDeliveryOrders_StampsStoreIDAndToleratesNumericStoreId(t *testing.T) {
-	const body = `{
+// GetAssignableOrders hits by-statuses for CONFIRMED+PACKING+READY_FOR_DELIVERY,
+// paginates until meta.last, stamps StoreID from the queried store, and
+// tolerates a numeric storeId in the payload (Java Long).
+func TestGetAssignableOrders_ByStatusesPaginatesAndStampsStoreID(t *testing.T) {
+	page0 := `{
 		"content": [
-			{"orderNumber": "ORD1037370658", "status": "READY_FOR_DELIVERY", "storeId": 100,
+			{"orderNumber": "ORD1037370658", "status": "CONFIRMED", "storeId": 100,
 			 "delivery": {"address": "1 Main", "latitude": -15.4, "longitude": 28.3, "phone": "0970000000"},
+			 "items": []}
+		],
+		"meta": {"last": false}
+	}`
+	page1 := `{
+		"content": [
+			{"orderNumber": "ORD1037370659", "status": "PACKING", "storeId": 100,
+			 "delivery": {"address": "2 Main", "latitude": -15.4, "longitude": 28.3, "phone": "0970000001"},
 			 "items": []}
 		],
 		"meta": {"last": true}
 	}`
+	var pagesSeen []int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/order-service/api/v1/orders/store/100"; got != want {
+		if got, want := r.URL.Path, "/order-service/api/v1/orders/store/100/by-statuses"; got != want {
 			t.Errorf("unexpected path %q, want %q", got, want)
 		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(body))
+		statuses := r.URL.Query().Get("statuses")
+		for _, want := range []string{"CONFIRMED", "PACKING", "READY_FOR_DELIVERY"} {
+			if !strings.Contains(statuses, want) {
+				t.Errorf("statuses query %q missing %s", statuses, want)
+			}
+		}
+		pageNum := r.URL.Query().Get("pageNum")
+		switch pageNum {
+		case "0":
+			pagesSeen = append(pagesSeen, 0)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(page0))
+		case "1":
+			pagesSeen = append(pagesSeen, 1)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(page1))
+		default:
+			t.Errorf("unexpected pageNum %q", pageNum)
+			w.WriteHeader(http.StatusBadRequest)
+		}
 	}))
 	defer srv.Close()
 
-	orders, err := newTestJavaClient(srv.URL).GetReadyForDeliveryOrders(context.Background(), "100")
+	orders, err := newTestJavaClient(srv.URL).GetAssignableOrders(context.Background(), "100")
 	if err != nil {
-		t.Fatalf("GetReadyForDeliveryOrders error (numeric storeId must not break decode): %v", err)
+		t.Fatalf("GetAssignableOrders error (numeric storeId must not break decode): %v", err)
 	}
-	if len(orders) != 1 {
-		t.Fatalf("expected 1 order, got %d", len(orders))
+	if len(pagesSeen) != 2 || pagesSeen[0] != 0 || pagesSeen[1] != 1 {
+		t.Fatalf("expected pagination over pages 0 then 1, got %v", pagesSeen)
 	}
-	if got, want := orders[0].StoreID, "100"; got != want {
-		t.Errorf("StoreID not stamped from queried store: got %q, want %q", got, want)
+	if len(orders) != 2 {
+		t.Fatalf("expected 2 orders across pages, got %d", len(orders))
+	}
+	for i, o := range orders {
+		if got, want := o.StoreID, "100"; got != want {
+			t.Errorf("orders[%d].StoreID not stamped: got %q, want %q", i, got, want)
+		}
 	}
 	if got, want := orders[0].EffectiveOrderID(), "ORD1037370658"; got != want {
-		t.Errorf("order id = %q, want %q", got, want)
+		t.Errorf("orders[0] id = %q, want %q", got, want)
+	}
+	if got, want := orders[1].EffectiveOrderID(), "ORD1037370659"; got != want {
+		t.Errorf("orders[1] id = %q, want %q", got, want)
 	}
 }

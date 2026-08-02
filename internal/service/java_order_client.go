@@ -15,16 +15,16 @@ import (
 
 // JavaOrder is the subset of fields the cron needs from the Java order response.
 type JavaOrder struct {
-	OrderID     string          `json:"orderId"`
-	OrderNumber string          `json:"orderNumber"`
-	Status      string          `json:"status"`
-	Delivery    JavaDelivery    `json:"delivery"`
+	OrderID     string       `json:"orderId"`
+	OrderNumber string       `json:"orderNumber"`
+	Status      string       `json:"status"`
+	Delivery    JavaDelivery `json:"delivery"`
 	// StoreID is intentionally not decoded from the order-service response: the
 	// payload either omits it or serializes it as a number, and every order
 	// returned by the per-store query belongs to that store anyway. It is
-	// populated from the store the cron queried — see GetReadyForDeliveryOrders.
-	StoreID string `json:"-"`
-	Items       []JavaOrderItem `json:"items"`
+	// populated from the store the cron queried — see GetAssignableOrders.
+	StoreID string          `json:"-"`
+	Items   []JavaOrderItem `json:"items"`
 
 	PaymentMethod string  `json:"paymentMethod"`
 	PaymentStatus string  `json:"paymentStatus"`
@@ -105,10 +105,15 @@ func NewJavaOrderClient(baseURL string, logger *logrus.Logger) *JavaOrderClient 
 	}
 }
 
-// GetReadyForDeliveryOrders fetches all READY_FOR_DELIVERY orders for a store.
-// Handles pagination — returns all pages combined.
-func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID string) ([]JavaOrder, error) {
-	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetReadyForDeliveryOrders", logrus.Fields{"store_id": storeID})
+// assignableOrderStatuses are the Java order statuses eligible for early rider
+// assignment (confirmed through pack-complete).
+const assignableOrderStatuses = "CONFIRMED,PACKING,READY_FOR_DELIVERY"
+
+// GetAssignableOrders fetches CONFIRMED, PACKING, and READY_FOR_DELIVERY orders
+// for a store via the by-statuses endpoint. Handles pagination — returns all
+// pages combined.
+func (c *JavaOrderClient) GetAssignableOrders(ctx context.Context, storeID string) ([]JavaOrder, error) {
+	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetAssignableOrders", logrus.Fields{"store_id": storeID})
 	defer op.End()
 
 	var allOrders []JavaOrder
@@ -116,8 +121,8 @@ func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID
 	pageSize := 50
 
 	for {
-		url := fmt.Sprintf("%s%s/api/v1/orders/store/%s?status=%s&pageNum=%d&pageSize=%d",
-			c.baseURL, orderServicePathPrefix, storeID, eligibleOrderStatus, page, pageSize)
+		url := fmt.Sprintf("%s%s/api/v1/orders/store/%s/by-statuses?statuses=%s&pageNum=%d&pageSize=%d",
+			c.baseURL, orderServicePathPrefix, storeID, assignableOrderStatuses, page, pageSize)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
