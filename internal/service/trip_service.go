@@ -30,7 +30,21 @@ var (
 	ErrInvalidOTP             = errors.New("invalid OTP")
 	ErrInvalidTripTransition  = errors.New("invalid trip transition")
 	ErrPickupOrderMismatch    = errors.New("scanned order does not match assigned trip")
+	// ErrOrderNotReadyForPickup is returned when a driver tries to complete
+	// pickup before the Java order reaches READY_FOR_DELIVERY (or later).
+	ErrOrderNotReadyForPickup = errors.New("order is not ready for pickup")
 )
+
+// orderAllowsPickup reports whether a Java order status is far enough along
+// for a driver to complete the pickup task.
+func orderAllowsPickup(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY", "DELIVERED":
+		return true
+	default:
+		return false
+	}
+}
 
 // tripRepoI is the subset of TripRepository methods used by TripService.
 // Using an interface here allows unit tests to inject stub implementations
@@ -421,6 +435,19 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 	// Trip-status gate: pickup requires accepted, drop requires out_for_delivery.
 	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
 		return op.Outcome("prerequisite_incomplete", err)
+	}
+
+	// Driver pickup requires the Java order to be packed. AdminCompleteTask
+	// intentionally skips this gate (break-glass). Nil javaClient skips only
+	// for unit stubs that already omit the client.
+	if task.Type == models.TaskTypePickup && newStatus == models.TaskStatusCompleted && s.javaClient != nil {
+		status, err := s.javaClient.GetOrderStatus(ctx, trip.OrderID)
+		if err != nil {
+			return op.Fail(err)
+		}
+		if !orderAllowsPickup(status) {
+			return op.Outcome("order_not_ready", ErrOrderNotReadyForPickup)
+		}
 	}
 
 	// Drop completion requires the customer OTP.

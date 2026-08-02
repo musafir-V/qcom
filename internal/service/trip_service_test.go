@@ -792,6 +792,135 @@ func TestUpdateTaskStatus_PickupCompletion_NotifiesCustomer(t *testing.T) {
 	}
 }
 
+// newOrderStatusJavaClient stands in for order-service GetOrderStatus (and
+// accepts status-update POSTs from syncJavaWithRetry).
+func newOrderStatusJavaClient(t *testing.T, status string) *JavaOrderClient {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"` + status + `"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	return NewJavaOrderClient(server.URL, logrus.New())
+}
+
+// TestUpdateTaskStatus_Pickup_Packing_Blocked pins the early-assignment gate:
+// a driver must not complete pickup while the Java order is still packing.
+func TestUpdateTaskStatus_Pickup_Packing_Blocked(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-gate-pack",
+			OrderID: "ORD-GATE-PACK",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+		updateTasksFn: func(context.Context, string, []models.Task) error {
+			t.Fatal("UpdateTasks must not run when order is not ready for pickup")
+			return nil
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000010"}}
+	svc := &TripService{
+		tripRepo:   repo,
+		deRepo:     deRepo,
+		notifier:   &stubNotifier{},
+		javaClient: newOrderStatusJavaClient(t, "PACKING"),
+		logger:     logrus.New(),
+	}
+
+	err := svc.UpdateTaskStatus(context.Background(), "t-gate-pack", "task-pickup", "+260971000010", models.TaskStatusCompleted, "", "")
+	if !errors.Is(err, ErrOrderNotReadyForPickup) {
+		t.Fatalf("expected ErrOrderNotReadyForPickup, got: %v", err)
+	}
+}
+
+// TestUpdateTaskStatus_Pickup_Ready_Allows completes pickup once Java reports
+// READY_FOR_DELIVERY.
+func TestUpdateTaskStatus_Pickup_Ready_Allows(t *testing.T) {
+	var updated bool
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-gate-ready",
+			OrderID: "ORD-GATE-READY",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+		updateTasksFn: func(_ context.Context, _ string, tasks []models.Task) error {
+			updated = true
+			return nil
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000011"}}
+	svc := &TripService{
+		tripRepo:   repo,
+		deRepo:     deRepo,
+		notifier:   &stubNotifier{},
+		javaClient: newOrderStatusJavaClient(t, "READY_FOR_DELIVERY"),
+		logger:     logrus.New(),
+	}
+
+	err := svc.UpdateTaskStatus(context.Background(), "t-gate-ready", "task-pickup", "+260971000011", models.TaskStatusCompleted, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected UpdateTasks to run after READY_FOR_DELIVERY pickup")
+	}
+}
+
+// TestAdminCompleteTask_Pickup_Packing_BypassesGate pins break-glass: admin
+// pickup completion must succeed even while the order is still packing.
+func TestAdminCompleteTask_Pickup_Packing_BypassesGate(t *testing.T) {
+	var updated bool
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-gate-admin",
+			OrderID: "ORD-GATE-ADMIN",
+			DEID:    "de-1",
+			DEPhone: "+260971000012",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+		updateTasksFn: func(_ context.Context, _ string, _ []models.Task) error {
+			updated = true
+			return nil
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000012", CurrentOrderID: "ORD-GATE-ADMIN",
+	}}
+	svc := &TripService{
+		tripRepo:   repo,
+		deRepo:     deRepo,
+		notifier:   &stubNotifier{},
+		javaClient: newOrderStatusJavaClient(t, "PACKING"),
+		logger:     logrus.New(),
+	}
+
+	err := svc.AdminCompleteTask(context.Background(), "+260971000012", models.TaskTypePickup, "ops-user")
+	if err != nil {
+		t.Fatalf("expected admin pickup to bypass packing gate, got: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected UpdateTasks to run for admin pickup override")
+	}
+}
+
 func TestNotifyCustomer_SendsBuiltRequest(t *testing.T) {
 	notifier := &stubNotifier{}
 	svc := newTestTripService(&stubTripRepo{}, notifier)

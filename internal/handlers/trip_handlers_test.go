@@ -59,6 +59,12 @@ func TestClassifyTaskUpdateError(t *testing.T) {
 			wantCode:   "INVALID_TASK_TRANSITION",
 		},
 		{
+			name:       "order not ready for pickup",
+			err:        service.ErrOrderNotReadyForPickup,
+			wantStatus: http.StatusConflict,
+			wantCode:   "ORDER_NOT_READY",
+		},
+		{
 			name:       "unknown error defaults to 500",
 			err:        errors.New("dynamodb timeout"),
 			wantStatus: http.StatusInternalServerError,

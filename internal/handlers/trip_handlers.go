@@ -97,6 +97,8 @@ func classifyTaskUpdateError(err error) (status int, code string) {
 		return http.StatusBadRequest, "TRIP_ALREADY_CLOSED"
 	case errors.Is(err, service.ErrPrerequisiteIncomplete):
 		return http.StatusBadRequest, "PREREQUISITE_TASK_INCOMPLETE"
+	case errors.Is(err, service.ErrOrderNotReadyForPickup):
+		return http.StatusConflict, "ORDER_NOT_READY"
 	case errors.Is(err, service.ErrInvalidOTP):
 		return http.StatusBadRequest, "INVALID_OTP"
 	case errors.Is(err, service.ErrInvalidTransition):
