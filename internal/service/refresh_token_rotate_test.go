@@ -291,3 +291,40 @@ func TestRotate_ReuseOutsideGrace_RevokesFamily(t *testing.T) {
 		t.Fatalf("expected family token %s to be revoked after reuse outside grace", newJTI)
 	}
 }
+
+// After T0→T1 rotation, logging out T1 must invalidate REFRESH_REPLACEMENT#T0
+// so a stale client cannot resurrect the session with the old refresh JWT.
+func TestRotate_AfterLogoutOfSuccessor_OldJTIDenied(t *testing.T) {
+	store := newFakeRefreshStore()
+	svc := newTestRotateService(store)
+	ctx := context.Background()
+
+	oldJTI := "old-jti-superseded"
+	familyID := "family-superseded"
+	seedOldToken(t, store, oldJTI, familyID)
+
+	mint, _ := countingMint("access-1", "refresh-1")
+	expiresAt := time.Now().Add(24 * time.Hour)
+	pair, err := svc.Rotate(ctx, oldJTI, "user-1", "customer", "+260900000001", expiresAt, mint)
+	if err != nil || pair == nil {
+		t.Fatalf("first Rotate: pair=%v err=%v", pair, err)
+	}
+
+	rep, err := store.GetReplacement(ctx, oldJTI)
+	if err != nil || rep == nil {
+		t.Fatalf("replacement missing: %v", err)
+	}
+
+	if err := svc.Revoke(ctx, rep.NewJTI); err != nil {
+		t.Fatalf("logout revoke of successor: %v", err)
+	}
+
+	mint2, calls2 := countingMint("access-resurrect", "refresh-resurrect")
+	_, err = svc.Rotate(ctx, oldJTI, "user-1", "customer", "+260900000001", expiresAt, mint2)
+	if !errors.Is(err, ErrRefreshTokenRevoked) {
+		t.Fatalf("expected ErrRefreshTokenRevoked after successor logout, got %v", err)
+	}
+	if *calls2 != 0 {
+		t.Fatalf("expected mint not called, got %d", *calls2)
+	}
+}

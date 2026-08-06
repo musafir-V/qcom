@@ -182,19 +182,31 @@ func (s *RefreshTokenService) Rotate(
 	}
 
 	var knownFamilyID string
+	revokeFamilyOnDeny := false // only true for theft / logout-invalidated reuse
 
-	// 1. Cached replacement within grace → return same pair (idempotent retry).
+	// 1. Cached replacement within grace → return same pair (idempotent retry),
+	//    unless the successor refresh was hard-revoked (logout).
 	rep, err := s.tokenRepo.GetReplacement(ctx, oldJTI)
 	if err != nil {
 		return nil, op.Fail(err)
 	}
 	if rep != nil {
-		if time.Since(rep.IssuedAt) <= refreshReuseGrace {
-			pair := rep.TokenPair()
-			return &pair, nil
-		}
-		// Outside grace: treat as missing (theft path). Keep family for step 5.
 		knownFamilyID = rep.FamilyID
+		if time.Since(rep.IssuedAt) <= refreshReuseGrace {
+			newRevoked, revErr := s.tokenRepo.IsRevoked(ctx, rep.NewJTI)
+			if revErr != nil {
+				return nil, op.Fail(revErr)
+			}
+			if !newRevoked {
+				pair := rep.TokenPair()
+				return &pair, nil
+			}
+			// Successor logged out — do not hand out the cached pair.
+			revokeFamilyOnDeny = true
+		} else {
+			// Outside grace: theft signal.
+			revokeFamilyOnDeny = true
+		}
 	}
 
 	// 2. Atomically claim rotation.
@@ -262,22 +274,33 @@ func (s *RefreshTokenService) Rotate(
 				knownFamilyID = rep.FamilyID
 			}
 			if time.Since(rep.IssuedAt) <= refreshReuseGrace {
-				pair := rep.TokenPair()
-				return &pair, nil
+				newRevoked, revErr := s.tokenRepo.IsRevoked(ctx, rep.NewJTI)
+				if revErr != nil {
+					return nil, op.Fail(revErr)
+				}
+				if !newRevoked {
+					pair := rep.TokenPair()
+					return &pair, nil
+				}
+				revokeFamilyOnDeny = true
+				break
 			}
+			revokeFamilyOnDeny = true
+			break
 		}
 		if i < pollAttempts-1 {
 			time.Sleep(pollDelay)
 		}
 	}
 
-	// 5. Reuse outside grace / logout: revoke family if known, then deny.
+	// 5. Deny. Revoke family only on theft / logout-invalidated reuse — not when
+	// the winner is merely slow to write the replacement (poll timeout).
 	if knownFamilyID == "" {
 		if oldData, getErr := s.tokenRepo.Get(ctx, oldJTI); getErr == nil && oldData != nil {
 			knownFamilyID = oldData.FamilyID
 		}
 	}
-	if knownFamilyID != "" {
+	if revokeFamilyOnDeny && knownFamilyID != "" {
 		_ = s.RevokeFamily(ctx, knownFamilyID)
 	}
 	return nil, op.Outcome("revoked", ErrRefreshTokenRevoked)

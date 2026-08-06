@@ -384,7 +384,13 @@ func (h *AuthHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 	if req.RefreshToken != "" {
 		refreshClaims, err := h.jwtService.VerifyToken(req.RefreshToken)
 		if err == nil && refreshClaims.Type == "refresh" {
-			h.refreshTokenService.Revoke(r.Context(), refreshClaims.JTI)
+			// Revoke the presented refresh and its family so concurrent clients
+			// cannot resurrect a session via REFRESH_REPLACEMENT for an older JTI.
+			if data, getErr := h.refreshTokenService.Get(r.Context(), refreshClaims.JTI); getErr == nil && data != nil && data.FamilyID != "" {
+				_ = h.refreshTokenService.RevokeFamily(r.Context(), data.FamilyID)
+			} else {
+				_ = h.refreshTokenService.Revoke(r.Context(), refreshClaims.JTI)
+			}
 		}
 	}
 
