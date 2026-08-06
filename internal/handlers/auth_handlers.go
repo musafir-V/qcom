@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/sirupsen/logrus"
@@ -291,59 +294,64 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := h.jwtService.VerifyToken(req.RefreshToken)
 	if err != nil {
+		h.logger.WithFields(logrus.Fields{
+			"code": "INVALID_TOKEN",
+		}).Warn("refresh token rejected")
 		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid refresh token")
 		return
 	}
 
 	if claims.Type != "refresh" {
+		h.logger.WithFields(logrus.Fields{
+			"code": "INVALID_TOKEN_TYPE",
+			"jti":  jtiPrefix(claims.JTI),
+		}).Warn("refresh token rejected")
 		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN_TYPE", "Token is not a refresh token")
 		return
 	}
 
-	revoked, err := h.refreshTokenService.IsRevoked(r.Context(), claims.JTI)
-	if err == nil && revoked {
-		h.respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
-		return
+	tokenExpiresAt := time.Now().Add(24 * time.Hour)
+	if claims.RegisteredClaims.ExpiresAt != nil {
+		tokenExpiresAt = claims.RegisteredClaims.ExpiresAt.Time
 	}
 
-	tokenData, err := h.refreshTokenService.Get(r.Context(), claims.JTI)
-	if err != nil {
-		h.logger.WithError(err).Warn("Failed to get refresh token data, will generate new family ID")
+	mint := func(familyID string) (*models.TokenPair, string, string, time.Time, error) {
+		pair, newFamilyID, err := h.jwtService.RefreshTokens(req.RefreshToken, familyID)
+		if err != nil {
+			return nil, "", "", time.Time{}, err
+		}
+		newClaims, err := h.jwtService.VerifyToken(pair.RefreshToken)
+		if err != nil {
+			return nil, "", "", time.Time{}, err
+		}
+		expiresAt := time.Now().Add(24 * time.Hour)
+		if newClaims.RegisteredClaims.ExpiresAt != nil {
+			expiresAt = newClaims.RegisteredClaims.ExpiresAt.Time
+		}
+		return pair, newFamilyID, newClaims.JTI, expiresAt, nil
 	}
 
-	if tokenData != nil {
-		h.refreshTokenService.Revoke(r.Context(), claims.JTI)
-	}
-
-	familyID := ""
-	if tokenData != nil {
-		familyID = tokenData.FamilyID
-	}
-
-	newTokenPair, newFamilyID, err := h.jwtService.RefreshTokens(req.RefreshToken, familyID)
-	if err != nil {
-		h.logger.WithError(err).Error("Failed to generate new tokens")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
-		return
-	}
-
-	newClaims, err := h.jwtService.VerifyToken(newTokenPair.RefreshToken)
-	if err != nil {
-		h.logger.WithError(err).Error("Failed to verify new refresh token")
-		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
-		return
-	}
-
-	if err := h.refreshTokenService.Store(
+	newTokenPair, err := h.refreshTokenService.Rotate(
 		r.Context(),
-		newClaims.JTI,
+		claims.JTI,
 		claims.EntityID,
 		claims.EntityType,
 		claims.Phone,
-		newFamilyID,
-		newClaims.RegisteredClaims.ExpiresAt.Time,
-	); err != nil {
-		h.logger.WithError(err).Error("Failed to store new refresh token")
+		tokenExpiresAt,
+		mint,
+	)
+	if err != nil {
+		if errors.Is(err, service.ErrRefreshTokenRevoked) {
+			h.logger.WithFields(logrus.Fields{
+				"code": "TOKEN_REVOKED",
+				"jti":  jtiPrefix(claims.JTI),
+			}).Warn("refresh token rejected")
+			h.respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
+			return
+		}
+		h.logger.WithError(err).Error("Failed to rotate refresh token")
+		h.respondWithError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate tokens")
+		return
 	}
 
 	h.respondWithJSON(w, http.StatusOK, RefreshTokenResponse{
@@ -352,6 +360,13 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		TokenType:    newTokenPair.TokenType,
 		ExpiresIn:    newTokenPair.ExpiresIn,
 	})
+}
+
+func jtiPrefix(jti string) string {
+	if len(jti) <= 8 {
+		return jti
+	}
+	return jti[:8]
 }
 
 func (h *AuthHandlers) Logout(w http.ResponseWriter, r *http.Request) {

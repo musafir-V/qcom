@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,15 +13,40 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const refreshReuseGrace = 60 * time.Second
+
+var ErrRefreshTokenRevoked = errors.New("refresh token revoked")
+
+// MintFunc mints a new pair for familyID and returns pair, familyID, newJTI, newExpiresAt.
+type MintFunc func(familyID string) (*models.TokenPair, string, string, time.Time, error)
+
+// refreshTokenStore is the persistence surface used by RefreshTokenService.
+// *repository.RefreshTokenRepository satisfies this interface.
+type refreshTokenStore interface {
+	Store(ctx context.Context, tokenData models.RefreshTokenData) error
+	Get(ctx context.Context, jti string) (*models.RefreshTokenData, error)
+	IsRevoked(ctx context.Context, jti string) (bool, error)
+	MarkRevoked(ctx context.Context, jti string, expiresAt time.Time) error
+	TryMarkRevoked(ctx context.Context, jti string, expiresAt time.Time) (bool, error)
+	StoreReplacement(ctx context.Context, rep models.RefreshReplacement, graceTTL time.Duration) error
+	GetReplacement(ctx context.Context, oldJTI string) (*models.RefreshReplacement, error)
+	GetByFamilyID(ctx context.Context, familyID string) ([]models.RefreshTokenData, error)
+	GetByEntityID(ctx context.Context, entityID string) ([]models.RefreshTokenData, error)
+}
+
 type RefreshTokenService struct {
-	tokenRepo *repository.RefreshTokenRepository
-	logger    *logrus.Logger
+	tokenRepo    refreshTokenStore
+	logger       *logrus.Logger
+	pollAttempts int
+	pollDelay    time.Duration
 }
 
 func NewRefreshTokenService(tokenRepo *repository.RefreshTokenRepository, logger *logrus.Logger) *RefreshTokenService {
 	return &RefreshTokenService{
-		tokenRepo: tokenRepo,
-		logger:    logger,
+		tokenRepo:    tokenRepo,
+		logger:       logger,
+		pollAttempts: 10,
+		pollDelay:    50 * time.Millisecond,
 	}
 }
 
@@ -132,6 +158,129 @@ func (s *RefreshTokenService) RevokeAllForEntity(ctx context.Context, entityID s
 
 	op.With("count", len(tokens))
 	return nil
+}
+
+// Rotate idempotently rotates a refresh token. Concurrent callers with the same
+// oldJTI within refreshReuseGrace receive the same TokenPair. Reuse after the
+// grace window (or after hard Revoke/logout) returns ErrRefreshTokenRevoked.
+func (s *RefreshTokenService) Rotate(
+	ctx context.Context,
+	oldJTI, entityID, entityType, phone string,
+	tokenExpiresAt time.Time,
+	mint MintFunc,
+) (*models.TokenPair, error) {
+	op := logging.Start(ctx, s.logger, "Rotate", logrus.Fields{"jti": oldJTI})
+	defer op.End()
+
+	pollAttempts := s.pollAttempts
+	if pollAttempts <= 0 {
+		pollAttempts = 10
+	}
+	pollDelay := s.pollDelay
+	if pollDelay <= 0 {
+		pollDelay = 50 * time.Millisecond
+	}
+
+	var knownFamilyID string
+
+	// 1. Cached replacement within grace → return same pair (idempotent retry).
+	rep, err := s.tokenRepo.GetReplacement(ctx, oldJTI)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+	if rep != nil {
+		if time.Since(rep.IssuedAt) <= refreshReuseGrace {
+			pair := rep.TokenPair()
+			return &pair, nil
+		}
+		// Outside grace: treat as missing (theft path). Keep family for step 5.
+		knownFamilyID = rep.FamilyID
+	}
+
+	// 2. Atomically claim rotation.
+	claimed, err := s.tokenRepo.TryMarkRevoked(ctx, oldJTI, tokenExpiresAt)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+
+	if claimed {
+		// 3. Winner path.
+		familyID := knownFamilyID
+		oldData, getErr := s.tokenRepo.Get(ctx, oldJTI)
+		if getErr == nil && oldData != nil {
+			familyID = oldData.FamilyID
+		}
+
+		pair, newFamilyID, newJTI, newExpiresAt, err := mint(familyID)
+		if err != nil {
+			return nil, op.Fail(err)
+		}
+
+		if err := s.tokenRepo.Store(ctx, models.RefreshTokenData{
+			JTI:        newJTI,
+			EntityID:   entityID,
+			EntityType: entityType,
+			Phone:      phone,
+			FamilyID:   newFamilyID,
+			CreatedAt:  time.Now(),
+			ExpiresAt:  newExpiresAt,
+			Revoked:    false,
+		}); err != nil {
+			return nil, op.Fail(err)
+		}
+
+		// Optionally mark old REFRESH_TOKEN metadata revoked if Get succeeded.
+		if getErr == nil && oldData != nil {
+			oldData.Revoked = true
+			_ = s.tokenRepo.Store(ctx, *oldData)
+		}
+
+		replacement := models.RefreshReplacement{
+			OldJTI:       oldJTI,
+			AccessToken:  pair.AccessToken,
+			RefreshToken: pair.RefreshToken,
+			TokenType:    pair.TokenType,
+			ExpiresIn:    pair.ExpiresIn,
+			FamilyID:     newFamilyID,
+			NewJTI:       newJTI,
+			IssuedAt:     time.Now(),
+		}
+		if err := s.tokenRepo.StoreReplacement(ctx, replacement, refreshReuseGrace); err != nil {
+			return nil, op.Fail(err)
+		}
+		return pair, nil
+	}
+
+	// 4. Loser path: poll for winner's replacement within grace.
+	for i := 0; i < pollAttempts; i++ {
+		rep, err := s.tokenRepo.GetReplacement(ctx, oldJTI)
+		if err != nil {
+			return nil, op.Fail(err)
+		}
+		if rep != nil {
+			if knownFamilyID == "" {
+				knownFamilyID = rep.FamilyID
+			}
+			if time.Since(rep.IssuedAt) <= refreshReuseGrace {
+				pair := rep.TokenPair()
+				return &pair, nil
+			}
+		}
+		if i < pollAttempts-1 {
+			time.Sleep(pollDelay)
+		}
+	}
+
+	// 5. Reuse outside grace / logout: revoke family if known, then deny.
+	if knownFamilyID == "" {
+		if oldData, getErr := s.tokenRepo.Get(ctx, oldJTI); getErr == nil && oldData != nil {
+			knownFamilyID = oldData.FamilyID
+		}
+	}
+	if knownFamilyID != "" {
+		_ = s.RevokeFamily(ctx, knownFamilyID)
+	}
+	return nil, op.Outcome("revoked", ErrRefreshTokenRevoked)
 }
 
 func GenerateFamilyID() string {

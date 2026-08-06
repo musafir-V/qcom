@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -150,6 +151,108 @@ func (r *RefreshTokenRepository) MarkRevoked(ctx context.Context, jti string, ex
 		return op.Fail(fmt.Errorf("failed to mark token as revoked: %w", err))
 	}
 	return nil
+}
+
+// TryMarkRevoked atomically claims rotation for jti. Returns claimed=true if this
+// caller created the REVOKED marker; claimed=false if another caller already did.
+func (r *RefreshTokenRepository) TryMarkRevoked(ctx context.Context, jti string, expiresAt time.Time) (bool, error) {
+	op := logging.Start(ctx, r.logger, "TryMarkRevoked", logrus.Fields{"jti": jti})
+	defer op.End()
+
+	ttl := expiresAt.Unix()
+	item := map[string]types.AttributeValue{
+		"PK":        &types.AttributeValueMemberS{Value: fmt.Sprintf("REVOKED_TOKEN#%s", jti)},
+		"SK":        &types.AttributeValueMemberS{Value: "METADATA"},
+		"RevokedAt": &types.AttributeValueMemberS{Value: time.Now().Format(time.RFC3339)},
+		"TTL":       &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)},
+	}
+
+	_, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:           aws.String(r.tableName),
+		Item:                item,
+		ConditionExpression: aws.String("attribute_not_exists(PK)"),
+	})
+	if err != nil {
+		var ccf *types.ConditionalCheckFailedException
+		if errors.As(err, &ccf) {
+			op.With("claimed", false)
+			return false, nil
+		}
+		return false, op.Fail(fmt.Errorf("failed to claim refresh revocation: %w", err))
+	}
+	op.With("claimed", true)
+	return true, nil
+}
+
+// StoreReplacement persists the token pair issued for a rotated refresh JTI.
+// graceTTL controls DynamoDB item expiry (reuse window for concurrent clients).
+func (r *RefreshTokenRepository) StoreReplacement(ctx context.Context, rep models.RefreshReplacement, graceTTL time.Duration) error {
+	op := logging.Start(ctx, r.logger, "StoreReplacement", logrus.Fields{"old_jti": rep.OldJTI, "new_jti": rep.NewJTI})
+	defer op.End()
+
+	if graceTTL <= 0 {
+		graceTTL = time.Minute
+	}
+	ttl := time.Now().Add(graceTTL).Unix()
+
+	item := map[string]types.AttributeValue{
+		"PK":           &types.AttributeValueMemberS{Value: fmt.Sprintf("REFRESH_REPLACEMENT#%s", rep.OldJTI)},
+		"SK":           &types.AttributeValueMemberS{Value: "METADATA"},
+		"OldJTI":       &types.AttributeValueMemberS{Value: rep.OldJTI},
+		"AccessToken":  &types.AttributeValueMemberS{Value: rep.AccessToken},
+		"RefreshToken": &types.AttributeValueMemberS{Value: rep.RefreshToken},
+		"TokenType":    &types.AttributeValueMemberS{Value: rep.TokenType},
+		"ExpiresIn":    &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", rep.ExpiresIn)},
+		"FamilyID":     &types.AttributeValueMemberS{Value: rep.FamilyID},
+		"NewJTI":       &types.AttributeValueMemberS{Value: rep.NewJTI},
+		"IssuedAt":     &types.AttributeValueMemberS{Value: rep.IssuedAt.Format(time.RFC3339)},
+		"TTL":          &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", ttl)},
+	}
+
+	_, err := r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(r.tableName),
+		Item:      item,
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to store refresh replacement: %w", err))
+	}
+	return nil
+}
+
+// GetReplacement returns the cached replacement for oldJTI, or (nil, nil) if absent.
+func (r *RefreshTokenRepository) GetReplacement(ctx context.Context, oldJTI string) (*models.RefreshReplacement, error) {
+	op := logging.Start(ctx, r.logger, "GetReplacement", logrus.Fields{"old_jti": oldJTI})
+	defer op.End()
+
+	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("REFRESH_REPLACEMENT#%s", oldJTI)},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+	})
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to get refresh replacement: %w", err))
+	}
+	if result.Item == nil {
+		op.With("found", false)
+		return nil, nil
+	}
+
+	var rep models.RefreshReplacement
+	if err := attributevalue.UnmarshalMap(result.Item, &rep); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal refresh replacement: %w", err))
+	}
+	// IssuedAt may arrive as string; attributevalue usually handles time if tagged.
+	if rep.IssuedAt.IsZero() {
+		if raw, ok := result.Item["IssuedAt"].(*types.AttributeValueMemberS); ok {
+			if t, err := time.Parse(time.RFC3339, raw.Value); err == nil {
+				rep.IssuedAt = t
+			}
+		}
+	}
+	op.With("found", true)
+	return &rep, nil
 }
 
 // GetByFamilyID retrieves all tokens for a given family ID
