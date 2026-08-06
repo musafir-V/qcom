@@ -305,7 +305,6 @@ func setupServer() (*httptest.Server, error) {
 
 	// Repositories
 	userRepo := repository.NewUserRepository(dynamo, cfg.DynamoDB.TableName, logger)
-	otpRepo := repository.NewOTPRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	pageRepo := repository.NewPageRepository(dynamo, cfg.DynamoDB.TableName, logger)
 	addressRepo := repository.NewAddressRepository(dynamo, cfg.DynamoDB.TableName, logger)
@@ -325,17 +324,16 @@ func setupServer() (*httptest.Server, error) {
 		return nil, err
 	}
 
-	vonageJWTRepo := repository.NewVonageJWTRepository(dynamo, cfg.DynamoDB.TableName, logger)
-	vonageMockServer := newSuccessVonageMockServer()
-	vonageService := service.NewVonageService(&config.VonageConfig{
-		AppID:         testVonageAppID,
-		PrivateKeyB64: testVonagePrivateKeyB64(),
-		WhatsAppFrom:  testVonageWhatsAppFrom,
-	}, vonageJWTRepo, logger)
-	vonageService.SetMessagesURL(vonageMockServer.URL)
-	vonageService.SetHTTPClient(vonageMockServer.Client())
+	twilioMockServer := newSuccessTwilioMockServer()
+	twilioService := service.NewTwilioVerifyService(&config.TwilioConfig{
+		AccountSID:       "ACtest",
+		AuthToken:        "test-token",
+		VerifyServiceSID: "VAtest",
+	}, logger)
+	twilioService.SetBaseURL(twilioMockServer.URL)
+	twilioService.SetHTTPClient(twilioMockServer.Client())
 
-	otpService := service.NewOTPService(otpRepo, vonageService, &cfg.OTP, logger)
+	otpService := service.NewOTPService(twilioService, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	uploadService := service.NewUploadService(s3c, &cfg.S3, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
@@ -506,14 +504,8 @@ func authenticateUser(t *testing.T, phone string) authTokens {
 		t.Fatalf("initiate-otp returned %d", resp.StatusCode)
 	}
 
-	// 2. Read test OTP from DynamoDB
-	otp, err := getTestOTP(phone)
-	if err != nil {
-		t.Fatalf("failed to read test OTP: %v", err)
-	}
-
-	// 3. Verify OTP (no X-App-Type header → customer)
-	return doVerifyOTP(t, phone, otp, "")
+	// 2. Master bypass (Twilio owns real codes in production)
+	return doVerifyOTP(t, phone, "221133", "")
 }
 
 // doVerifyOTP sends verify-otp and returns the parsed tokens.

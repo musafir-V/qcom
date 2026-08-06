@@ -3,20 +3,14 @@
 package integration
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	dynamodbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
-const otpReuseTestPhone = "+919876543210"
+const otpTwilioTestPhone = "+919876543210"
 
 func initiateOTP(t *testing.T, phone string) {
 	t.Helper()
@@ -33,101 +27,27 @@ func initiateOTP(t *testing.T, phone string) {
 	}
 }
 
-func getStoredOTP(t *testing.T, phone string) string {
-	t.Helper()
-
-	result, err := dynamoClient.GetItem(context.Background(), &dynamodb.GetItemInput{
-		TableName: aws.String(testTableName),
-		Key: map[string]dynamodbtypes.AttributeValue{
-			"PK": &dynamodbtypes.AttributeValueMemberS{Value: fmt.Sprintf("OTP#%s", phone)},
-			"SK": &dynamodbtypes.AttributeValueMemberS{Value: "METADATA"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("get stored OTP: %v", err)
-	}
-	if result.Item == nil {
-		t.Fatalf("stored OTP not found for %s", phone)
-	}
-
-	otpAttr, ok := result.Item["OTP"].(*dynamodbtypes.AttributeValueMemberS)
-	if !ok || otpAttr.Value == "" {
-		t.Fatalf("OTP plaintext missing for %s", phone)
-	}
-	return otpAttr.Value
-}
-
-func deleteStoredOTP(t *testing.T, phone string) {
-	t.Helper()
-
-	for _, pk := range []string{
-		fmt.Sprintf("OTP#%s", phone),
-		fmt.Sprintf("OTP_TEST#%s", phone),
-	} {
-		_, err := dynamoClient.DeleteItem(context.Background(), &dynamodb.DeleteItemInput{
-			TableName: aws.String(testTableName),
-			Key: map[string]dynamodbtypes.AttributeValue{
-				"PK": &dynamodbtypes.AttributeValueMemberS{Value: pk},
-				"SK": &dynamodbtypes.AttributeValueMemberS{Value: "METADATA"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("delete %s: %v", pk, err)
-		}
-	}
-	resetVonageOTPSends(phone)
-}
-
-func TestInitiateOTP_SecondCallReusesSameOTPInDynamoDB(t *testing.T) {
-	phone := otpReuseTestPhone
-	deleteStoredOTP(t, phone)
-	t.Cleanup(func() { deleteStoredOTP(t, phone) })
-
-	initiateOTP(t, phone)
-	firstOTP := getStoredOTP(t, phone)
-
-	time.Sleep(10 * time.Millisecond)
-
-	initiateOTP(t, phone)
-	secondOTP := getStoredOTP(t, phone)
-
-	if firstOTP != secondOTP {
-		t.Fatalf("stored OTP changed: first=%s second=%s", firstOTP, secondOTP)
-	}
-}
-
-func TestInitiateOTP_ResendViaSecondInitiateSendsSameOTPToVonage(t *testing.T) {
-	phone := "+919876543211"
-	deleteStoredOTP(t, phone)
-	t.Cleanup(func() { deleteStoredOTP(t, phone) })
+func TestInitiateOTP_CallsTwilioVerifyEachTime(t *testing.T) {
+	phone := otpTwilioTestPhone
+	resetTwilioOTPSends(phone)
+	t.Cleanup(func() { resetTwilioOTPSends(phone) })
 
 	initiateOTP(t, phone)
 	initiateOTP(t, phone)
 
-	sent := getVonageOTPSends(phone)
-	if len(sent) != 2 {
-		t.Fatalf("vonage send count = %d, want 2", len(sent))
-	}
-	if sent[0] != sent[1] {
-		t.Fatalf("vonage resent different OTP: first=%s second=%s", sent[0], sent[1])
-	}
-	if sent[0] != getStoredOTP(t, phone) {
-		t.Fatalf("vonage OTP %s does not match stored OTP %s", sent[0], getStoredOTP(t, phone))
+	if got := getTwilioOTPSendCount(phone); got != 2 {
+		t.Fatalf("twilio send count = %d, want 2", got)
 	}
 }
 
-func TestInitiateOTP_ResendCanBeVerifiedWithSameOTP(t *testing.T) {
+func TestInitiateOTP_CanVerifyWithMasterBypass(t *testing.T) {
 	phone := "+919876543212"
-	deleteStoredOTP(t, phone)
-	t.Cleanup(func() { deleteStoredOTP(t, phone) })
+	resetTwilioOTPSends(phone)
+	t.Cleanup(func() { resetTwilioOTPSends(phone) })
 
 	initiateOTP(t, phone)
-	otpAfterFirst := getStoredOTP(t, phone)
-
-	initiateOTP(t, phone)
-
-	tokens := doVerifyOTP(t, phone, otpAfterFirst, "")
+	tokens := doVerifyOTP(t, phone, "221133", "")
 	if tokens.AccessToken == "" {
-		t.Fatal("expected access token after verifying resent OTP")
+		t.Fatal("expected access token after master bypass verify")
 	}
 }

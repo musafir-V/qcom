@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -10,19 +9,19 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig
-	DynamoDB DynamoDBConfig
-	JWT      JWTConfig
-	OTP      OTPConfig
-	S3       S3Config
-	Google   GoogleConfig
-	Java     JavaConfig
-	Vonage   VonageConfig
-	Firebase FirebaseConfig
-	Dispute  DisputeConfig
-	VonageVoice VoiceConfig
+	Server         ServerConfig
+	DynamoDB       DynamoDBConfig
+	JWT            JWTConfig
+	OTP            OTPConfig
+	S3             S3Config
+	Google         GoogleConfig
+	Java           JavaConfig
+	Twilio         TwilioConfig
+	Firebase       FirebaseConfig
+	Dispute        DisputeConfig
+	VonageVoice    VoiceConfig
 	Serviceability ServiceabilityConfig
-	IsTest   bool
+	IsTest         bool
 }
 
 type ServerConfig struct {
@@ -70,10 +69,10 @@ type JavaConfig struct {
 	OrderServiceURL string
 }
 
-type VonageConfig struct {
-	AppID         string
-	PrivateKeyB64 string
-	WhatsAppFrom  string
+type TwilioConfig struct {
+	AccountSID       string
+	AuthToken        string
+	VerifyServiceSID string
 }
 
 type VoiceConfig struct {
@@ -151,10 +150,10 @@ func Load() (*Config, error) {
 		Java: JavaConfig{
 			OrderServiceURL: getEnv("JAVA_ORDER_SERVICE_URL", "http://localhost:8081"),
 		},
-		Vonage: VonageConfig{
-			AppID:         getEnv("VONAGE_APP_ID", ""),
-			PrivateKeyB64: getEnv("VONAGE_PRIVATE_KEY", ""),
-			WhatsAppFrom:  getEnv("VONAGE_WHATSAPP_FROM", ""),
+		Twilio: TwilioConfig{
+			AccountSID:       getEnv("TWILIO_ACCOUNT_SID", ""),
+			AuthToken:        getEnv("TWILIO_AUTH_TOKEN", ""),
+			VerifyServiceSID: getEnv("TWILIO_VERIFY_SERVICE_SID", ""),
 		},
 		Firebase: FirebaseConfig{
 			CredentialsB64: getEnv("FIREBASE_CREDENTIALS_B64", ""),
@@ -183,17 +182,14 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("JWT_SECRET_KEY must be at least 32 bytes (256 bits)")
 	}
 
-	if cfg.Vonage.AppID == "" {
-		return nil, fmt.Errorf("VONAGE_APP_ID environment variable is required")
+	if cfg.Twilio.AccountSID == "" {
+		return nil, fmt.Errorf("TWILIO_ACCOUNT_SID environment variable is required")
 	}
-	if cfg.Vonage.PrivateKeyB64 == "" {
-		return nil, fmt.Errorf("VONAGE_PRIVATE_KEY environment variable is required")
+	if cfg.Twilio.AuthToken == "" {
+		return nil, fmt.Errorf("TWILIO_AUTH_TOKEN environment variable is required")
 	}
-	if _, err := base64.StdEncoding.DecodeString(cfg.Vonage.PrivateKeyB64); err != nil {
-		return nil, fmt.Errorf("VONAGE_PRIVATE_KEY must be valid base64: %w", err)
-	}
-	if cfg.Vonage.WhatsAppFrom == "" {
-		return nil, fmt.Errorf("VONAGE_WHATSAPP_FROM environment variable is required")
+	if cfg.Twilio.VerifyServiceSID == "" {
+		return nil, fmt.Errorf("TWILIO_VERIFY_SERVICE_SID environment variable is required")
 	}
 
 	return cfg, nil

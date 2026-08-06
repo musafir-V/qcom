@@ -41,7 +41,6 @@ func main() {
 
 	// Initialize repositories
 	userRepo := repository.NewUserRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
-	otpRepo := repository.NewOTPRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	pageRepo := repository.NewPageRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	addressRepo := repository.NewAddressRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -59,7 +58,6 @@ func main() {
 	disbursementRepo := repository.NewDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	inKindDisbRepo := repository.NewInKindDisbursementRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cronLockRepo := repository.NewCronLockRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
-	vonageJWTRepo := repository.NewVonageJWTRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cashConfigRepo := repository.NewCashConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	cashDepositLedgerRepo := repository.NewCashDepositLedgerRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	deviceTokenRepo := repository.NewDeviceTokenRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
@@ -76,8 +74,8 @@ func main() {
 		logger.WithError(err).Fatal("Failed to initialize JWT service")
 	}
 
-	vonageService := service.NewVonageService(&cfg.Vonage, vonageJWTRepo, logger)
-	otpService := service.NewOTPService(otpRepo, vonageService, &cfg.OTP, logger)
+	twilioVerifyService := service.NewTwilioVerifyService(&cfg.Twilio, logger)
+	otpService := service.NewOTPService(twilioVerifyService, logger)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
 	googleGeocoder := service.NewGoogleGeocoder(cfg.Google.MapsAPIKey, logger)

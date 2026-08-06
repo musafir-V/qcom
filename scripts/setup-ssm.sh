@@ -33,9 +33,9 @@ S3_REGION="${S3_REGION:-ap-southeast-2}"
 read -r -p "S3_BUCKET [printdrop-documents]: " S3_BUCKET
 S3_BUCKET="${S3_BUCKET:-printdrop-documents}"
 read -r -p "GOOGLE_MAPS_API_KEY: " GOOGLE_MAPS_API_KEY
-read -r -p "VONAGE_APP_ID (from Vonage dashboard, e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx): " VONAGE_APP_ID
-read -r -p "VONAGE_PRIVATE_KEY (base64-encoded PEM, no newlines): " VONAGE_PRIVATE_KEY
-read -r -p "VONAGE_WHATSAPP_FROM (digits only, no +, e.g. 15559615672): " VONAGE_WHATSAPP_FROM
+read -r -p "TWILIO_ACCOUNT_SID: " TWILIO_ACCOUNT_SID
+read -r -p "TWILIO_AUTH_TOKEN: " TWILIO_AUTH_TOKEN
+read -r -p "TWILIO_VERIFY_SERVICE_SID: " TWILIO_VERIFY_SERVICE_SID
 read -r -p "PORT [8080]: " PORT
 PORT="${PORT:-8080}"
 read -r -p "GITHUB_DEPLOY_KEY path (path to private key file): " DEPLOY_KEY_PATH
@@ -46,10 +46,10 @@ read -r -p "GITHUB_DEPLOY_KEY path (path to private key file): " DEPLOY_KEY_PATH
 [ -n "${S3_REGION}" ]           && put_param "/qcom/prod/S3_REGION"           "${S3_REGION}"
 [ -n "${S3_BUCKET}" ]           && put_param "/qcom/prod/S3_BUCKET"           "${S3_BUCKET}"
 [ -n "${GOOGLE_MAPS_API_KEY}" ] && put_param "/qcom/prod/GOOGLE_MAPS_API_KEY" "${GOOGLE_MAPS_API_KEY}"
-[ -n "${VONAGE_APP_ID}" ]        && put_param "/qcom/prod/VONAGE_APP_ID"        "${VONAGE_APP_ID}"
-[ -n "${VONAGE_PRIVATE_KEY}" ]   && put_param "/qcom/prod/VONAGE_PRIVATE_KEY"   "${VONAGE_PRIVATE_KEY}"
-[ -n "${VONAGE_WHATSAPP_FROM}" ] && put_param "/qcom/prod/VONAGE_WHATSAPP_FROM" "${VONAGE_WHATSAPP_FROM}"
-[ -n "${PORT}" ]                && put_param "/qcom/prod/PORT"                "${PORT}"
+[ -n "${TWILIO_ACCOUNT_SID}" ]        && put_param "/qcom/prod/TWILIO_ACCOUNT_SID"        "${TWILIO_ACCOUNT_SID}"
+[ -n "${TWILIO_AUTH_TOKEN}" ]         && put_param "/qcom/prod/TWILIO_AUTH_TOKEN"         "${TWILIO_AUTH_TOKEN}"
+[ -n "${TWILIO_VERIFY_SERVICE_SID}" ] && put_param "/qcom/prod/TWILIO_VERIFY_SERVICE_SID" "${TWILIO_VERIFY_SERVICE_SID}"
+[ -n "${PORT}" ]                      && put_param "/qcom/prod/PORT"                      "${PORT}"
 
 if [ -n "${DEPLOY_KEY_PATH}" ] && [ -f "${DEPLOY_KEY_PATH}" ]; then
   put_param "/qcom/prod/GITHUB_DEPLOY_KEY" "$(cat "${DEPLOY_KEY_PATH}")"

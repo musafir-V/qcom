@@ -10,14 +10,14 @@ import (
 func setRequiredEnv(t *testing.T) func() {
 	t.Helper()
 	os.Setenv("JWT_SECRET_KEY", "test-secret-key-at-least-32-bytes!!")
-	os.Setenv("VONAGE_APP_ID", "test-app-id")
-	os.Setenv("VONAGE_PRIVATE_KEY", "dGVzdA==")
-	os.Setenv("VONAGE_WHATSAPP_FROM", "test-from")
+	os.Setenv("TWILIO_ACCOUNT_SID", "ACtest")
+	os.Setenv("TWILIO_AUTH_TOKEN", "test-token")
+	os.Setenv("TWILIO_VERIFY_SERVICE_SID", "VAtest")
 	return func() {
 		os.Unsetenv("JWT_SECRET_KEY")
-		os.Unsetenv("VONAGE_APP_ID")
-		os.Unsetenv("VONAGE_PRIVATE_KEY")
-		os.Unsetenv("VONAGE_WHATSAPP_FROM")
+		os.Unsetenv("TWILIO_ACCOUNT_SID")
+		os.Unsetenv("TWILIO_AUTH_TOKEN")
+		os.Unsetenv("TWILIO_VERIFY_SERVICE_SID")
 	}
 }
 
