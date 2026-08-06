@@ -168,6 +168,23 @@ func TestGenerateOTP_CreatesNewOTPWhenPlaintextMissing(t *testing.T) {
 	}
 }
 
+func TestGenerateOTP_ReturnsSuccessWhenVonageFails(t *testing.T) {
+	repo := &stubOTPRepo{}
+	sender := &stubWhatsAppSender{err: errors.New("vonage unavailable")}
+
+	svc := newTestOTPService(repo, sender)
+	otp, err := svc.GenerateOTP(context.Background(), "+919515365236")
+	if err != nil {
+		t.Fatalf("GenerateOTP returned error: %v", err)
+	}
+	if otp != "" {
+		t.Fatalf("otp = %q, want empty when Vonage fails", otp)
+	}
+	if len(repo.data) != 0 {
+		t.Fatal("expected no OTP stored when Vonage send fails")
+	}
+}
+
 func TestVerifyOTP_MasterBypass(t *testing.T) {
 	svc := newTestOTPService(&stubOTPRepo{}, &stubWhatsAppSender{})
 

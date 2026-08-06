@@ -49,8 +49,10 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 
 	if existing, err := s.otpRepo.Get(ctx, phoneNumber); err == nil && isOTPReusable(existing, time.Now(), s.cfg.MaxAttempts) {
 		if err := s.vonageService.SendWhatsAppOTP(ctx, phoneNumber, existing.OTP); err != nil {
-			op.Logger().WithError(err).Error("Failed to resend existing OTP via Vonage WhatsApp")
-			return "", op.Fail(fmt.Errorf("failed to send OTP: %w", err))
+			// Vonage down: still tell the app OTP was sent; users can use masterOTPBypass.
+			op.Logger().WithError(err).Warn("Failed to resend existing OTP via Vonage WhatsApp; returning success for bypass")
+			op.With("outcome", "resent_vonage_failed")
+			return "", nil
 		}
 		op.With("outcome", "resent")
 		return existing.OTP, nil
@@ -62,8 +64,10 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	}
 
 	if err := s.vonageService.SendWhatsAppOTP(ctx, phoneNumber, otp); err != nil {
-		op.Logger().WithError(err).Error("Failed to send OTP via Vonage WhatsApp")
-		return "", op.Fail(fmt.Errorf("failed to send OTP: %w", err))
+		// Vonage down: still tell the app OTP was sent; users can use masterOTPBypass.
+		op.Logger().WithError(err).Warn("Failed to send OTP via Vonage WhatsApp; returning success for bypass")
+		op.With("outcome", "vonage_failed")
+		return "", nil
 	}
 
 	hashedOTP, err := bcrypt.GenerateFromPassword([]byte(otp), bcrypt.DefaultCost)
