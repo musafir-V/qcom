@@ -17,6 +17,7 @@ type Config struct {
 	Google         GoogleConfig
 	Java           JavaConfig
 	Twilio         TwilioConfig
+	AfricaTalking  AfricaTalkingConfig
 	Firebase       FirebaseConfig
 	Dispute        DisputeConfig
 	VonageVoice    VoiceConfig
@@ -73,6 +74,14 @@ type TwilioConfig struct {
 	AccountSID       string
 	AuthToken        string
 	VerifyServiceSID string
+}
+
+// AfricaTalkingConfig holds optional Africa's Talking SMS credentials.
+// Empty Username/APIKey is OK at boot; the SMS client is only used when configured.
+type AfricaTalkingConfig struct {
+	Username string
+	APIKey   string
+	BaseURL  string // default https://api.africastalking.com
 }
 
 type VoiceConfig struct {
@@ -154,6 +163,11 @@ func Load() (*Config, error) {
 			AccountSID:       getEnv("TWILIO_ACCOUNT_SID", ""),
 			AuthToken:        getEnv("TWILIO_AUTH_TOKEN", ""),
 			VerifyServiceSID: getEnv("TWILIO_VERIFY_SERVICE_SID", ""),
+		},
+		AfricaTalking: AfricaTalkingConfig{
+			Username: getEnv("AFRICASTALKING_USERNAME", ""),
+			APIKey:   getEnv("AFRICASTALKING_API_KEY", ""),
+			BaseURL:  getEnv("AFRICASTALKING_BASE_URL", "https://api.africastalking.com"),
 		},
 		Firebase: FirebaseConfig{
 			CredentialsB64: getEnv("FIREBASE_CREDENTIALS_B64", ""),

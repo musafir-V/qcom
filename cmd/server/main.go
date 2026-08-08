@@ -67,6 +67,8 @@ func main() {
 	voiceCallContextRepo := repository.NewVoiceCallContextRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	ruleRepo := repository.NewRuleRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	adminUserRepo := repository.NewAdminUserRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	otpRepo := repository.NewOTPRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	smsOTPRoutingConfigRepo := repository.NewSMSOTPRoutingConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -75,7 +77,15 @@ func main() {
 	}
 
 	twilioVerifyService := service.NewTwilioVerifyService(&cfg.Twilio, logger)
-	otpService := service.NewOTPService(twilioVerifyService, logger)
+	africaTalkingSMS := service.NewAfricaTalkingSMSService(&cfg.AfricaTalking, logger)
+	otpService := service.NewOTPService(
+		twilioVerifyService,
+		africaTalkingSMS,
+		otpRepo,
+		smsOTPRoutingConfigRepo,
+		&cfg.OTP,
+		logger,
+	)
 	refreshTokenService := service.NewRefreshTokenService(refreshTokenRepo, logger)
 	addressService := service.NewAddressService(addressRepo, logger)
 	googleGeocoder := service.NewGoogleGeocoder(cfg.Google.MapsAPIKey, logger)
@@ -197,9 +207,10 @@ func main() {
 
 	adminDisputeService := service.NewAdminDisputeService(disputeRepo, dispositionRepo, tripRepo, deRepo)
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
+	adminSMSOTPRoutingHandlers := handlers.NewAdminSMSOTPRoutingHandlers(smsOTPRoutingConfigRepo, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -331,6 +342,7 @@ func setupRouter(
 	adminAuthHandlers *handlers.AdminAuthHandlers,
 	adminDriverHandlers *handlers.AdminDriverHandlers,
 	adminStoreHandlers *handlers.AdminStoreHandlers,
+	adminSMSOTPRoutingHandlers *handlers.AdminSMSOTPRoutingHandlers,
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
@@ -404,6 +416,9 @@ func setupRouter(
 	admin.HandleFunc("/users", adminAuthHandlers.ListUsers).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/users", adminAuthHandlers.CreateUser).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/users/{username}/password", adminAuthHandlers.ChangePassword).Methods("POST", "OPTIONS")
+
+	admin.HandleFunc("/sms-otp-routing", adminSMSOTPRoutingHandlers.GetConfig).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/sms-otp-routing", adminSMSOTPRoutingHandlers.PutConfig).Methods("PUT", "OPTIONS")
 
 	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/trips/{trip_id}/reassign-candidates", adminHandlers.ReassignCandidates).Methods("GET", "OPTIONS")

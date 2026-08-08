@@ -58,3 +58,44 @@ func TestVoiceConfigLoadsFromEnv(t *testing.T) {
 		t.Fatalf("voice config = %+v", got)
 	}
 }
+
+func TestAfricaTalkingConfig_OptionalDefaults(t *testing.T) {
+	cleanup := setRequiredEnv(t)
+	defer cleanup()
+	os.Unsetenv("AFRICASTALKING_USERNAME")
+	os.Unsetenv("AFRICASTALKING_API_KEY")
+	os.Unsetenv("AFRICASTALKING_BASE_URL")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.AfricaTalking.Username != "" || cfg.AfricaTalking.APIKey != "" {
+		t.Fatalf("expected empty AT creds by default, got %+v", cfg.AfricaTalking)
+	}
+	if cfg.AfricaTalking.BaseURL != "https://api.africastalking.com" {
+		t.Fatalf("BaseURL = %q, want default", cfg.AfricaTalking.BaseURL)
+	}
+}
+
+func TestAfricaTalkingConfig_FromEnv(t *testing.T) {
+	cleanup := setRequiredEnv(t)
+	defer cleanup()
+	t.Setenv("AFRICASTALKING_USERNAME", "Bunzo")
+	t.Setenv("AFRICASTALKING_API_KEY", "atsk_test")
+	t.Setenv("AFRICASTALKING_BASE_URL", "https://api.sandbox.africastalking.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.AfricaTalking.Username != "Bunzo" {
+		t.Fatalf("Username = %q", cfg.AfricaTalking.Username)
+	}
+	if cfg.AfricaTalking.APIKey != "atsk_test" {
+		t.Fatalf("APIKey = %q", cfg.AfricaTalking.APIKey)
+	}
+	if cfg.AfricaTalking.BaseURL != "https://api.sandbox.africastalking.com" {
+		t.Fatalf("BaseURL = %q", cfg.AfricaTalking.BaseURL)
+	}
+}
