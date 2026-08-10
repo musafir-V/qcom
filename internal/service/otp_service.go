@@ -70,7 +70,7 @@ func NewOTPService(
 	}
 }
 
-// GenerateOTP routes to Africa's Talking (digit 0/1 split) or Twilio Verify.
+// GenerateOTP routes to Africa's Talking (default for all phones) or Twilio Verify.
 // The OTP string is never returned to callers (Twilio owns its codes; AT codes
 // stay in the local store). On provider failure after failover, returns soft
 // success ("", nil) so clients can still use masterOTPBypass.
@@ -81,7 +81,7 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	forceTwilio := s.forceTwilio(ctx)
 	op.With("force_twilio", forceTwilio)
 
-	if shouldSendViaAfricaTalking(phoneNumber, forceTwilio, s.atConfigured()) {
+	if shouldSendViaAfricaTalking(forceTwilio, s.atConfigured()) {
 		return s.generateViaAfricaTalking(ctx, op, phoneNumber)
 	}
 	return s.generateViaTwilio(ctx, op, phoneNumber)
@@ -164,12 +164,11 @@ func (s *OTPService) VerifyOTP(ctx context.Context, phoneNumber, otp string) (bo
 		return s.verifyViaTwilio(ctx, op, phoneNumber, otp)
 	}
 
-	if phoneEligibleForLocalOTP(phoneNumber) {
-		otpData, err := s.getLocalOTP(ctx, phoneNumber)
-		if err == nil && otpData != nil {
-			return s.verifyLocalOTP(ctx, op, phoneNumber, otp, otpData)
-		}
-		// No local OTP → fall through to Twilio CheckVerification.
+	// Local OTP wins for any phone when present (AT path / AT success).
+	// Otherwise Twilio CheckVerification (failover / in-flight Twilio OTP).
+	otpData, err := s.getLocalOTP(ctx, phoneNumber)
+	if err == nil && otpData != nil {
+		return s.verifyLocalOTP(ctx, op, phoneNumber, otp, otpData)
 	}
 
 	return s.verifyViaTwilio(ctx, op, phoneNumber, otp)

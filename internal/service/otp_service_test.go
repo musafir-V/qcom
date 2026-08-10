@@ -140,7 +140,7 @@ func newTestOTPService(
 	}
 }
 
-func TestGenerateOTP_Digit2_UsesTwilio(t *testing.T) {
+func TestGenerateOTP_Digit2_UsesAfricaTalking(t *testing.T) {
 	twilio := &stubTwilioVerifier{}
 	at := &stubAfricaTalkingSender{configured: true}
 	store := newStubOTPStore()
@@ -153,11 +153,14 @@ func TestGenerateOTP_Digit2_UsesTwilio(t *testing.T) {
 	if otp != "" {
 		t.Fatalf("otp = %q, want empty", otp)
 	}
-	if len(twilio.started) != 1 {
-		t.Fatalf("twilio started = %v, want 1 call", twilio.started)
+	if len(twilio.started) != 0 {
+		t.Fatalf("twilio started = %v, want none (100%% AT)", twilio.started)
 	}
-	if len(at.sent) != 0 {
-		t.Fatalf("AT sent = %v, want none", at.sent)
+	if len(at.sent) != 1 {
+		t.Fatalf("AT sent = %v, want 1 call", at.sent)
+	}
+	if _, ok := store.get("+260770021112"); !ok {
+		t.Fatal("expected OTP stored after successful AT send")
 	}
 }
 
@@ -417,7 +420,8 @@ func TestGenerateOTP_TwilioPathDeletesLocalBeforeStart(t *testing.T) {
 		OTP: "111111", OTPHash: "x", Phone: "+260770021112",
 		ExpiresAt: time.Now().Add(time.Minute),
 	})
-	svc := newTestOTPService(twilio, &stubAfricaTalkingSender{configured: true}, store, &stubRoutingConfig{})
+	// force_twilio exercises the Twilio generate path (default is 100% AT).
+	svc := newTestOTPService(twilio, &stubAfricaTalkingSender{configured: true}, store, &stubRoutingConfig{forceTwilio: true})
 
 	_, err := svc.GenerateOTP(context.Background(), "+260770021112")
 	if err != nil {
@@ -623,10 +627,10 @@ func TestVerifyOTP_LocalMaxAttempts(t *testing.T) {
 	}
 }
 
-func TestVerifyOTP_Digit2_UsesTwilioEvenIfLocalExists(t *testing.T) {
+func TestVerifyOTP_AnyDigit_LocalWinsIfPresent(t *testing.T) {
 	twilio := &stubTwilioVerifier{checkOK: true}
 	store := newStubOTPStore()
-	phone := "+260770021112"
+	phone := "+260770021112" // previously Twilio-only digit under 20/80 split
 	hash, _ := bcrypt.GenerateFromPassword([]byte("654321"), bcrypt.MinCost)
 	_ = store.Store(context.Background(), phone, models.OTPData{
 		OTP: "654321", OTPHash: string(hash), Phone: phone,
@@ -634,15 +638,15 @@ func TestVerifyOTP_Digit2_UsesTwilioEvenIfLocalExists(t *testing.T) {
 	})
 	svc := newTestOTPService(twilio, &stubAfricaTalkingSender{configured: true}, store, &stubRoutingConfig{})
 
-	valid, err := svc.VerifyOTP(context.Background(), phone, "999999")
+	valid, err := svc.VerifyOTP(context.Background(), phone, "654321")
 	if err != nil {
 		t.Fatalf("VerifyOTP error: %v", err)
 	}
 	if !valid {
-		t.Fatal("expected Twilio check result")
+		t.Fatal("expected local verify success for any digit when OTP row exists")
 	}
-	if len(twilio.checked) != 1 {
-		t.Fatalf("digit 2 should verify via Twilio; checked=%v", twilio.checked)
+	if len(twilio.checked) != 0 {
+		t.Fatalf("should not call Twilio when local OTP present; checked=%v", twilio.checked)
 	}
 }
 
