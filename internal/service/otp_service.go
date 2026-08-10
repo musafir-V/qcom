@@ -70,10 +70,11 @@ func NewOTPService(
 	}
 }
 
-// GenerateOTP routes to Africa's Talking (default for all phones) or Twilio Verify.
-// The OTP string is never returned to callers (Twilio owns its codes; AT codes
-// stay in the local store). On provider failure after failover, returns soft
-// success ("", nil) so clients can still use masterOTPBypass.
+// GenerateOTP routes to Africa's Talking (default) or Twilio Verify.
+// MTN Zambia prefixes +26076 / +26096 always use Twilio when the kill-switch
+// is off. The OTP string is never returned to callers (Twilio owns its codes;
+// AT codes stay in the local store). On provider failure after failover,
+// returns soft success ("", nil) so clients can still use masterOTPBypass.
 func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (string, error) {
 	op := logging.Start(ctx, s.logger, "GenerateOTP", logrus.Fields{"phone": phoneNumber})
 	defer op.End()
@@ -81,7 +82,7 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	forceTwilio := s.forceTwilio(ctx)
 	op.With("force_twilio", forceTwilio)
 
-	if shouldSendViaAfricaTalking(forceTwilio, s.atConfigured()) {
+	if shouldSendViaAfricaTalking(phoneNumber, forceTwilio, s.atConfigured()) {
 		return s.generateViaAfricaTalking(ctx, op, phoneNumber)
 	}
 	return s.generateViaTwilio(ctx, op, phoneNumber)
@@ -160,11 +161,11 @@ func (s *OTPService) VerifyOTP(ctx context.Context, phoneNumber, otp string) (bo
 	forceTwilio := s.forceTwilio(ctx)
 	op.With("force_twilio", forceTwilio)
 
-	if forceTwilio {
+	if forceTwilio || isMTNZambiaTwilioPrefix(phoneNumber) {
 		return s.verifyViaTwilio(ctx, op, phoneNumber, otp)
 	}
 
-	// Local OTP wins for any phone when present (AT path / AT success).
+	// Local OTP wins when present (AT path / AT success).
 	// Otherwise Twilio CheckVerification (failover / in-flight Twilio OTP).
 	otpData, err := s.getLocalOTP(ctx, phoneNumber)
 	if err == nil && otpData != nil {
