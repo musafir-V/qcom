@@ -59,7 +59,7 @@ type ETAPayload struct {
 
 // Track handles GET /api/v1/orders/{orderId}/track.
 // Returns the full order-details payload (from order-service) enriched with the
-// trip-derived fields otp, de_name, and eta. Requires customer JWT auth.
+// trip-derived fields otp, de_name, de_phone, and eta. Requires customer JWT auth.
 func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 	orderID := mux.Vars(r)["orderId"]
 	if strings.TrimSpace(orderID) == "" {
@@ -103,10 +103,11 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 
 	// Driver and OTP are revealed only once the driver has committed
 	// (accepted/out_for_delivery) — never during the pending-accept window.
-	var otp, deName *string
+	var otp, deName, dePhone *string
 	if trip != nil {
 		committed := trip.Status == models.TripStatusAccepted || trip.Status == models.TripStatusOutForDelivery
 		if committed && trip.DEPhone != "" {
+			dePhone = &trip.DEPhone
 			de, derr := h.deRepo.GetByPhone(r.Context(), trip.DEPhone)
 			if derr != nil {
 				h.logger.WithError(derr).Warn("track: DE lookup failed; de_name omitted")
@@ -121,7 +122,7 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := enrichOrderWithTracking(order, otp, deName, eta); err != nil {
+	if err := enrichOrderWithTracking(order, otp, deName, dePhone, eta); err != nil {
 		h.logger.WithError(err).Error("track: failed to enrich order payload")
 		h.respondWithError(w, http.StatusInternalServerError, "ENRICH_FAILED", "Failed to build response")
 		return
@@ -198,8 +199,8 @@ func computeETA(createdAtUTC string) *ETAPayload {
 
 // enrichOrderWithTracking injects the trip-derived tracking fields into the
 // order object in place. nil pointers are written as JSON null.
-func enrichOrderWithTracking(order map[string]json.RawMessage, otp *string, deName *string, eta *ETAPayload) error {
-	for key, val := range map[string]any{"otp": otp, "de_name": deName, "eta": eta} {
+func enrichOrderWithTracking(order map[string]json.RawMessage, otp *string, deName *string, dePhone *string, eta *ETAPayload) error {
+	for key, val := range map[string]any{"otp": otp, "de_name": deName, "de_phone": dePhone, "eta": eta} {
 		raw, err := json.Marshal(val)
 		if err != nil {
 			return err

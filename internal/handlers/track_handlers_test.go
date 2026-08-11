@@ -128,6 +128,9 @@ func TestTrack_OutForDelivery_ShowsOTPNameETAAndPreservesOrder(t *testing.T) {
 	if string(body["de_name"]) != `"John M."` {
 		t.Errorf("de_name = %s", body["de_name"])
 	}
+	if string(body["de_phone"]) != `"0990000000"` {
+		t.Errorf("de_phone = %s", body["de_phone"])
+	}
 	if string(body["eta"]) == "null" || len(body["eta"]) == 0 {
 		t.Errorf("eta missing: %s", body["eta"])
 	}
@@ -146,8 +149,8 @@ func TestTrack_NoTrip_ETAPresentOTPNameNull(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	body := decodeBody(t, rec)
-	// OTP/de_name remain trip-derived → null with no trip.
-	for _, k := range []string{"otp", "de_name"} {
+	// OTP/de_name/de_phone remain trip-derived → null with no trip.
+	for _, k := range []string{"otp", "de_name", "de_phone"} {
 		if string(body[k]) != "null" {
 			t.Errorf("%s = %s, want null", k, body[k])
 		}
@@ -170,6 +173,9 @@ func TestTrack_FindingDriver_ETAOnlyNoOTPNoName(t *testing.T) {
 	if string(body["de_name"]) != "null" {
 		t.Errorf("de_name should be null before commit: %s", body["de_name"])
 	}
+	if string(body["de_phone"]) != "null" {
+		t.Errorf("de_phone should be null before commit: %s", body["de_phone"])
+	}
 	if string(body["eta"]) == "null" {
 		t.Error("eta should be present once trip exists")
 	}
@@ -189,6 +195,9 @@ func TestTrack_Delivered_NoOTPNoName(t *testing.T) {
 	}
 	if string(body["de_name"]) != "null" {
 		t.Errorf("de_name should be null after completion: %s", body["de_name"])
+	}
+	if string(body["de_phone"]) != "null" {
+		t.Errorf("de_phone should be null after completion: %s", body["de_phone"])
 	}
 	if string(body["eta"]) != "null" {
 		t.Errorf("eta should be null for a delivered (terminal) trip: %s", body["eta"])
@@ -210,6 +219,9 @@ func TestTrack_Cancelled_NoOTP(t *testing.T) {
 	if string(body["de_name"]) != "null" {
 		t.Errorf("de_name should be null for a cancelled trip: %s", body["de_name"])
 	}
+	if string(body["de_phone"]) != "null" {
+		t.Errorf("de_phone should be null for a cancelled trip: %s", body["de_phone"])
+	}
 	if string(body["eta"]) != "null" {
 		t.Errorf("eta should be null for a cancelled (terminal) trip: %s", body["eta"])
 	}
@@ -230,6 +242,9 @@ func TestTrack_Accepted_ShowsOTPNameETA(t *testing.T) {
 	}
 	if string(body["de_name"]) != `"John M."` {
 		t.Errorf("de_name = %s", body["de_name"])
+	}
+	if string(body["de_phone"]) != `"0990000000"` {
+		t.Errorf("de_phone = %s", body["de_phone"])
 	}
 	if string(body["eta"]) == "null" || len(body["eta"]) == 0 {
 		t.Errorf("eta should be present for an accepted (non-terminal) trip: %s", body["eta"])
@@ -275,9 +290,12 @@ func TestTrack_MissingCreatedAt_NullETA(t *testing.T) {
 	if string(body["eta"]) != "null" {
 		t.Errorf("eta should be null when order createdAt is missing: %s", body["eta"])
 	}
-	// OTP/de_name are unaffected by a missing createdAt.
+	// OTP/de_name/de_phone are unaffected by a missing createdAt.
 	if string(body["otp"]) != `"4321"` {
 		t.Errorf("otp = %s, want \"4321\"", body["otp"])
+	}
+	if string(body["de_phone"]) != `"0990000000"` {
+		t.Errorf("de_phone = %s, want \"0990000000\"", body["de_phone"])
 	}
 }
 
@@ -314,7 +332,7 @@ func TestTrack_TripLookupError_DegradesTo200(t *testing.T) {
 		t.Errorf("order payload should still be present: %s", body["orderNumber"])
 	}
 	// Trip-derived fields degrade to null; the order-anchored ETA still shows.
-	for _, k := range []string{"otp", "de_name"} {
+	for _, k := range []string{"otp", "de_name", "de_phone"} {
 		if string(body[k]) != "null" {
 			t.Errorf("%s = %s, want null on degraded path", k, body[k])
 		}
@@ -385,9 +403,10 @@ func TestEnrichOrderWithTracking_AllPresent(t *testing.T) {
 	order := map[string]json.RawMessage{"orderNumber": json.RawMessage(`"ORD1"`)}
 	otp := "1234"
 	name := "John M."
+	phone := "0990000000"
 	eta := &ETAPayload{ExpiresAt: "2026-06-25T10:00:00Z", RemainingMinutes: 8, IsDelayed: false}
 
-	if err := enrichOrderWithTracking(order, &otp, &name, eta); err != nil {
+	if err := enrichOrderWithTracking(order, &otp, &name, &phone, eta); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if string(order["otp"]) != `"1234"` {
@@ -395,6 +414,9 @@ func TestEnrichOrderWithTracking_AllPresent(t *testing.T) {
 	}
 	if string(order["de_name"]) != `"John M."` {
 		t.Errorf("de_name = %s", order["de_name"])
+	}
+	if string(order["de_phone"]) != `"0990000000"` {
+		t.Errorf("de_phone = %s", order["de_phone"])
 	}
 	if string(order["orderNumber"]) != `"ORD1"` {
 		t.Errorf("original field clobbered: %s", order["orderNumber"])
@@ -410,10 +432,10 @@ func TestEnrichOrderWithTracking_AllPresent(t *testing.T) {
 
 func TestEnrichOrderWithTracking_NilsBecomeJSONNull(t *testing.T) {
 	order := map[string]json.RawMessage{}
-	if err := enrichOrderWithTracking(order, nil, nil, nil); err != nil {
+	if err := enrichOrderWithTracking(order, nil, nil, nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, k := range []string{"otp", "de_name", "eta"} {
+	for _, k := range []string{"otp", "de_name", "de_phone", "eta"} {
 		if string(order[k]) != "null" {
 			t.Errorf("%s = %s, want null", k, order[k])
 		}
