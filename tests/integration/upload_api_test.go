@@ -505,7 +505,7 @@ func authenticateUser(t *testing.T, phone string) authTokens {
 	}
 
 	// 2. Master bypass (Twilio owns real codes in production)
-	return doVerifyOTP(t, phone, "221133", "")
+	return doVerifyOTP(t, phone, "112233", "")
 }
 
 // doVerifyOTP sends verify-otp and returns the parsed tokens.

@@ -374,8 +374,8 @@ func TestVerifyOTP_MasterBypass(t *testing.T) {
 	if !valid {
 		t.Fatal("expected master OTP bypass to succeed")
 	}
-	if masterOTPBypass != "221133" {
-		t.Fatalf("masterOTPBypass = %q, want 221133", masterOTPBypass)
+	if masterOTPBypass != "112233" {
+		t.Fatalf("masterOTPBypass = %q, want 112233", masterOTPBypass)
 	}
 }
 

@@ -25,7 +25,7 @@ func TestMain(m *testing.M) {
 }
 
 // OTP is hardcoded in the server (random generation is commented out).
-const fixedOTP = "221133"
+const fixedOTP = "112233"
 
 // smokePhone returns a unique Zambia (+260) mobile number for each test run.
 func smokePhone() string {

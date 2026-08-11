@@ -46,7 +46,7 @@ func TestInitiateOTP_CanVerifyWithMasterBypass(t *testing.T) {
 	t.Cleanup(func() { resetTwilioOTPSends(phone) })
 
 	initiateOTP(t, phone)
-	tokens := doVerifyOTP(t, phone, "221133", "")
+	tokens := doVerifyOTP(t, phone, "112233", "")
 	if tokens.AccessToken == "" {
 		t.Fatal("expected access token after master bypass verify")
 	}

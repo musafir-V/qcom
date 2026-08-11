@@ -123,7 +123,7 @@ func authenticateDE(t *testing.T, phone string) authTokens {
 		t.Fatalf("initiate-otp (DE) returned %d", resp.StatusCode)
 	}
 
-	return doVerifyOTP(t, phone, "221133", "de")
+	return doVerifyOTP(t, phone, "112233", "de")
 }
 
 // currentQRCode fetches the QR code for a store from the API.

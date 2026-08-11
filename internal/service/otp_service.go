@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const masterOTPBypass = "221133"
+const masterOTPBypass = "112233"
 
 type twilioOTPVerifier interface {
 	StartSMSVerification(ctx context.Context, phoneNumber string) error
