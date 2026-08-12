@@ -28,6 +28,10 @@ const (
 	// bypassETAMinutes is the hardcoded ETA returned on the bypass path (there
 	// is no real darkstore behind bypassDarkstoreID to compute one from).
 	bypassETAMinutes = 7
+
+	// TEMP: force store_closed UX for +917766066119 (entity US1515215324). Remove after prod test.
+	tempStoreClosedTestUserID = "US1515215324"
+	tempStoreClosedDarkstoreID = "221"
 )
 
 // OperatingHours is the daily schedule surfaced to the customer app.
@@ -131,6 +135,15 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 	})
 	defer op.End()
 
+	if userID == tempStoreClosedTestUserID {
+		ds := &models.Darkstore{
+			DarkstoreID: tempStoreClosedDarkstoreID,
+			OpensAt:     "07:00",
+			ClosesAt:    "23:00",
+		}
+		return s.storeClosedResult(op, ds), nil
+	}
+
 	// Allowlisted users bypass the polygon check entirely and always get a
 	// serviceable result for the fixed dummy store. Runs before any darkstore
 	// lookup so it is independent of DDB / IS_TEST. The address is still
@@ -184,8 +197,7 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 	isOperational := matched.IsOperationalAt(now)
 
 	if !isOperational {
-		nextOpensAt, ok := matched.NextOpensAt(now)
-		if !ok {
+		if _, ok := matched.NextOpensAt(now); !ok {
 			op.With("serviceable", false).
 				With("reason", ReasonStoreInactive).
 				With("darkstore_id", matched.DarkstoreID)
@@ -195,19 +207,7 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 				DarkstoreID: matched.DarkstoreID,
 			}, nil
 		}
-
-		isOp := false
-		op.With("serviceable", false).
-			With("reason", ReasonStoreClosed).
-			With("darkstore_id", matched.DarkstoreID)
-		return &ServiceabilityResult{
-			Serviceable:    false,
-			Reason:         ReasonStoreClosed,
-			DarkstoreID:    matched.DarkstoreID,
-			IsOperational:  &isOp,
-			OperatingHours: hours,
-			NextOpensAt:    nextOpensAt,
-		}, nil
+		return s.storeClosedResult(op, matched), nil
 	}
 
 	op.With("serviceable", true).With("darkstore_id", matched.DarkstoreID)
@@ -252,6 +252,33 @@ func operatingHoursFromDarkstore(ds *models.Darkstore) *OperatingHours {
 		OpensAt:  ds.OpensAt,
 		ClosesAt: ds.ClosesAt,
 		Timezone: models.OperatingHoursTimezone,
+	}
+}
+
+func (s *ServiceabilityService) storeClosedResult(op *logging.Op, ds *models.Darkstore) *ServiceabilityResult {
+	nextOpensAt, ok := ds.NextOpensAt(timezone.Now())
+	if !ok {
+		op.With("serviceable", false).
+			With("reason", ReasonStoreInactive).
+			With("darkstore_id", ds.DarkstoreID)
+		return &ServiceabilityResult{
+			Serviceable: false,
+			Reason:      ReasonStoreInactive,
+			DarkstoreID: ds.DarkstoreID,
+		}
+	}
+
+	isOp := false
+	op.With("serviceable", false).
+		With("reason", ReasonStoreClosed).
+		With("darkstore_id", ds.DarkstoreID)
+	return &ServiceabilityResult{
+		Serviceable:    false,
+		Reason:         ReasonStoreClosed,
+		DarkstoreID:    ds.DarkstoreID,
+		IsOperational:  &isOp,
+		OperatingHours: operatingHoursFromDarkstore(ds),
+		NextOpensAt:    nextOpensAt,
 	}
 }
 
