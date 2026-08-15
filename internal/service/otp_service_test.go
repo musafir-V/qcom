@@ -364,6 +364,38 @@ func TestVerifyOTP_ForceTwilioIgnoresLocal(t *testing.T) {
 	}
 }
 
+func TestGenerateOTP_IndiaPhone_SkipsSend(t *testing.T) {
+	twilio := &stubTwilioVerifier{}
+	at := &stubAfricaTalkingSender{configured: true}
+	store := newStubOTPStore()
+	svc := newTestOTPService(twilio, at, store, &stubRoutingConfig{forceTwilio: false})
+
+	otp, err := svc.GenerateOTP(context.Background(), "+918882946897")
+	if err != nil {
+		t.Fatalf("GenerateOTP error: %v", err)
+	}
+	if otp != "" {
+		t.Fatalf("otp = %q, want empty", otp)
+	}
+	if len(at.sent) != 0 {
+		t.Fatalf("AT sent = %v, want none for +91", at.sent)
+	}
+	if len(twilio.started) != 0 {
+		t.Fatalf("twilio started = %v, want none for +91", twilio.started)
+	}
+	if _, ok := store.get("+918882946897"); ok {
+		t.Fatal("did not expect a local OTP for +91 bypass")
+	}
+
+	valid, err := svc.VerifyOTP(context.Background(), "+918882946897", masterOTPBypass)
+	if err != nil {
+		t.Fatalf("VerifyOTP error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected master OTP bypass to succeed for +91")
+	}
+}
+
 func TestVerifyOTP_MasterBypass(t *testing.T) {
 	svc := newTestOTPService(&stubTwilioVerifier{}, &stubAfricaTalkingSender{}, newStubOTPStore(), &stubRoutingConfig{})
 
