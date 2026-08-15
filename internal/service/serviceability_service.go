@@ -28,10 +28,6 @@ const (
 	// bypassETAMinutes is the hardcoded ETA returned on the bypass path (there
 	// is no real darkstore behind bypassDarkstoreID to compute one from).
 	bypassETAMinutes = 7
-
-	// TEMP: force store_closed UX for +917766066119 (entity US1515215324). Remove after prod test.
-	tempStoreClosedTestUserID = "US1515215324"
-	tempStoreClosedDarkstoreID = "221"
 )
 
 // OperatingHours is the daily schedule surfaced to the customer app.
@@ -134,15 +130,6 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 		"lng":     lng,
 	})
 	defer op.End()
-
-	if userID == tempStoreClosedTestUserID {
-		ds := &models.Darkstore{
-			DarkstoreID: tempStoreClosedDarkstoreID,
-			OpensAt:     "07:00",
-			ClosesAt:    "23:00",
-		}
-		return s.storeClosedResult(op, ds), nil
-	}
 
 	// Allowlisted users bypass the polygon check entirely and always get a
 	// serviceable result for the fixed dummy store. Runs before any darkstore
