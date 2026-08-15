@@ -3,7 +3,9 @@ package service
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -117,6 +119,119 @@ func (s *JWTService) VerifyToken(tokenString string) (*Claims, error) {
 	}
 
 	return claims, nil
+}
+
+// RefreshTokenProbe is a signature-free look at a presented refresh string.
+// Safe to log: no token bytes, phone, or entity_id.
+type RefreshTokenProbe struct {
+	TokenLen             int
+	DotCount             int
+	LooksLikeJWT         bool
+	UnverifiedType       string
+	UnverifiedEntityType string
+	ExpInSec             *int64
+	Expired              bool
+	VerifyClass          string
+	Reason               string
+}
+
+// ProbeRefreshToken classifies a refresh body without logging the secret.
+// verifyErr is the error from VerifyToken, if any.
+func ProbeRefreshToken(raw string, verifyErr error) RefreshTokenProbe {
+	p := RefreshTokenProbe{
+		TokenLen:    len(raw),
+		DotCount:    strings.Count(raw, "."),
+		VerifyClass: classifyVerifyError(verifyErr),
+	}
+
+	var claims Claims
+	if _, _, err := jwt.NewParser().ParseUnverified(raw, &claims); err != nil {
+		p.LooksLikeJWT = false
+		p.Reason = probeReason(p)
+		return p
+	}
+	p.LooksLikeJWT = true
+	p.UnverifiedType = claims.Type
+	p.UnverifiedEntityType = claims.EntityType
+	if claims.ExpiresAt != nil {
+		sec := int64(time.Until(claims.ExpiresAt.Time).Seconds())
+		p.ExpInSec = &sec
+		p.Expired = time.Now().After(claims.ExpiresAt.Time)
+	}
+	p.Reason = probeReason(p)
+	return p
+}
+
+func (p RefreshTokenProbe) LogFields() logrus.Fields {
+	fields := logrus.Fields{
+		"token_len":              p.TokenLen,
+		"dot_count":              p.DotCount,
+		"looks_like_jwt":         p.LooksLikeJWT,
+		"unverified_type":        p.UnverifiedType,
+		"unverified_entity_type": p.UnverifiedEntityType,
+		"expired":                p.Expired,
+		"verify_class":           p.VerifyClass,
+		"probe_reason":           p.Reason,
+	}
+	if p.ExpInSec != nil {
+		fields["exp_in_sec"] = *p.ExpInSec
+	}
+	return fields
+}
+
+func classifyVerifyError(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return "expired"
+	case errors.Is(err, jwt.ErrTokenSignatureInvalid):
+		return "bad_signature"
+	case errors.Is(err, jwt.ErrTokenMalformed):
+		return "malformed"
+	case errors.Is(err, jwt.ErrTokenNotValidYet):
+		return "not_yet_valid"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "expired"):
+		return "expired"
+	case strings.Contains(msg, "malformed") || strings.Contains(msg, "invalid number of segments"):
+		return "malformed"
+	case strings.Contains(msg, "signature"):
+		return "bad_signature"
+	default:
+		return "parse_failed"
+	}
+}
+
+func probeReason(p RefreshTokenProbe) string {
+	if !p.LooksLikeJWT {
+		if p.TokenLen > 0 && p.TokenLen < 80 {
+			return "too_short"
+		}
+		if p.DotCount != 2 {
+			return "not_three_segments"
+		}
+		return "malformed"
+	}
+	if p.UnverifiedType == "access" && p.Expired {
+		return "expired_access_used_as_refresh"
+	}
+	if p.UnverifiedType == "access" {
+		return "access_used_as_refresh"
+	}
+	if p.UnverifiedType == "refresh" && p.Expired {
+		return "refresh_expired"
+	}
+	if p.UnverifiedType != "" && p.UnverifiedType != "refresh" {
+		return "wrong_token_type"
+	}
+	if p.VerifyClass != "" {
+		return p.VerifyClass
+	}
+	return "unknown"
 }
 
 func (s *JWTService) RefreshTokens(refreshTokenString string, familyID string) (*models.TokenPair, string, error) {

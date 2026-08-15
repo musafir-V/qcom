@@ -288,24 +288,31 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.RefreshToken == "" {
+		h.logger.WithFields(logrus.Fields{
+			"code":      "MISSING_TOKEN",
+			"app_type":  appType(r),
+			"token_len": 0,
+		}).Warn("refresh token rejected")
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_TOKEN", "Refresh token is required")
 		return
 	}
 
 	claims, err := h.jwtService.VerifyToken(req.RefreshToken)
 	if err != nil {
-		h.logger.WithFields(logrus.Fields{
-			"code": "INVALID_TOKEN",
-		}).Warn("refresh token rejected")
+		fields := service.ProbeRefreshToken(req.RefreshToken, err).LogFields()
+		fields["code"] = "INVALID_TOKEN"
+		fields["app_type"] = appType(r)
+		h.logger.WithFields(fields).Warn("refresh token rejected")
 		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid refresh token")
 		return
 	}
 
 	if claims.Type != "refresh" {
-		h.logger.WithFields(logrus.Fields{
-			"code": "INVALID_TOKEN_TYPE",
-			"jti":  jtiPrefix(claims.JTI),
-		}).Warn("refresh token rejected")
+		fields := service.ProbeRefreshToken(req.RefreshToken, nil).LogFields()
+		fields["code"] = "INVALID_TOKEN_TYPE"
+		fields["jti"] = jtiPrefix(claims.JTI)
+		fields["app_type"] = appType(r)
+		h.logger.WithFields(fields).Warn("refresh token rejected")
 		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN_TYPE", "Token is not a refresh token")
 		return
 	}
@@ -342,10 +349,11 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		if errors.Is(err, service.ErrRefreshTokenRevoked) {
-			h.logger.WithFields(logrus.Fields{
-				"code": "TOKEN_REVOKED",
-				"jti":  jtiPrefix(claims.JTI),
-			}).Warn("refresh token rejected")
+			fields := service.ProbeRefreshToken(req.RefreshToken, nil).LogFields()
+			fields["code"] = "TOKEN_REVOKED"
+			fields["jti"] = jtiPrefix(claims.JTI)
+			fields["app_type"] = appType(r)
+			h.logger.WithFields(fields).Warn("refresh token rejected")
 			h.respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
 			return
 		}
