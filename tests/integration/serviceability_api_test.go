@@ -149,6 +149,27 @@ func seedTestDarkstoresWithOverrides(t *testing.T, mutate func(*models.Darkstore
 
 // ── request helper ────────────────────────────────────────────────────────
 
+func assertMatchedStore(t *testing.T, data map[string]interface{}, id string, lat, lng float64) {
+	t.Helper()
+	if data["darkstore_id"].(string) != id {
+		t.Fatalf("expected darkstore_id %s, got %v", id, data["darkstore_id"])
+	}
+	gotLat, ok := data["latitude"].(float64)
+	if !ok {
+		t.Fatal("expected store latitude in response")
+	}
+	if gotLat != lat {
+		t.Fatalf("expected latitude %v, got %v", lat, gotLat)
+	}
+	gotLng, ok := data["longitude"].(float64)
+	if !ok {
+		t.Fatal("expected store longitude in response")
+	}
+	if gotLng != lng {
+		t.Fatalf("expected longitude %v, got %v", lng, gotLng)
+	}
+}
+
 func doServiceabilityRequest(t *testing.T, token string, body interface{}) (*http.Response, map[string]interface{}) {
 	t.Helper()
 	return doServiceabilityRequestWithHeaders(t, token, nil, body)
@@ -186,9 +207,7 @@ func TestServiceability_GuestNoAuth(t *testing.T) {
 	if data["serviceable"].(bool) != true {
 		t.Fatal("expected serviceable=true for guest")
 	}
-	if data["darkstore_id"].(string) != "DS-TEST-1" {
-		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
-	}
+	assertMatchedStore(t, data, "DS-TEST-1", 12.975, 77.640)
 
 	ra := data["resolved_address"].(map[string]interface{})
 	if ra["source"].(string) != "geocoded" {
@@ -336,6 +355,12 @@ func TestServiceability_Unserviceable(t *testing.T) {
 	if _, present := data["eta_minutes"]; present {
 		t.Fatalf("unserviceable response must not include eta_minutes, got %v", data["eta_minutes"])
 	}
+	if _, present := data["latitude"]; present {
+		t.Fatal("outside_delivery_zone response must not include store latitude")
+	}
+	if _, present := data["longitude"]; present {
+		t.Fatal("outside_delivery_zone response must not include store longitude")
+	}
 }
 
 func TestServiceability_StoreInactive(t *testing.T) {
@@ -360,9 +385,7 @@ func TestServiceability_StoreInactive(t *testing.T) {
 	if data["reason"].(string) != service.ReasonStoreInactive {
 		t.Fatalf("expected reason %q, got %v", service.ReasonStoreInactive, data["reason"])
 	}
-	if data["darkstore_id"].(string) != "DS-TEST-1" {
-		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
-	}
+	assertMatchedStore(t, data, "DS-TEST-1", 12.975, 77.640)
 	if _, present := data["operating_hours"]; present {
 		t.Fatal("store_inactive response must not include operating_hours")
 	}
@@ -392,9 +415,7 @@ func TestServiceability_StoreClosed(t *testing.T) {
 	if data["reason"].(string) != service.ReasonStoreClosed {
 		t.Fatalf("expected reason %q, got %v", service.ReasonStoreClosed, data["reason"])
 	}
-	if data["darkstore_id"].(string) != "DS-TEST-1" {
-		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
-	}
+	assertMatchedStore(t, data, "DS-TEST-1", 12.975, 77.640)
 	if data["is_operational"].(bool) != false {
 		t.Fatalf("expected is_operational=false, got %v", data["is_operational"])
 	}
@@ -433,9 +454,7 @@ func TestServiceability_ServiceableGeocoded(t *testing.T) {
 	if data["serviceable"].(bool) != true {
 		t.Fatal("expected serviceable=true")
 	}
-	if data["darkstore_id"].(string) != "DS-TEST-1" {
-		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
-	}
+	assertMatchedStore(t, data, "DS-TEST-1", 12.975, 77.640)
 	if data["is_operational"].(bool) != true {
 		t.Fatalf("expected is_operational=true, got %v", data["is_operational"])
 	}
@@ -493,9 +512,7 @@ func TestServiceability_SecondDarkstore(t *testing.T) {
 	if data["serviceable"].(bool) != true {
 		t.Fatal("expected serviceable=true")
 	}
-	if data["darkstore_id"].(string) != "DS-TEST-2" {
-		t.Fatalf("expected darkstore_id DS-TEST-2, got %v", data["darkstore_id"])
-	}
+	assertMatchedStore(t, data, "DS-TEST-2", 12.93, 77.62)
 	if _, present := data["eta_minutes"]; !present {
 		t.Fatal("serviceable response must include eta_minutes")
 	}
@@ -524,9 +541,7 @@ func TestServiceability_ServiceableSavedAddress(t *testing.T) {
 	}
 
 	data := result["data"].(map[string]interface{})
-	if data["darkstore_id"].(string) != "DS-TEST-1" {
-		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
-	}
+	assertMatchedStore(t, data, "DS-TEST-1", 12.975, 77.640)
 
 	ra := data["resolved_address"].(map[string]interface{})
 	if ra["source"].(string) != "saved_address" {
@@ -667,9 +682,7 @@ func TestServiceability_GeocodeFailureIsGraceful(t *testing.T) {
 	if data["serviceable"].(bool) != true {
 		t.Fatal("location should still be serviceable when geocoding fails")
 	}
-	if data["darkstore_id"].(string) != "DS-TEST-1" {
-		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
-	}
+	assertMatchedStore(t, data, "DS-TEST-1", 12.975, 77.640)
 	if _, present := data["resolved_address"]; present {
 		t.Fatalf("resolved_address should be omitted when geocoding fails, got %v", data["resolved_address"])
 	}
@@ -701,9 +714,7 @@ func TestServiceability_ETAFailureIsGraceful(t *testing.T) {
 	if data["serviceable"].(bool) != true {
 		t.Fatal("location must still be serviceable when ETA service fails")
 	}
-	if data["darkstore_id"].(string) != "DS-TEST-1" {
-		t.Fatalf("expected darkstore_id DS-TEST-1, got %v", data["darkstore_id"])
-	}
+	assertMatchedStore(t, data, "DS-TEST-1", 12.975, 77.640)
 	if _, present := data["eta_minutes"]; present {
 		t.Fatalf("eta_minutes must be omitted when ETA service fails, got %v", data["eta_minutes"])
 	}

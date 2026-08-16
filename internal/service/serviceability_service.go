@@ -47,14 +47,16 @@ type ResolvedAddress struct {
 
 // ServiceabilityResult is the outcome of a serviceability check.
 type ServiceabilityResult struct {
-	Serviceable     bool              `json:"serviceable"`
-	Reason          string            `json:"reason,omitempty"`
-	DarkstoreID     string            `json:"darkstore_id,omitempty"`
-	IsOperational   *bool             `json:"is_operational,omitempty"`
-	OperatingHours  *OperatingHours   `json:"operating_hours,omitempty"`
-	NextOpensAt     string            `json:"next_opens_at,omitempty"`
-	ResolvedAddress *ResolvedAddress  `json:"resolved_address,omitempty"`
-	ETAMinutes      *int              `json:"eta_minutes,omitempty"`
+	Serviceable     bool             `json:"serviceable"`
+	Reason          string           `json:"reason,omitempty"`
+	DarkstoreID     string           `json:"darkstore_id,omitempty"`
+	Latitude        float64          `json:"latitude,omitempty"`
+	Longitude       float64          `json:"longitude,omitempty"`
+	IsOperational   *bool            `json:"is_operational,omitempty"`
+	OperatingHours  *OperatingHours  `json:"operating_hours,omitempty"`
+	NextOpensAt     string           `json:"next_opens_at,omitempty"`
+	ResolvedAddress *ResolvedAddress `json:"resolved_address,omitempty"`
+	ETAMinutes      *int             `json:"eta_minutes,omitempty"`
 }
 
 type ServiceabilityService struct {
@@ -176,11 +178,10 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 		op.With("serviceable", false).
 			With("reason", ReasonStoreInactive).
 			With("darkstore_id", matched.DarkstoreID)
-		return &ServiceabilityResult{
+		return attachStore(&ServiceabilityResult{
 			Serviceable: false,
 			Reason:      ReasonStoreInactive,
-			DarkstoreID: matched.DarkstoreID,
-		}, nil
+		}, matched), nil
 	}
 
 	now := timezone.Now()
@@ -192,23 +193,21 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 			op.With("serviceable", false).
 				With("reason", ReasonStoreInactive).
 				With("darkstore_id", matched.DarkstoreID)
-			return &ServiceabilityResult{
+			return attachStore(&ServiceabilityResult{
 				Serviceable: false,
 				Reason:      ReasonStoreInactive,
-				DarkstoreID: matched.DarkstoreID,
-			}, nil
+			}, matched), nil
 		}
 		return s.storeClosedResult(op, matched), nil
 	}
 
 	op.With("serviceable", true).With("darkstore_id", matched.DarkstoreID)
 	isOp := true
-	result := &ServiceabilityResult{
+	result := attachStore(&ServiceabilityResult{
 		Serviceable:    true,
-		DarkstoreID:    matched.DarkstoreID,
 		IsOperational:  &isOp,
 		OperatingHours: hours,
-	}
+	}, matched)
 
 	if s.isTest {
 		op.Logger().Warn("IS_TEST/IS_TRUE is set; using hardcoded ETA")
@@ -246,31 +245,38 @@ func operatingHoursFromDarkstore(ds *models.Darkstore) *OperatingHours {
 	}
 }
 
+// attachStore copies the matched darkstore's id and centre coordinates onto
+// the result. Bypass results skip this — there is no real store behind id 100.
+func attachStore(result *ServiceabilityResult, ds *models.Darkstore) *ServiceabilityResult {
+	result.DarkstoreID = ds.DarkstoreID
+	result.Latitude = ds.Latitude
+	result.Longitude = ds.Longitude
+	return result
+}
+
 func (s *ServiceabilityService) storeClosedResult(op *logging.Op, ds *models.Darkstore) *ServiceabilityResult {
 	nextOpensAt, ok := ds.NextOpensAt(timezone.Now())
 	if !ok {
 		op.With("serviceable", false).
 			With("reason", ReasonStoreInactive).
 			With("darkstore_id", ds.DarkstoreID)
-		return &ServiceabilityResult{
+		return attachStore(&ServiceabilityResult{
 			Serviceable: false,
 			Reason:      ReasonStoreInactive,
-			DarkstoreID: ds.DarkstoreID,
-		}
+		}, ds)
 	}
 
 	isOp := false
 	op.With("serviceable", false).
 		With("reason", ReasonStoreClosed).
 		With("darkstore_id", ds.DarkstoreID)
-	return &ServiceabilityResult{
+	return attachStore(&ServiceabilityResult{
 		Serviceable:    false,
 		Reason:         ReasonStoreClosed,
-		DarkstoreID:    ds.DarkstoreID,
 		IsOperational:  &isOp,
 		OperatingHours: operatingHoursFromDarkstore(ds),
 		NextOpensAt:    nextOpensAt,
-	}
+	}, ds)
 }
 
 // excludeDarkstoreID returns a copy of stores with the given ID removed.

@@ -86,6 +86,8 @@ Content-Type: application/json
   "data": {
     "serviceable": true,
     "darkstore_id": "ds_mumbai_powai_01",
+    "latitude": -15.4167,
+    "longitude": 28.2833,
     "resolved_address": {
       "address_line": "Flat 4B, Sapphire Heights",
       "tag": "home",
@@ -104,6 +106,8 @@ Content-Type: application/json
 | `serviceable` | boolean | **yes** | `true` iff the coordinate lies inside a darkstore polygon, the store is active, and the store is within its operating hours. The *only* field guaranteed to be present. |
 | `reason` | string | only when `serviceable=false` | Why the location is not serviceable. One of `outside_delivery_zone`, `store_inactive`, `store_closed`. |
 | `darkstore_id` | string | when a polygon match exists | Stable ID of the matched darkstore. Present for serviceable responses and for `store_inactive` / `store_closed`. Omitted for `outside_delivery_zone`. |
+| `latitude` | number | when a polygon match exists | Centre latitude of the matched darkstore. Omitted for `outside_delivery_zone` and for the synthetic bypass store (`100`). |
+| `longitude` | number | when a polygon match exists | Centre longitude of the matched darkstore. Omitted for `outside_delivery_zone` and for the synthetic bypass store (`100`). |
 | `is_operational` | boolean | when a polygon match exists and hours are valid | `true` when the matched store is within its daily operating window (Africa/Lusaka). `false` for `store_closed`. Omitted for `outside_delivery_zone` and `store_inactive`. |
 | `operating_hours` | object | when a polygon match exists and hours are valid | Daily schedule in Zambia time. Omitted for `outside_delivery_zone` and `store_inactive`. |
 | `next_opens_at` | string | only when `reason=store_closed` | Next opening instant as RFC3339 in `Africa/Lusaka`. |
@@ -156,7 +160,9 @@ The response shape is deliberately sparse — fields are *omitted*, not nulled, 
   "data": {
     "serviceable": false,
     "reason": "store_inactive",
-    "darkstore_id": "ds_lusaka_01"
+    "darkstore_id": "ds_lusaka_01",
+    "latitude": -15.4167,
+    "longitude": 28.2833
   }
 }
 ```
@@ -175,6 +181,8 @@ The response shape is deliberately sparse — fields are *omitted*, not nulled, 
     "serviceable": false,
     "reason": "store_closed",
     "darkstore_id": "ds_lusaka_01",
+    "latitude": -15.4167,
+    "longitude": 28.2833,
     "is_operational": false,
     "operating_hours": {
       "opens_at": "08:00",

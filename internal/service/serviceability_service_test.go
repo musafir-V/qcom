@@ -89,6 +89,31 @@ func TestNewBypassResult(t *testing.T) {
 	if result.ResolvedAddress != nil {
 		t.Error("base bypass result must not set resolved_address")
 	}
+	// Dummy store 100 has no real coordinates.
+	if result.Latitude != 0 || result.Longitude != 0 {
+		t.Errorf("bypass result must omit store coordinates, got lat=%v lng=%v", result.Latitude, result.Longitude)
+	}
+}
+
+func TestAttachStore(t *testing.T) {
+	ds := &models.Darkstore{
+		DarkstoreID: "221",
+		Latitude:    -15.4167,
+		Longitude:   28.2833,
+	}
+	result := attachStore(&ServiceabilityResult{Serviceable: true}, ds)
+	if result.DarkstoreID != "221" {
+		t.Errorf("darkstore_id = %q, want 221", result.DarkstoreID)
+	}
+	if result.Latitude != -15.4167 {
+		t.Errorf("latitude = %v, want -15.4167", result.Latitude)
+	}
+	if result.Longitude != 28.2833 {
+		t.Errorf("longitude = %v, want 28.2833", result.Longitude)
+	}
+	if !result.Serviceable {
+		t.Error("attachStore must leave other fields intact")
+	}
 }
 
 func TestExcludeDarkstoreID(t *testing.T) {
