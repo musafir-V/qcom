@@ -89,9 +89,38 @@ func TestNewBypassResult(t *testing.T) {
 	if result.ResolvedAddress != nil {
 		t.Error("base bypass result must not set resolved_address")
 	}
-	// Dummy store 100 has no real coordinates.
+	// Base builder has no coords; CheckServiceability attaches store 100's
+	// centre from DDB when the row exists.
 	if result.Latitude != 0 || result.Longitude != 0 {
-		t.Errorf("bypass result must omit store coordinates, got lat=%v lng=%v", result.Latitude, result.Longitude)
+		t.Errorf("base bypass result must not set store coordinates, got lat=%v lng=%v", result.Latitude, result.Longitude)
+	}
+}
+
+func TestAttachBypassStoreCoords_NilRepoIsNoOp(t *testing.T) {
+	svc := newBypassTestService([]string{"user-abc"})
+	result := newBypassResult()
+	op := logging.Start(context.Background(), svc.logger, "test", nil)
+	svc.attachBypassStoreCoords(context.Background(), op, result)
+	if result.Latitude != 0 || result.Longitude != 0 {
+		t.Errorf("nil repo must leave coords unset, got lat=%v lng=%v", result.Latitude, result.Longitude)
+	}
+}
+
+func TestAttachStore_OnBypassResult(t *testing.T) {
+	result := newBypassResult()
+	attachStore(result, &models.Darkstore{
+		DarkstoreID: "100",
+		Latitude:    12.9784,
+		Longitude:   77.6408,
+	})
+	if result.Latitude != 12.9784 || result.Longitude != 77.6408 {
+		t.Errorf("expected store 100 coords, got lat=%v lng=%v", result.Latitude, result.Longitude)
+	}
+	if result.DarkstoreID != "100" {
+		t.Errorf("darkstore_id = %q, want 100", result.DarkstoreID)
+	}
+	if !result.Serviceable {
+		t.Error("attachStore must leave bypass serviceable=true intact")
 	}
 }
 

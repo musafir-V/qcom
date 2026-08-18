@@ -106,8 +106,8 @@ Content-Type: application/json
 | `serviceable` | boolean | **yes** | `true` iff the coordinate lies inside a darkstore polygon, the store is active, and the store is within its operating hours. The *only* field guaranteed to be present. |
 | `reason` | string | only when `serviceable=false` | Why the location is not serviceable. One of `outside_delivery_zone`, `store_inactive`, `store_closed`. |
 | `darkstore_id` | string | when a polygon match exists | Stable ID of the matched darkstore. Present for serviceable responses and for `store_inactive` / `store_closed`. Omitted for `outside_delivery_zone`. |
-| `latitude` | number | when a polygon match exists | Centre latitude of the matched darkstore. Omitted for `outside_delivery_zone` and for the synthetic bypass store (`100`). |
-| `longitude` | number | when a polygon match exists | Centre longitude of the matched darkstore. Omitted for `outside_delivery_zone` and for the synthetic bypass store (`100`). |
+| `latitude` | number | when a store is attached | Centre latitude of the matched darkstore, including bypass store `100` when that row has coordinates. Omitted for `outside_delivery_zone`. |
+| `longitude` | number | when a store is attached | Centre longitude of the matched darkstore, including bypass store `100` when that row has coordinates. Omitted for `outside_delivery_zone`. |
 | `is_operational` | boolean | when a polygon match exists and hours are valid | `true` when the matched store is within its daily operating window (Africa/Lusaka). `false` for `store_closed`. Omitted for `outside_delivery_zone` and `store_inactive`. |
 | `operating_hours` | object | when a polygon match exists and hours are valid | Daily schedule in Zambia time. Omitted for `outside_delivery_zone` and `store_inactive`. |
 | `next_opens_at` | string | only when `reason=store_closed` | Next opening instant as RFC3339 in `Africa/Lusaka`. |

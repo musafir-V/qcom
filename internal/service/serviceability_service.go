@@ -134,15 +134,17 @@ func (s *ServiceabilityService) CheckServiceability(ctx context.Context, userID 
 	defer op.End()
 
 	// Allowlisted users bypass the polygon check entirely and always get a
-	// serviceable result for the fixed dummy store. Runs before any darkstore
-	// lookup so it is independent of DDB / IS_TEST. The address is still
-	// resolved through the normal saved-address -> geocode path.
+	// serviceable result for the fixed dummy store. Address resolution still
+	// follows the normal saved-address -> geocode path. Store 100's centre
+	// is attached when the DDB row exists; a lookup miss does not fail the
+	// bypass (the user stays serviceable).
 	if s.isBypassUser(userID) {
 		op.Logger().Warn("user in serviceability bypass allowlist; skipping polygon check")
 		op.With("serviceable", true).
 			With("darkstore_id", bypassDarkstoreID).
 			With("bypass", true)
 		result := newBypassResult()
+		s.attachBypassStoreCoords(ctx, op, result)
 
 		resolved, err := s.resolveFromSavedAddress(ctx, userID, lat, lng)
 		if err != nil {
@@ -246,12 +248,31 @@ func operatingHoursFromDarkstore(ds *models.Darkstore) *OperatingHours {
 }
 
 // attachStore copies the matched darkstore's id and centre coordinates onto
-// the result. Bypass results skip this — there is no real store behind id 100.
+// the result.
 func attachStore(result *ServiceabilityResult, ds *models.Darkstore) *ServiceabilityResult {
 	result.DarkstoreID = ds.DarkstoreID
 	result.Latitude = ds.Latitude
 	result.Longitude = ds.Longitude
 	return result
+}
+
+// attachBypassStoreCoords loads dummy store 100 and copies its centre onto the
+// bypass result. Lookup failures are logged and ignored so the allowlisted
+// user still gets a serviceable response.
+func (s *ServiceabilityService) attachBypassStoreCoords(ctx context.Context, op *logging.Op, result *ServiceabilityResult) {
+	if s.darkstoreRepo == nil {
+		return
+	}
+	ds, err := s.darkstoreRepo.GetByID(ctx, bypassDarkstoreID)
+	if err != nil {
+		op.Logger().WithError(err).Warn("failed to load bypass store coordinates")
+		return
+	}
+	if ds == nil {
+		op.Logger().Warn("bypass store not found; omitting coordinates")
+		return
+	}
+	attachStore(result, ds)
 }
 
 func (s *ServiceabilityService) storeClosedResult(op *logging.Op, ds *models.Darkstore) *ServiceabilityResult {
