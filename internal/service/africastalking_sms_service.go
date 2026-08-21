@@ -20,6 +20,7 @@ const (
 	africaTalkingDefaultBaseURL = "https://api.africastalking.com"
 	africaTalkingHTTPTimeout    = 10 * time.Second
 	africaTalkingBulkPath       = "/version1/messaging/bulk"
+	africaTalkingSenderID       = "BUNZO"
 )
 
 type AfricaTalkingSMSService struct {
@@ -71,10 +72,14 @@ func (s *AfricaTalkingSMSService) SendOTP(ctx context.Context, phoneNumber, otp 
 
 	payload := struct {
 		Username     string   `json:"username"`
+		From         string   `json:"from"`
+		SenderID     string   `json:"senderId"`
 		Message      string   `json:"message"`
 		PhoneNumbers []string `json:"phoneNumbers"`
 	}{
 		Username:     s.username,
+		From:         africaTalkingSenderID,
+		SenderID:     africaTalkingSenderID,
 		Message:      fmt.Sprintf("Your OTP to log into Bunzo is %s", otp),
 		PhoneNumbers: []string{phoneNumber},
 	}

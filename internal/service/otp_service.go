@@ -71,8 +71,7 @@ func NewOTPService(
 }
 
 // GenerateOTP routes to Africa's Talking (default) or Twilio Verify.
-// MTN Zambia prefixes +26076 / +26096 always use Twilio when the kill-switch
-// is off. +91 numbers skip SMS entirely (use masterOTPBypass on verify).
+// +91 numbers skip SMS entirely (use masterOTPBypass on verify).
 // The OTP string is never returned to callers (Twilio owns its codes;
 // AT codes stay in the local store). On provider failure after failover,
 // returns soft success ("", nil) so clients can still use masterOTPBypass.
@@ -169,7 +168,7 @@ func (s *OTPService) VerifyOTP(ctx context.Context, phoneNumber, otp string) (bo
 	forceTwilio := s.forceTwilio(ctx)
 	op.With("force_twilio", forceTwilio)
 
-	if forceTwilio || isMTNZambiaTwilioPrefix(phoneNumber) {
+	if forceTwilio {
 		return s.verifyViaTwilio(ctx, op, phoneNumber, otp)
 	}
 

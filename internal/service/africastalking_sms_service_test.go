@@ -72,6 +72,12 @@ func TestAfricaTalkingSMSService_SendOTP_PostsJSON(t *testing.T) {
 	if gotBody["username"] != "bunzo" {
 		t.Fatalf("username = %v", gotBody["username"])
 	}
+	if gotBody["from"] != "BUNZO" {
+		t.Fatalf("from = %v", gotBody["from"])
+	}
+	if gotBody["senderId"] != "BUNZO" {
+		t.Fatalf("senderId = %v", gotBody["senderId"])
+	}
 	if gotBody["message"] != "Your OTP to log into Bunzo is 123456" {
 		t.Fatalf("message = %v", gotBody["message"])
 	}

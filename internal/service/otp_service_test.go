@@ -140,6 +140,31 @@ func newTestOTPService(
 	}
 }
 
+func TestGenerateOTP_MTNPrefixes_UseAfricaTalking(t *testing.T) {
+	phones := []string{"+260768737229", "+260968210256"}
+	for _, phone := range phones {
+		t.Run(phone, func(t *testing.T) {
+			twilio := &stubTwilioVerifier{}
+			at := &stubAfricaTalkingSender{configured: true}
+			store := newStubOTPStore()
+			svc := newTestOTPService(twilio, at, store, &stubRoutingConfig{forceTwilio: false})
+
+			if _, err := svc.GenerateOTP(context.Background(), phone); err != nil {
+				t.Fatalf("GenerateOTP error: %v", err)
+			}
+			if len(twilio.started) != 0 {
+				t.Fatalf("twilio started = %v, want none (MTN now AT)", twilio.started)
+			}
+			if len(at.sent) != 1 {
+				t.Fatalf("AT sent = %v, want 1 call", at.sent)
+			}
+			if _, ok := store.get(phone); !ok {
+				t.Fatal("expected OTP stored after successful AT send")
+			}
+		})
+	}
+}
+
 func TestGenerateOTP_Digit2_UsesAfricaTalking(t *testing.T) {
 	twilio := &stubTwilioVerifier{}
 	at := &stubAfricaTalkingSender{configured: true}
@@ -656,6 +681,29 @@ func TestVerifyOTP_LocalMaxAttempts(t *testing.T) {
 	}
 	if _, ok := store.get(phone); ok {
 		t.Fatal("OTP should be deleted after max attempts")
+	}
+}
+
+func TestVerifyOTP_MTN_LocalWinsIfPresent(t *testing.T) {
+	twilio := &stubTwilioVerifier{checkOK: true}
+	store := newStubOTPStore()
+	phone := "+260768737229"
+	hash, _ := bcrypt.GenerateFromPassword([]byte("654321"), bcrypt.MinCost)
+	_ = store.Store(context.Background(), phone, models.OTPData{
+		OTP: "654321", OTPHash: string(hash), Phone: phone,
+		ExpiresAt: time.Now().Add(time.Minute),
+	})
+	svc := newTestOTPService(twilio, &stubAfricaTalkingSender{configured: true}, store, &stubRoutingConfig{})
+
+	valid, err := svc.VerifyOTP(context.Background(), phone, "654321")
+	if err != nil {
+		t.Fatalf("VerifyOTP error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected local verify success for MTN when OTP row exists")
+	}
+	if len(twilio.checked) != 0 {
+		t.Fatalf("should not call Twilio when local OTP present; checked=%v", twilio.checked)
 	}
 }
 
