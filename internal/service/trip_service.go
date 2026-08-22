@@ -96,6 +96,7 @@ func NewTripService(
 	payoutService *PayoutService,
 	notifier NotificationService,
 	statusEventRepo *repository.DEStatusEventRepository,
+	reachedConfig reachedConfigStore,
 	logger *logrus.Logger,
 ) *TripService {
 	return &TripService{
@@ -105,6 +106,7 @@ func NewTripService(
 		payoutService:   payoutService,
 		notifier:        notifier,
 		statusEventRepo: statusEventRepo,
+		reachedConfig:   reachedConfig,
 		logger:          logger,
 	}
 }

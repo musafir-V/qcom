@@ -42,7 +42,7 @@ func (h *TripHandlers) GetCurrentTrip(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/v1/trip/{tripId}/task/{taskId}/status/update
-// Body: { "status": "completed" }
+// Body: { "status", "otp", "photo_s3_key", "lat", "lng" }
 func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	tripID := vars["tripId"]
@@ -55,9 +55,11 @@ func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req struct {
-		Status     string `json:"status"`
-		OTP        string `json:"otp"`
-		PhotoS3Key string `json:"photo_s3_key"`
+		Status     string   `json:"status"`
+		OTP        string   `json:"otp"`
+		PhotoS3Key string   `json:"photo_s3_key"`
+		Lat        *float64 `json:"lat"`
+		Lng        *float64 `json:"lng"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
@@ -69,7 +71,7 @@ func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	newStatus := models.TaskStatus(req.Status)
-	_, err := h.tripService.UpdateTaskStatus(r.Context(), tripID, taskID, phone, newStatus, req.OTP, req.PhotoS3Key, nil, nil)
+	result, err := h.tripService.UpdateTaskStatus(r.Context(), tripID, taskID, phone, newStatus, req.OTP, req.PhotoS3Key, req.Lat, req.Lng)
 	if err != nil {
 		status, code := classifyTaskUpdateError(err)
 		if status == http.StatusInternalServerError {
@@ -81,7 +83,7 @@ func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+	h.respondWithJSON(w, http.StatusOK, result)
 }
 
 // classifyTaskUpdateError maps a TripService.UpdateTaskStatus error to an HTTP
@@ -101,6 +103,12 @@ func classifyTaskUpdateError(err error) (status int, code string) {
 		return http.StatusBadRequest, "INVALID_OTP"
 	case errors.Is(err, service.ErrInvalidTransition):
 		return http.StatusBadRequest, "INVALID_TASK_TRANSITION"
+	case errors.Is(err, service.ErrDropNotReached):
+		return http.StatusBadRequest, "DROP_NOT_REACHED"
+	case errors.Is(err, service.ErrMissingLocation):
+		return http.StatusBadRequest, "MISSING_LOCATION"
+	case errors.Is(err, service.ErrInvalidCoordinates):
+		return http.StatusBadRequest, "INVALID_COORDINATES"
 	default:
 		return http.StatusInternalServerError, "UPDATE_FAILED"
 	}

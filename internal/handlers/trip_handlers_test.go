@@ -59,6 +59,24 @@ func TestClassifyTaskUpdateError(t *testing.T) {
 			wantCode:   "INVALID_TASK_TRANSITION",
 		},
 		{
+			name:       "drop not reached",
+			err:        fmt.Errorf("%w", service.ErrDropNotReached),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "DROP_NOT_REACHED",
+		},
+		{
+			name:       "missing location",
+			err:        fmt.Errorf("%w", service.ErrMissingLocation),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "MISSING_LOCATION",
+		},
+		{
+			name:       "invalid coordinates",
+			err:        fmt.Errorf("%w", service.ErrInvalidCoordinates),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "INVALID_COORDINATES",
+		},
+		{
 			name:       "unknown error defaults to 500",
 			err:        errors.New("dynamodb timeout"),
 			wantStatus: http.StatusInternalServerError,

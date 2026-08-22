@@ -104,7 +104,7 @@ func main() {
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
-	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, deStatusEventRepo, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, deStatusEventRepo, tripReachedConfigRepo, logger)
 	adminService := service.NewAdminService(tripRepo, deRepo, cashConfigRepo, deStatusEventRepo, notificationService, logger)
 	appCtx, appCancel := context.WithCancel(context.Background())
 	ruleCache := service.NewRuleCache(ruleRepo, 60*time.Second, logger)
