@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -28,10 +29,28 @@ var (
 	ErrPrerequisiteIncomplete = errors.New("prerequisite task incomplete")
 	ErrInvalidTransition      = errors.New("invalid task transition")
 	ErrDropNotReached         = errors.New("drop not reached")
+	ErrMissingLocation        = errors.New("missing location")
+	ErrInvalidCoordinates     = errors.New("invalid coordinates")
 	ErrInvalidOTP             = errors.New("invalid OTP")
 	ErrInvalidTripTransition  = errors.New("invalid trip transition")
 	ErrPickupOrderMismatch    = errors.New("scanned order does not match assigned trip")
 )
+
+// TaskUpdateResult is returned by UpdateTaskStatus. Status is always "updated"
+// on success. Distance fields are set only for drop-reached when customer
+// coordinates are usable.
+type TaskUpdateResult struct {
+	Status         string   `json:"status"`
+	WithinRadius   *bool    `json:"within_radius,omitempty"`
+	DistanceMeters *float64 `json:"distance_meters,omitempty"`
+	RadiusMeters   *float64 `json:"radius_meters,omitempty"`
+}
+
+// reachedConfigStore loads the drop-reached geofence / compat flag.
+// A nil store on TripService applies the same defaults as a missing row.
+type reachedConfigStore interface {
+	Get(ctx context.Context) (*models.TripReachedConfig, error)
+}
 
 // tripRepoI is the subset of TripRepository methods used by TripService.
 // Using an interface here allows unit tests to inject stub implementations
@@ -66,6 +85,7 @@ type TripService struct {
 	payoutService   *PayoutService
 	notifier        NotificationService
 	statusEventRepo statusEventAppender
+	reachedConfig   reachedConfigStore
 	logger          *logrus.Logger
 }
 
@@ -305,7 +325,8 @@ func (s *TripService) GetCurrentTrip(ctx context.Context, dePhone string) (*mode
 // UpdateTaskStatus validates and applies a task status transition.
 // callerDEPhone is extracted from the JWT and used to verify trip ownership.
 // photoS3Key is optional; when non-empty it is stored on the task record before persistence.
-func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, callerDEPhone string, newStatus models.TaskStatus, otp, photoS3Key string) error {
+// lat/lng are required for drop reached; ignored for pickup reached and for complete.
+func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, callerDEPhone string, newStatus models.TaskStatus, otp, photoS3Key string, lat, lng *float64) (*TaskUpdateResult, error) {
 	op := logging.Start(ctx, s.logger, "TripService.UpdateTaskStatus", logrus.Fields{
 		"trip_id": tripID, "task_id": taskID, "new_status": string(newStatus),
 	})
@@ -314,56 +335,93 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 	// 1. Fetch trip
 	trip, err := s.tripRepo.GetByID(ctx, tripID)
 	if err != nil {
-		return op.Fail(err)
+		return nil, op.Fail(err)
 	}
 	if trip == nil {
-		return op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTripNotFound, tripID))
+		return nil, op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTripNotFound, tripID))
 	}
 
 	// 2. Verify caller owns this trip
 	de, err := s.deRepo.GetByPhone(ctx, callerDEPhone)
 	if err != nil {
-		return op.Fail(err)
+		return nil, op.Fail(err)
 	}
 	if de == nil {
-		return op.Outcome("forbidden", ErrTripForbidden)
+		return nil, op.Outcome("forbidden", ErrTripForbidden)
 	}
 	if trip.DEID != de.DEID {
-		return op.Outcome("forbidden", ErrTripForbidden)
+		return nil, op.Outcome("forbidden", ErrTripForbidden)
 	}
 
 	// 3. Trip-level guard: reject if already closed
 	if trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled {
-		return op.Outcome("trip_closed", fmt.Errorf("%w: %s", ErrTripClosed, trip.Status))
+		return nil, op.Outcome("trip_closed", fmt.Errorf("%w: %s", ErrTripClosed, trip.Status))
 	}
 
 	// 4. Find task
 	task := trip.TaskByID(taskID)
 	if task == nil {
-		return op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTaskNotFound, taskID))
+		return nil, op.Outcome("not_found", fmt.Errorf("%w: %s", ErrTaskNotFound, taskID))
 	}
 
-	// 5. Validate the specific transition
-	if err := validateTaskTransition(*task, newStatus, false); err != nil {
-		return op.Outcome("invalid_transition", err)
+	// Pickup reached is a no-op: no writes, lat/lng ignored.
+	if task.Type == models.TaskTypePickup && newStatus == models.TaskStatusReached {
+		return &TaskUpdateResult{Status: "updated"}, nil
+	}
+
+	if newStatus == models.TaskStatusReached {
+		if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
+			return nil, op.Outcome("prerequisite_incomplete", err)
+		}
+		if task.Status == models.TaskStatusCompleted {
+			return nil, op.Outcome("invalid_transition", fmt.Errorf("%w: task is already completed", ErrInvalidTransition))
+		}
+		if task.Status != models.TaskStatusReached {
+			if err := validateTaskTransition(*task, newStatus, false); err != nil {
+				return nil, op.Outcome("invalid_transition", err)
+			}
+		}
+		if err := validateDriverCoords(lat, lng); err != nil {
+			outcome := "missing_location"
+			if errors.Is(err, ErrInvalidCoordinates) {
+				outcome = "invalid_coordinates"
+			}
+			return nil, op.Outcome(outcome, err)
+		}
+		result, err := s.applyDropReached(ctx, trip, task, *lat, *lng)
+		if err != nil {
+			return nil, op.Fail(err)
+		}
+		return result, nil
+	}
+
+	cfg, err := s.loadReachedConfig(ctx)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+	if err := validateTaskTransition(*task, newStatus, cfg.RequireReached()); err != nil {
+		return nil, op.Outcome("invalid_transition", err)
 	}
 
 	// Trip-status gate: pickup requires accepted, drop requires out_for_delivery.
 	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
-		return op.Outcome("prerequisite_incomplete", err)
+		return nil, op.Outcome("prerequisite_incomplete", err)
 	}
 
 	// Drop completion requires the customer OTP.
 	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
 		if err := validateDropOTP(*task, otp); err != nil {
-			return op.Outcome("invalid_otp", err)
+			return nil, op.Outcome("invalid_otp", err)
 		}
 	}
 
 	if photoS3Key != "" {
 		task.PhotoS3Key = photoS3Key
 	}
-	return s.applyTaskCompletion(ctx, trip, task, de, newStatus, otp, "")
+	if err := s.applyTaskCompletion(ctx, trip, task, de, newStatus, otp, ""); err != nil {
+		return nil, err
+	}
+	return &TaskUpdateResult{Status: "updated"}, nil
 }
 
 // AdminCompleteTask marks pickup or drop done for a driver's current trip.
@@ -400,6 +458,7 @@ func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string,
 		return op.Outcome("not_found", err)
 	}
 
+	synthesizeAdminDropReached(task)
 	if err := validateTaskTransition(*task, models.TaskStatusCompleted, false); err != nil {
 		return op.Outcome("invalid_transition", err)
 	}
@@ -439,6 +498,7 @@ func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adm
 	if err != nil {
 		return op.Outcome("not_found", err)
 	}
+	synthesizeAdminDropReached(task)
 	if err := validateTaskTransition(*task, models.TaskStatusCompleted, false); err != nil {
 		return op.Outcome("invalid_transition", err)
 	}
@@ -482,6 +542,78 @@ func javaActor(de *models.DeliveryExecutive, adminUsername string) string {
 		return "ADMIN:" + adminUsername
 	}
 	return "DE:" + de.DEID
+}
+
+func (s *TripService) loadReachedConfig(ctx context.Context) (*models.TripReachedConfig, error) {
+	if s.reachedConfig == nil {
+		return &models.TripReachedConfig{}, nil
+	}
+	return s.reachedConfig.Get(ctx)
+}
+
+func validateDriverCoords(lat, lng *float64) error {
+	if lat == nil || lng == nil {
+		return fmt.Errorf("%w", ErrMissingLocation)
+	}
+	if math.IsNaN(*lat) || math.IsNaN(*lng) || math.IsInf(*lat, 0) || math.IsInf(*lng, 0) {
+		return fmt.Errorf("%w", ErrInvalidCoordinates)
+	}
+	if *lat < -90 || *lat > 90 || *lng < -180 || *lng > 180 {
+		return fmt.Errorf("%w", ErrInvalidCoordinates)
+	}
+	return nil
+}
+
+func customerCoordsUsable(task models.Task) bool {
+	return !(task.Lat == 0 && task.Lng == 0)
+}
+
+// applyDropReached soft-geofences the driver against the drop task, then
+// persists reached on first tap only. It never calls Java, payout, or notify.
+func (s *TripService) applyDropReached(ctx context.Context, trip *models.Trip, task *models.Task, lat, lng float64) (*TaskUpdateResult, error) {
+	cfg, err := s.loadReachedConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	radius := cfg.EffectiveRadiusMeters()
+	result := &TaskUpdateResult{Status: "updated"}
+
+	if customerCoordsUsable(*task) {
+		dist := models.HaversineDistance(lat, lng, task.Lat, task.Lng)
+		within := dist <= radius
+		result.DistanceMeters = &dist
+		result.RadiusMeters = &radius
+		result.WithinRadius = &within
+		s.logger.WithFields(logrus.Fields{
+			"distance_meters": dist,
+			"radius_meters":   radius,
+			"within_radius":   within,
+			"trip_id":         trip.TripID,
+		}).Info("drop reached geofence")
+	} else {
+		s.logger.WithField("trip_id", trip.TripID).Info("drop reached: customer coords missing, skipping distance")
+	}
+
+	if task.Status != models.TaskStatusReached {
+		task.Status = models.TaskStatusReached
+		task.ReachedAt = timezone.Now().Format(time.RFC3339)
+		if err := s.tripRepo.UpdateTasks(ctx, trip.TripID, trip.Tasks); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// synthesizeAdminDropReached marks a created drop as reached (setting ReachedAt
+// only if empty) so admin complete can proceed from reached without OTP or geofence.
+func synthesizeAdminDropReached(task *models.Task) {
+	if task.Type != models.TaskTypeDrop || task.Status != models.TaskStatusCreated {
+		return
+	}
+	task.Status = models.TaskStatusReached
+	if task.ReachedAt == "" {
+		task.ReachedAt = timezone.Now().Format(time.RFC3339)
+	}
 }
 
 func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip, task *models.Task, de *models.DeliveryExecutive, newStatus models.TaskStatus, otp, adminUsername string) error {

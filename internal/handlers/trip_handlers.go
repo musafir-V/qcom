@@ -69,7 +69,7 @@ func (h *TripHandlers) UpdateTaskStatus(w http.ResponseWriter, r *http.Request) 
 	}
 
 	newStatus := models.TaskStatus(req.Status)
-	err := h.tripService.UpdateTaskStatus(r.Context(), tripID, taskID, phone, newStatus, req.OTP, req.PhotoS3Key)
+	_, err := h.tripService.UpdateTaskStatus(r.Context(), tripID, taskID, phone, newStatus, req.OTP, req.PhotoS3Key, nil, nil)
 	if err != nil {
 		status, code := classifyTaskUpdateError(err)
 		if status == http.StatusInternalServerError {

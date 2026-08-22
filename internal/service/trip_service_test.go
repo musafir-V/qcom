@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -447,7 +448,9 @@ type stubTripRepo struct {
 	cancelTripID        string
 	cancelDEPhone       string
 	updateTasksFn       func(ctx context.Context, tripID string, tasks []models.Task) error
+	updateTasksCalled   bool
 	capturedTasks       []models.Task
+	completeTripCalled  bool
 	updatePaymentCalled bool
 	updatePaymentErr    error
 	capturedPayment     *models.Payment
@@ -472,12 +475,18 @@ func (s *stubTripRepo) GetByID(_ context.Context, _ string) (*models.Trip, error
 }
 
 func (s *stubTripRepo) CompleteTripAndFreeDE(_ context.Context, _, _, _ string, tasks []models.Task, _ float64) error {
+	s.completeTripCalled = true
 	s.capturedTasks = make([]models.Task, len(tasks))
 	copy(s.capturedTasks, tasks)
 	return nil
 }
 
 func (s *stubTripRepo) UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error {
+	s.updateTasksCalled = true
+	if s.trip != nil {
+		s.trip.Tasks = make([]models.Task, len(tasks))
+		copy(s.trip.Tasks, tasks)
+	}
 	if s.updateTasksFn != nil {
 		return s.updateTasksFn(ctx, tripID, tasks)
 	}
@@ -582,7 +591,7 @@ func TestUpdateTaskStatus_PhotoS3Key_StoredOnDrop(t *testing.T) {
 	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 
-	err := svc.UpdateTaskStatus(context.Background(), "t1", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "orders/ORD-001/drop/de-1/abc.jpg")
+	_, err := svc.UpdateTaskStatus(context.Background(), "t1", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "orders/ORD-001/drop/de-1/abc.jpg", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -628,7 +637,7 @@ func TestUpdateTaskStatus_DropCompletion_NotifiesCustomer(t *testing.T) {
 	notifier := &stubNotifier{}
 	svc := newTripServiceForTest(repo, deRepo, notifier)
 
-	err := svc.UpdateTaskStatus(context.Background(), "t1", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "")
+	_, err := svc.UpdateTaskStatus(context.Background(), "t1", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -667,7 +676,7 @@ func TestUpdateTaskStatus_PickupCompletion_NotifiesCustomer(t *testing.T) {
 	notifier := &stubNotifier{}
 	svc := newTripServiceForTest(repo, deRepo, notifier)
 
-	err := svc.UpdateTaskStatus(context.Background(), "t2", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "")
+	_, err := svc.UpdateTaskStatus(context.Background(), "t2", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1093,7 +1102,7 @@ func TestUpdateTaskStatus_Drop_JavaActorIsRiderDEID(t *testing.T) {
 		logger:     logrus.New(),
 	}
 
-	err := svc.UpdateTaskStatus(context.Background(), "t7", "task-drop", "+260971000007", models.TaskStatusCompleted, "1234", "")
+	_, err := svc.UpdateTaskStatus(context.Background(), "t7", "task-drop", "+260971000007", models.TaskStatusCompleted, "1234", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1101,5 +1110,348 @@ func TestUpdateTaskStatus_Drop_JavaActorIsRiderDEID(t *testing.T) {
 	got := waitForActor(getActor)
 	if got != "DE:de-2" {
 		t.Fatalf("Java actor = %q, want %q", got, "DE:de-2")
+	}
+}
+
+// Lusaka-ish drop coords. 0.001 deg lat ≈ 111m, so 0.002 ≈ 222m (outside 150m).
+const (
+	lusakaLat = -15.4167
+	lusakaLng = 28.2833
+)
+
+type stubReachedConfig struct{ cfg *models.TripReachedConfig }
+
+func (s stubReachedConfig) Get(context.Context) (*models.TripReachedConfig, error) {
+	return s.cfg, nil
+}
+
+func floatPtr(v float64) *float64 { return &v }
+
+func ofdDropTrip(dropLat, dropLng float64) *models.Trip {
+	return &models.Trip{
+		TripID:  "t-reached",
+		OrderID: "ORD-REACHED",
+		DEID:    "de-1",
+		Status:  models.TripStatusOutForDelivery,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234", Lat: dropLat, Lng: dropLng},
+		},
+	}
+}
+
+func reachedTestService(repo *stubTripRepo) *TripService {
+	return newTripServiceForTest(repo, &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000001", CurrentOrderID: "ORD-REACHED",
+	}}, &stubNotifier{})
+}
+
+func TestUpdateTaskStatus_DropReached_WithinRadius(t *testing.T) {
+	repo := &stubTripRepo{trip: ofdDropTrip(lusakaLat, lusakaLng)}
+	svc := reachedTestService(repo)
+
+	result, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", floatPtr(lusakaLat), floatPtr(lusakaLng))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil || result.Status != "updated" {
+		t.Fatalf("result = %+v, want status updated", result)
+	}
+	if result.WithinRadius == nil || !*result.WithinRadius {
+		t.Fatal("expected WithinRadius true")
+	}
+	if result.DistanceMeters == nil || *result.DistanceMeters > 150 {
+		t.Fatalf("distance = %v, want <= 150", result.DistanceMeters)
+	}
+	if result.RadiusMeters == nil || *result.RadiusMeters != 150 {
+		t.Fatalf("radius = %v, want 150", result.RadiusMeters)
+	}
+
+	drop := repo.trip.DropTask()
+	if drop == nil || drop.Status != models.TaskStatusReached {
+		t.Fatalf("drop status = %+v, want reached", drop)
+	}
+	if drop.ReachedAt == "" {
+		t.Fatal("expected reached_at to be set")
+	}
+	if _, parseErr := time.Parse(time.RFC3339, drop.ReachedAt); parseErr != nil {
+		t.Fatalf("reached_at %q is not RFC3339: %v", drop.ReachedAt, parseErr)
+	}
+	if !repo.updateTasksCalled {
+		t.Fatal("expected UpdateTasks to persist reached")
+	}
+	if repo.completeTripCalled {
+		t.Fatal("reached must not call CompleteTripAndFreeDE")
+	}
+}
+
+func TestUpdateTaskStatus_DropReached_OutsideRadius(t *testing.T) {
+	repo := &stubTripRepo{trip: ofdDropTrip(lusakaLat, lusakaLng)}
+	svc := reachedTestService(repo)
+
+	result, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", floatPtr(lusakaLat+0.002), floatPtr(lusakaLng))
+	if err != nil {
+		t.Fatalf("too-far must still succeed, got: %v", err)
+	}
+	if result.WithinRadius == nil || *result.WithinRadius {
+		t.Fatal("expected WithinRadius false")
+	}
+	if result.DistanceMeters == nil || *result.DistanceMeters <= 150 {
+		t.Fatalf("distance = %v, want > 150", result.DistanceMeters)
+	}
+	if result.RadiusMeters == nil || *result.RadiusMeters != 150 {
+		t.Fatalf("radius = %v, want 150", result.RadiusMeters)
+	}
+	if repo.trip.DropTask().Status != models.TaskStatusReached {
+		t.Fatal("too-far must still set status reached")
+	}
+	if repo.completeTripCalled {
+		t.Fatal("reached must not complete the trip")
+	}
+}
+
+func TestUpdateTaskStatus_DropReached_MissingLat(t *testing.T) {
+	repo := &stubTripRepo{trip: ofdDropTrip(lusakaLat, lusakaLng)}
+	svc := reachedTestService(repo)
+
+	_, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", nil, floatPtr(lusakaLng))
+	if !errors.Is(err, ErrMissingLocation) {
+		t.Fatalf("got %v, want ErrMissingLocation", err)
+	}
+	if repo.trip.DropTask().Status != models.TaskStatusCreated {
+		t.Fatalf("status = %q, want created", repo.trip.DropTask().Status)
+	}
+	if repo.updateTasksCalled {
+		t.Fatal("missing lat must not write")
+	}
+}
+
+func TestUpdateTaskStatus_DropReached_InvalidCoordinates(t *testing.T) {
+	repo := &stubTripRepo{trip: ofdDropTrip(lusakaLat, lusakaLng)}
+	svc := reachedTestService(repo)
+
+	_, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", floatPtr(100), floatPtr(lusakaLng))
+	if !errors.Is(err, ErrInvalidCoordinates) {
+		t.Fatalf("out-of-range lat: got %v, want ErrInvalidCoordinates", err)
+	}
+
+	nan := math.NaN()
+	_, err = svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", &nan, floatPtr(lusakaLng))
+	if !errors.Is(err, ErrInvalidCoordinates) {
+		t.Fatalf("NaN lat: got %v, want ErrInvalidCoordinates", err)
+	}
+	if repo.updateTasksCalled {
+		t.Fatal("invalid coords must not write")
+	}
+}
+
+func TestUpdateTaskStatus_DropReached_CustomerZeroZero(t *testing.T) {
+	repo := &stubTripRepo{trip: ofdDropTrip(0, 0)}
+	svc := reachedTestService(repo)
+
+	result, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", floatPtr(lusakaLat), floatPtr(lusakaLng))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.WithinRadius != nil || result.DistanceMeters != nil || result.RadiusMeters != nil {
+		t.Fatalf("expected nil distance fields, got %+v", result)
+	}
+	drop := repo.trip.DropTask()
+	if drop.Status != models.TaskStatusReached || drop.ReachedAt == "" {
+		t.Fatalf("expected reached with reached_at, got %+v", drop)
+	}
+}
+
+func TestUpdateTaskStatus_DropReached_Idempotent(t *testing.T) {
+	repo := &stubTripRepo{trip: ofdDropTrip(lusakaLat, lusakaLng)}
+	svc := reachedTestService(repo)
+
+	if _, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", floatPtr(lusakaLat), floatPtr(lusakaLng)); err != nil {
+		t.Fatalf("first reached: %v", err)
+	}
+	const frozen = "2026-01-01T00:00:00Z"
+	repo.trip.DropTask().ReachedAt = frozen
+	repo.updateTasksCalled = false
+
+	result, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", floatPtr(lusakaLat), floatPtr(lusakaLng))
+	if err != nil {
+		t.Fatalf("second reached: %v", err)
+	}
+	if result.Status != "updated" {
+		t.Fatalf("status = %q", result.Status)
+	}
+	if repo.trip.DropTask().ReachedAt != frozen {
+		t.Fatalf("reached_at overwritten: %q", repo.trip.DropTask().ReachedAt)
+	}
+	if repo.updateTasksCalled {
+		t.Fatal("idempotent reached must not write")
+	}
+}
+
+func TestUpdateTaskStatus_PickupReached_NoWrite(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID: "t-pickup-reached",
+			DEID:   "de-1",
+			Status: models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	svc := reachedTestService(repo)
+
+	result, err := svc.UpdateTaskStatus(context.Background(), "t-pickup-reached", "task-pickup", "+260971000001", models.TaskStatusReached, "", "", floatPtr(lusakaLat), floatPtr(lusakaLng))
+	if err != nil {
+		t.Fatalf("pickup reached should no-op, got: %v", err)
+	}
+	if result == nil || result.Status != "updated" {
+		t.Fatalf("result = %+v", result)
+	}
+	if repo.trip.PickupTask().Status != models.TaskStatusCreated {
+		t.Fatalf("pickup status = %q, want created", repo.trip.PickupTask().Status)
+	}
+	if repo.updateTasksCalled || repo.completeTripCalled {
+		t.Fatal("pickup reached must not write")
+	}
+}
+
+func TestUpdateTaskStatus_DropReached_TripAccepted(t *testing.T) {
+	trip := ofdDropTrip(lusakaLat, lusakaLng)
+	trip.Status = models.TripStatusAccepted
+	repo := &stubTripRepo{trip: trip}
+	svc := reachedTestService(repo)
+
+	_, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusReached, "", "", floatPtr(lusakaLat), floatPtr(lusakaLng))
+	if !errors.Is(err, ErrPrerequisiteIncomplete) {
+		t.Fatalf("got %v, want ErrPrerequisiteIncomplete", err)
+	}
+	if repo.trip.DropTask().Status != models.TaskStatusCreated {
+		t.Fatal("status must stay created when trip is not OFD")
+	}
+}
+
+func TestUpdateTaskStatus_DropComplete_RequireReached_FromCreated(t *testing.T) {
+	repo := &stubTripRepo{trip: ofdDropTrip(lusakaLat, lusakaLng)}
+	svc := reachedTestService(repo)
+	svc.reachedConfig = stubReachedConfig{cfg: &models.TripReachedConfig{RequireReachedBeforeComplete: true}}
+
+	_, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "", nil, nil)
+	if !errors.Is(err, ErrDropNotReached) {
+		t.Fatalf("got %v, want ErrDropNotReached", err)
+	}
+	if repo.completeTripCalled {
+		t.Fatal("must not complete from created when flag is on")
+	}
+}
+
+func TestUpdateTaskStatus_DropComplete_FromReached(t *testing.T) {
+	trip := ofdDropTrip(lusakaLat, lusakaLng)
+	trip.DropTask().Status = models.TaskStatusReached
+	trip.DropTask().ReachedAt = "2026-08-22T10:00:00Z"
+	repo := &stubTripRepo{trip: trip}
+	svc := reachedTestService(repo)
+	svc.reachedConfig = stubReachedConfig{cfg: &models.TripReachedConfig{RequireReachedBeforeComplete: true}}
+
+	result, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "", nil, nil)
+	if err != nil {
+		t.Fatalf("complete from reached: %v", err)
+	}
+	if result == nil || result.Status != "updated" {
+		t.Fatalf("result = %+v", result)
+	}
+	if !repo.completeTripCalled {
+		t.Fatal("expected CompleteTripAndFreeDE")
+	}
+	var drop *models.Task
+	for i := range repo.capturedTasks {
+		if repo.capturedTasks[i].Type == models.TaskTypeDrop {
+			drop = &repo.capturedTasks[i]
+			break
+		}
+	}
+	if drop == nil || drop.Status != models.TaskStatusCompleted {
+		t.Fatalf("expected drop completed, got %+v", repo.capturedTasks)
+	}
+}
+
+func TestAdminCompleteTask_Drop_SynthesizesReached(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-admin-reached",
+			OrderID: "ORD-ADMIN-REACHED",
+			DEID:    "de-1",
+			DEPhone: "+260971000001",
+			Status:  models.TripStatusOutForDelivery,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "9999"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000001", CurrentOrderID: "ORD-ADMIN-REACHED",
+	}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	if err := svc.AdminCompleteTask(context.Background(), "+260971000001", models.TaskTypeDrop, "ops"); err != nil {
+		t.Fatalf("admin drop: %v", err)
+	}
+
+	var drop *models.Task
+	for i := range repo.capturedTasks {
+		if repo.capturedTasks[i].Type == models.TaskTypeDrop {
+			drop = &repo.capturedTasks[i]
+			break
+		}
+	}
+	if drop == nil || drop.Status != models.TaskStatusCompleted {
+		t.Fatalf("expected completed drop, got %+v", repo.capturedTasks)
+	}
+	if drop.ReachedAt == "" {
+		t.Fatal("admin through-reached must set reached_at")
+	}
+	if _, parseErr := time.Parse(time.RFC3339, drop.ReachedAt); parseErr != nil {
+		t.Fatalf("reached_at %q is not RFC3339: %v", drop.ReachedAt, parseErr)
+	}
+}
+
+func TestAdminCompleteTask_Drop_KeepsExistingReachedAt(t *testing.T) {
+	const frozen = "2026-08-01T12:00:00Z"
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-admin-keep",
+			OrderID: "ORD-ADMIN-KEEP",
+			DEID:    "de-1",
+			DEPhone: "+260971000001",
+			Status:  models.TripStatusOutForDelivery,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusReached, ReachedAt: frozen, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000001", CurrentOrderID: "ORD-ADMIN-KEEP",
+	}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	if err := svc.AdminCompleteTask(context.Background(), "+260971000001", models.TaskTypeDrop, "ops"); err != nil {
+		t.Fatalf("admin drop: %v", err)
+	}
+
+	var drop *models.Task
+	for i := range repo.capturedTasks {
+		if repo.capturedTasks[i].Type == models.TaskTypeDrop {
+			drop = &repo.capturedTasks[i]
+			break
+		}
+	}
+	if drop == nil || drop.Status != models.TaskStatusCompleted {
+		t.Fatalf("expected completed drop, got %+v", repo.capturedTasks)
+	}
+	if drop.ReachedAt != frozen {
+		t.Fatalf("reached_at = %q, want %q", drop.ReachedAt, frozen)
 	}
 }
