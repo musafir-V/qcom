@@ -397,11 +397,16 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 		return result, nil
 	}
 
-	cfg, err := s.loadReachedConfig(ctx)
-	if err != nil {
-		return nil, op.Fail(err)
+	requireReached := false
+	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
+		cfg, err := s.loadReachedConfig(ctx)
+		if err != nil {
+			s.logger.WithError(err).Warn("reached config read failed; treating require_reached as false")
+		} else {
+			requireReached = cfg.RequireReached()
+		}
 	}
-	if err := validateTaskTransition(*task, newStatus, cfg.RequireReached()); err != nil {
+	if err := validateTaskTransition(*task, newStatus, requireReached); err != nil {
 		return nil, op.Outcome("invalid_transition", err)
 	}
 
@@ -460,13 +465,13 @@ func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string,
 		return op.Outcome("not_found", err)
 	}
 
-	synthesizeAdminDropReached(task)
 	if err := validateTaskTransition(*task, models.TaskStatusCompleted, false); err != nil {
 		return op.Outcome("invalid_transition", err)
 	}
 	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
 		return op.Outcome("prerequisite_incomplete", err)
 	}
+	synthesizeAdminDropReached(task)
 
 	return s.applyTaskCompletion(ctx, trip, task, de, models.TaskStatusCompleted, "", adminUsername)
 }
@@ -500,13 +505,13 @@ func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adm
 	if err != nil {
 		return op.Outcome("not_found", err)
 	}
-	synthesizeAdminDropReached(task)
 	if err := validateTaskTransition(*task, models.TaskStatusCompleted, false); err != nil {
 		return op.Outcome("invalid_transition", err)
 	}
 	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
 		return op.Outcome("prerequisite_incomplete", err)
 	}
+	synthesizeAdminDropReached(task)
 
 	de, err := s.deRepo.GetByPhone(ctx, trip.DEPhone)
 	if err != nil {

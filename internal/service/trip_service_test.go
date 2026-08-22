@@ -27,10 +27,11 @@ func TestValidateTaskTransition_CreatedToCompleted(t *testing.T) {
 }
 
 func TestValidateTaskTransition_LegacyStatusToCompleted(t *testing.T) {
-	// Tasks already in legacy intermediate states can still be completed.
+	// Tasks already in legacy intermediate states can still be completed
+	// even when require_reached is on (they are not status=created).
 	for _, status := range []models.TaskStatus{"arrived", "reached"} {
 		task := models.Task{Type: models.TaskTypeDrop, Status: status}
-		if err := validateTaskTransition(task, models.TaskStatusCompleted, false); err != nil {
+		if err := validateTaskTransition(task, models.TaskStatusCompleted, true); err != nil {
 			t.Fatalf("status %q: expected valid transition, got: %v", status, err)
 		}
 	}
@@ -1119,9 +1120,15 @@ const (
 	lusakaLng = 28.2833
 )
 
-type stubReachedConfig struct{ cfg *models.TripReachedConfig }
+type stubReachedConfig struct {
+	cfg *models.TripReachedConfig
+	err error
+}
 
 func (s stubReachedConfig) Get(context.Context) (*models.TripReachedConfig, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
 	return s.cfg, nil
 }
 
@@ -1373,6 +1380,91 @@ func TestUpdateTaskStatus_DropComplete_FromReached(t *testing.T) {
 	}
 	if drop == nil || drop.Status != models.TaskStatusCompleted {
 		t.Fatalf("expected drop completed, got %+v", repo.capturedTasks)
+	}
+}
+
+func TestUpdateTaskStatus_DropComplete_ConfigGetError_FailsOpen(t *testing.T) {
+	repo := &stubTripRepo{trip: ofdDropTrip(lusakaLat, lusakaLng)}
+	svc := reachedTestService(repo)
+	svc.reachedConfig = stubReachedConfig{err: errors.New("ddb down")}
+
+	result, err := svc.UpdateTaskStatus(context.Background(), "t-reached", "task-drop", "+260971000001", models.TaskStatusCompleted, "1234", "", nil, nil)
+	if err != nil {
+		t.Fatalf("config Get error must fail open, got: %v", err)
+	}
+	if result == nil || result.Status != "updated" {
+		t.Fatalf("result = %+v, want status updated", result)
+	}
+	if !repo.completeTripCalled {
+		t.Fatal("expected drop complete to persist")
+	}
+}
+
+func TestUpdateTaskStatus_PickupComplete_ConfigGetError_Succeeds(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-pickup-cfg",
+			OrderID: "ORD-PICKUP-CFG",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000001",
+	}}, &stubNotifier{})
+	svc.reachedConfig = stubReachedConfig{err: errors.New("ddb down")}
+
+	result, err := svc.UpdateTaskStatus(context.Background(), "t-pickup-cfg", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("pickup complete must not read/fail on reached config, got: %v", err)
+	}
+	if result == nil || result.Status != "updated" {
+		t.Fatalf("result = %+v, want status updated", result)
+	}
+}
+
+func TestAdminCompleteDropByOrder_Drop_SynthesizesReached(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-admin-order-reached",
+			OrderID: "ORD-ADMIN-ORDER-REACHED",
+			DEID:    "de-1",
+			DEPhone: "+260971000001",
+			Status:  models.TripStatusOutForDelivery,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "9999"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000001",
+	}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-ORDER-REACHED", "ops"); err != nil {
+		t.Fatalf("admin drop by order: %v", err)
+	}
+
+	var drop *models.Task
+	for i := range repo.capturedTasks {
+		if repo.capturedTasks[i].Type == models.TaskTypeDrop {
+			drop = &repo.capturedTasks[i]
+			break
+		}
+	}
+	if drop == nil || drop.Status != models.TaskStatusCompleted {
+		t.Fatalf("expected completed drop, got %+v", repo.capturedTasks)
+	}
+	if drop.ReachedAt == "" {
+		t.Fatal("admin through-reached must set reached_at")
+	}
+	if _, parseErr := time.Parse(time.RFC3339, drop.ReachedAt); parseErr != nil {
+		t.Fatalf("reached_at %q is not RFC3339: %v", drop.ReachedAt, parseErr)
 	}
 }
 

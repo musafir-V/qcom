@@ -5,7 +5,7 @@ const DefaultReachedRadiusMeters = 150.0
 // TripReachedConfig is PK=CONFIG SK=TRIP_REACHED_V1.
 type TripReachedConfig struct {
 	RadiusMeters                 float64 `json:"radius_meters" dynamodbav:"radius_meters"`
-	RequireReachedBeforeComplete   bool    `json:"require_reached_before_complete" dynamodbav:"require_reached_before_complete"`
+	RequireReachedBeforeComplete bool    `json:"require_reached_before_complete" dynamodbav:"require_reached_before_complete"`
 }
 
 func (c *TripReachedConfig) GetPK() string { return "CONFIG" }
