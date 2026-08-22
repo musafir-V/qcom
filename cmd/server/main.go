@@ -69,6 +69,7 @@ func main() {
 	adminUserRepo := repository.NewAdminUserRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	otpRepo := repository.NewOTPRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	smsOTPRoutingConfigRepo := repository.NewSMSOTPRoutingConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	tripReachedConfigRepo := repository.NewTripReachedConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -208,9 +209,10 @@ func main() {
 	adminDisputeService := service.NewAdminDisputeService(disputeRepo, dispositionRepo, tripRepo, deRepo)
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
 	adminSMSOTPRoutingHandlers := handlers.NewAdminSMSOTPRoutingHandlers(smsOTPRoutingConfigRepo, logger)
+	adminTripReachedHandlers := handlers.NewAdminTripReachedHandlers(tripReachedConfigRepo, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, adminTripReachedHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -343,6 +345,7 @@ func setupRouter(
 	adminDriverHandlers *handlers.AdminDriverHandlers,
 	adminStoreHandlers *handlers.AdminStoreHandlers,
 	adminSMSOTPRoutingHandlers *handlers.AdminSMSOTPRoutingHandlers,
+	adminTripReachedHandlers *handlers.AdminTripReachedHandlers,
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
@@ -419,6 +422,9 @@ func setupRouter(
 
 	admin.HandleFunc("/sms-otp-routing", adminSMSOTPRoutingHandlers.GetConfig).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/sms-otp-routing", adminSMSOTPRoutingHandlers.PutConfig).Methods("PUT", "OPTIONS")
+
+	admin.HandleFunc("/config/drop-reached", adminTripReachedHandlers.GetConfig).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/config/drop-reached", adminTripReachedHandlers.PatchConfig).Methods("PATCH", "OPTIONS")
 
 	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/trips/{trip_id}/reassign-candidates", adminHandlers.ReassignCandidates).Methods("GET", "OPTIONS")
