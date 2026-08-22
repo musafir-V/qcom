@@ -116,7 +116,7 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if committed {
-			if drop := trip.DropTask(); drop != nil && drop.Status == models.TaskStatusCreated {
+			if drop := trip.DropTask(); drop != nil && (drop.Status == models.TaskStatusCreated || drop.Status == models.TaskStatusReached) {
 				otp = &drop.OTP
 			}
 		}

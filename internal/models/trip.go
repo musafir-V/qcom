@@ -24,6 +24,7 @@ const (
 	TaskTypeDrop   TaskType = "drop"
 
 	TaskStatusCreated   TaskStatus = "created"
+	TaskStatusReached   TaskStatus = "reached"
 	TaskStatusCompleted TaskStatus = "completed"
 )
 
@@ -49,6 +50,7 @@ type Task struct {
 	Type          TaskType   `json:"type" dynamodbav:"type"`
 	Status        TaskStatus `json:"status" dynamodbav:"status"`
 	CreatedAt     string     `json:"created_at,omitempty" dynamodbav:"created_at,omitempty"`
+	ReachedAt     string     `json:"reached_at,omitempty" dynamodbav:"reached_at,omitempty"`
 	CompletedAt   string     `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
 	Phone         string     `json:"phone" dynamodbav:"phone"`
 	Address       string     `json:"address" dynamodbav:"address"`

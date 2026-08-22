@@ -140,6 +140,33 @@ func TestTrack_OutForDelivery_ShowsOTPNameETAAndPreservesOrder(t *testing.T) {
 	}
 }
 
+func TestTrack_OutForDelivery_Reached_ShowsOTPNameETAAndPreservesOrder(t *testing.T) {
+	of := fakeOrderFetcher{raw: baseOrder()}
+	tg := trackFakeTripGetter{trip: tripWith(models.TripStatusOutForDelivery, models.TaskStatusReached, "4321")}
+	de := fakeDEResolver{de: &models.DeliveryExecutive{Name: "John M."}}
+	rec := doTrack(newTrackHandlers(of, tg, de), "ORD1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := decodeBody(t, rec)
+	if string(body["otp"]) != `"4321"` {
+		t.Errorf("otp = %s", body["otp"])
+	}
+	if string(body["de_name"]) != `"John M."` {
+		t.Errorf("de_name = %s", body["de_name"])
+	}
+	if string(body["de_phone"]) != `"0990000000"` {
+		t.Errorf("de_phone = %s", body["de_phone"])
+	}
+	if string(body["eta"]) == "null" || len(body["eta"]) == 0 {
+		t.Errorf("eta missing: %s", body["eta"])
+	}
+	if string(body["grandTotal"]) != `42.5` || string(body["status"]) != `"OUT_FOR_DELIVERY"` {
+		t.Errorf("order fields not preserved: grandTotal=%s status=%s", body["grandTotal"], body["status"])
+	}
+}
+
 func TestTrack_NoTrip_ETAPresentOTPNameNull(t *testing.T) {
 	of := fakeOrderFetcher{raw: baseOrder()}
 	tg := trackFakeTripGetter{trip: nil}

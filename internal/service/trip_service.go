@@ -27,6 +27,7 @@ var (
 	ErrTripClosed             = errors.New("trip already closed")
 	ErrPrerequisiteIncomplete = errors.New("prerequisite task incomplete")
 	ErrInvalidTransition      = errors.New("invalid task transition")
+	ErrDropNotReached         = errors.New("drop not reached")
 	ErrInvalidOTP             = errors.New("invalid OTP")
 	ErrInvalidTripTransition  = errors.New("invalid trip transition")
 	ErrPickupOrderMismatch    = errors.New("scanned order does not match assigned trip")
@@ -343,7 +344,7 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 	}
 
 	// 5. Validate the specific transition
-	if err := validateTaskTransition(*task, newStatus); err != nil {
+	if err := validateTaskTransition(*task, newStatus, false); err != nil {
 		return op.Outcome("invalid_transition", err)
 	}
 
@@ -399,7 +400,7 @@ func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string,
 		return op.Outcome("not_found", err)
 	}
 
-	if err := validateTaskTransition(*task, models.TaskStatusCompleted); err != nil {
+	if err := validateTaskTransition(*task, models.TaskStatusCompleted, false); err != nil {
 		return op.Outcome("invalid_transition", err)
 	}
 	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
@@ -438,7 +439,7 @@ func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adm
 	if err != nil {
 		return op.Outcome("not_found", err)
 	}
-	if err := validateTaskTransition(*task, models.TaskStatusCompleted); err != nil {
+	if err := validateTaskTransition(*task, models.TaskStatusCompleted, false); err != nil {
 		return op.Outcome("invalid_transition", err)
 	}
 	if err := validateTaskAgainstTripStatus(task.Type, trip.Status); err != nil {
@@ -631,13 +632,25 @@ func (s *TripService) recordTripPayout(trip *models.Trip, de *models.DeliveryExe
 	s.payoutService.OnTripCompleted(context.Background(), trip, de.PhoneNumber)
 }
 
-// validateTaskTransition allows any non-completed task to move directly to completed.
-func validateTaskTransition(task models.Task, newStatus models.TaskStatus) error {
+// validateTaskTransition enforces drop created→reached→completed (and the
+// compat created→completed path when requireReached is false). Pickup only
+// validates created→completed; pickup target reached is no-op'd by the
+// service before this helper is called.
+func validateTaskTransition(task models.Task, newStatus models.TaskStatus, requireReached bool) error {
+	if task.Status == models.TaskStatusCompleted {
+		return fmt.Errorf("%w: task is already completed", ErrInvalidTransition)
+	}
+	if newStatus == models.TaskStatusReached {
+		if task.Type == models.TaskTypeDrop && task.Status == models.TaskStatusCreated {
+			return nil
+		}
+		return fmt.Errorf("%w: invalid transition to reached", ErrInvalidTransition)
+	}
 	if newStatus != models.TaskStatusCompleted {
 		return fmt.Errorf("%w: only transition to completed is allowed", ErrInvalidTransition)
 	}
-	if task.Status == models.TaskStatusCompleted {
-		return fmt.Errorf("%w: task is already completed", ErrInvalidTransition)
+	if requireReached && task.Type == models.TaskTypeDrop && task.Status == models.TaskStatusCreated {
+		return fmt.Errorf("%w", ErrDropNotReached)
 	}
 	return nil
 }
