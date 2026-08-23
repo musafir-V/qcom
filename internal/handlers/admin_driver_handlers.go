@@ -345,7 +345,8 @@ func (h *AdminDriverHandlers) GetDriverCashLedger(w http.ResponseWriter, r *http
 		return
 	}
 
-	entries, err := h.cashLedgerRepo.ListByDE(r.Context(), de.DEID)
+	// Ledger writes key PK=CASHDEP!{phone}, not the prefixed DE id.
+	entries, err := h.cashLedgerRepo.ListByDE(r.Context(), cashDepositListKey(de))
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to list cash ledger")
 		h.respondWithError(w, http.StatusInternalServerError, "CASH_LEDGER_FETCH_FAILED", "Failed to fetch cash deposits")
@@ -372,6 +373,13 @@ func (h *AdminDriverHandlers) GetDriverCashLedger(w http.ResponseWriter, r *http
 		"in_hand_cash_zmw": de.InHandCashZMW,
 		"deposits":         items,
 	})
+}
+
+// cashDepositListKey is the Dynamo partition id for a rider's cash-deposit
+// ledger. RecordDeposit stores CashDepositLedger.DEID as the phone number, so
+// this must be phone — not the prefixed DE id (DE203…).
+func cashDepositListKey(de *models.DeliveryExecutive) string {
+	return de.PhoneNumber
 }
 
 // cashCollectionsMaxRangeDays is the widest inclusive custom date span the

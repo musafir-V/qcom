@@ -23,7 +23,8 @@ func NewCashDepositLedgerRepository(client *dynamodb.Client, tableName string, l
 	return &CashDepositLedgerRepository{client: client, tableName: tableName, logger: logger}
 }
 
-// ListByDE returns all cash-deposit entries for a DE.
+// ListByDE returns all cash-deposit entries for a DE. deID must be the rider
+// phone (CashDepositLedger.DEID), not the prefixed DE id.
 func (r *CashDepositLedgerRepository) ListByDE(ctx context.Context, deID string) ([]*models.CashDepositLedger, error) {
 	op := logging.Start(ctx, r.logger, "CashDepositLedger.ListByDE", logrus.Fields{"de_id": deID})
 	defer op.End()
