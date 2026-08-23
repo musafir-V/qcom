@@ -2,8 +2,9 @@ package models
 
 // CashDepositLedger is one cash-deposit event for a DE, recorded when a driver
 // deposits collected COD cash back at a hub. Stored in its own partition
-// (PK=CASHDEP!{deId}) so it never appears in earnings queries (which key on
-// EARN!{deId}). SK is the deposit_id for idempotent retries.
+// (PK=CASHDEP!{phone}) so it never appears in earnings queries (which key on
+// EARN!{deId}). DEID is the rider phone, not the prefixed DE203… id. SK is the
+// deposit_id for idempotent retries.
 type CashDepositLedger struct {
 	DEID               string  `json:"de_id" dynamodbav:"de_id"`
 	DepositID          string  `json:"deposit_id" dynamodbav:"deposit_id"`
