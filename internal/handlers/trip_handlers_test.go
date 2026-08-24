@@ -77,6 +77,42 @@ func TestClassifyTaskUpdateError(t *testing.T) {
 			wantCode:   "INVALID_COORDINATES",
 		},
 		{
+			name:       "order not deliverable",
+			err:        fmt.Errorf("%w", service.ErrOrderNotDeliverable),
+			wantStatus: http.StatusConflict,
+			wantCode:   "ORDER_NOT_DELIVERABLE",
+		},
+		{
+			name:       "java order cancelled",
+			err:        fmt.Errorf("%w", service.ErrJavaOrderCancelled),
+			wantStatus: http.StatusConflict,
+			wantCode:   "ORDER_CANCELLED",
+		},
+		{
+			name:       "rider required",
+			err:        fmt.Errorf("%w", service.ErrRiderRequired),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "RIDER_REQUIRED",
+		},
+		{
+			name:       "rider busy elsewhere",
+			err:        fmt.Errorf("%w", service.ErrRiderBusyElsewhere),
+			wantStatus: http.StatusConflict,
+			wantCode:   "RIDER_BUSY_ELSEWHERE",
+		},
+		{
+			name:       "already delivered",
+			err:        fmt.Errorf("%w", service.ErrAlreadyDelivered),
+			wantStatus: http.StatusConflict,
+			wantCode:   "ALREADY_DELIVERED",
+		},
+		{
+			name:       "driver not found",
+			err:        fmt.Errorf("%w: +260770000000", service.ErrDENotFound),
+			wantStatus: http.StatusNotFound,
+			wantCode:   "DRIVER_NOT_FOUND",
+		},
+		{
 			name:       "unknown error defaults to 500",
 			err:        errors.New("dynamodb timeout"),
 			wantStatus: http.StatusInternalServerError,

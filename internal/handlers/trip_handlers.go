@@ -109,6 +109,18 @@ func classifyTaskUpdateError(err error) (status int, code string) {
 		return http.StatusBadRequest, "MISSING_LOCATION"
 	case errors.Is(err, service.ErrInvalidCoordinates):
 		return http.StatusBadRequest, "INVALID_COORDINATES"
+	case errors.Is(err, service.ErrOrderNotDeliverable):
+		return http.StatusConflict, "ORDER_NOT_DELIVERABLE"
+	case errors.Is(err, service.ErrJavaOrderCancelled):
+		return http.StatusConflict, "ORDER_CANCELLED"
+	case errors.Is(err, service.ErrRiderRequired):
+		return http.StatusBadRequest, "RIDER_REQUIRED"
+	case errors.Is(err, service.ErrRiderBusyElsewhere):
+		return http.StatusConflict, "RIDER_BUSY_ELSEWHERE"
+	case errors.Is(err, service.ErrAlreadyDelivered):
+		return http.StatusConflict, "ALREADY_DELIVERED"
+	case errors.Is(err, service.ErrDENotFound):
+		return http.StatusNotFound, "DRIVER_NOT_FOUND"
 	default:
 		return http.StatusInternalServerError, "UPDATE_FAILED"
 	}

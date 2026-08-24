@@ -250,7 +250,7 @@ func (h *AdminDriverHandlers) adminCompleteTask(w http.ResponseWriter, r *http.R
 // POST /api/v1/admin/orders/{orderId}/drop/complete
 // Order-scoped counterpart to AdminCompleteDrop, for the admin order-detail
 // "Mark Delivered" action which only has the order id on hand. Body is
-// optional and ignored, same as the phone-scoped endpoint.
+// optional: { "driver_phone": "..." } when a rider must be picked.
 func (h *AdminDriverHandlers) AdminCompleteDropByOrder(w http.ResponseWriter, r *http.Request) {
 	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
 	if orderID == "" {
@@ -259,7 +259,12 @@ func (h *AdminDriverHandlers) AdminCompleteDropByOrder(w http.ResponseWriter, r 
 	}
 	adminUsername, _ := r.Context().Value("entity_id").(string)
 
-	err := h.tripService.AdminCompleteDropByOrder(r.Context(), orderID, adminUsername, "")
+	var req struct {
+		DriverPhone string `json:"driver_phone"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	err := h.tripService.AdminCompleteDropByOrder(r.Context(), orderID, adminUsername, req.DriverPhone)
 	if err != nil {
 		status, code := classifyTaskUpdateError(err)
 		if status == http.StatusInternalServerError {
@@ -272,6 +277,22 @@ func (h *AdminDriverHandlers) AdminCompleteDropByOrder(w http.ResponseWriter, r 
 	}
 
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
+// GET /api/v1/admin/orders/{orderId}/drop/preview
+func (h *AdminDriverHandlers) PreviewAdminDrop(w http.ResponseWriter, r *http.Request) {
+	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
+	if orderID == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "orderId is required")
+		return
+	}
+	preview, err := h.tripService.PreviewAdminDropByOrder(r.Context(), orderID)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: drop preview failed")
+		h.respondWithError(w, http.StatusInternalServerError, "PREVIEW_FAILED", "Failed to preview drop")
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, preview)
 }
 
 // adminTripView is the trip as ops sees it: OTP stripped, reassignment history
