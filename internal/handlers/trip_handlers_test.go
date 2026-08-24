@@ -113,6 +113,12 @@ func TestClassifyTaskUpdateError(t *testing.T) {
 			wantCode:   "DRIVER_NOT_FOUND",
 		},
 		{
+			name:       "force-assign conflict",
+			err:        fmt.Errorf("%w: admin assign conflict", service.ErrForceAssignConflict),
+			wantStatus: http.StatusConflict,
+			wantCode:   "FORCE_ASSIGN_CONFLICT",
+		},
+		{
 			name:       "unknown error defaults to 500",
 			err:        errors.New("dynamodb timeout"),
 			wantStatus: http.StatusInternalServerError,

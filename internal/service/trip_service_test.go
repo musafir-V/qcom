@@ -459,6 +459,7 @@ type stubTripRepo struct {
 	updateStatusTripID  string
 	updateStatusStatus  models.TripStatus
 	adminAssignCalled   bool
+	adminAssignErr      error
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -504,6 +505,9 @@ func (s *stubTripRepo) UpdateStatus(_ context.Context, tripID string, status mod
 
 func (s *stubTripRepo) AdminAssign(_ context.Context, _, _, deID, dePhone, _ string) error {
 	s.adminAssignCalled = true
+	if s.adminAssignErr != nil {
+		return s.adminAssignErr
+	}
 	if s.trip != nil {
 		s.trip.Status = models.TripStatusAccepted
 		s.trip.DEID = deID
@@ -1096,6 +1100,138 @@ func TestAdminCompleteDropByOrder_BusyElsewhere(t *testing.T) {
 	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-B1", "ops", "")
 	if !errors.Is(err, ErrRiderBusyElsewhere) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// Fix 1: on the force path the Java writes must be a single sequential walk
+// (OUT_FOR_DELIVERY then DELIVERED) rather than two unordered goroutines, and a
+// Java refusal must fail the POST. This test asserts the two writes land in
+// order, synchronously, so no assertion needs to sleep for a goroutine.
+func TestAdminCompleteDropByOrder_ForceProgress_JavaSequenced(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t-seq", OrderID: "ORD-SEQ", StoreID: "221",
+		DEID: "de-1", DEPhone: "+260971000009",
+		Status: models.TripStatusAccepted,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000009", Status: models.DEStatusOffline}
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = java
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-SEQ", "ops", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(java.updates) != 2 || java.updates[0] != "OUT_FOR_DELIVERY" || java.updates[1] != "DELIVERED" {
+		t.Fatalf("expected sequential OFD then DELIVERED, got %v", java.updates)
+	}
+}
+
+// Fix 1: a Java refusal on the force path must fail the POST (same guarantee as
+// forceJavaDeliver on the no-trip path), not be swallowed by a fire-and-forget
+// retry goroutine.
+func TestAdminCompleteDropByOrder_ForceProgress_JavaRefusalFailsPOST(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t-refuse", OrderID: "ORD-REFUSE", StoreID: "221",
+		DEID: "de-1", DEPhone: "+260971000010",
+		Status: models.TripStatusAccepted,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000010", Status: models.DEStatusOffline}
+	javaErr := errors.New("java refused transition")
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY", updateErr: javaErr}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = java
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-REFUSE", "ops", "")
+	if !errors.Is(err, javaErr) {
+		t.Fatalf("expected the Java refusal to fail the POST, got %v", err)
+	}
+}
+
+// Fix 3 (global constraint): Java already DELIVERED + an open trip must still
+// close the trip, but must never POST Java DELIVERED again.
+func TestAdminCompleteDropByOrder_ForceProgress_JavaDelivered_ClosesTripNoPost(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t-done", OrderID: "ORD-DONE", StoreID: "221",
+		DEID: "de-1", DEPhone: "+260971000011",
+		Status: models.TripStatusAccepted,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000011", Status: models.DEStatusOffline}
+	java := &stubJavaOrder{status: "DELIVERED"}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = java
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-DONE", "ops", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.completeTripCalled {
+		t.Fatal("expected the trip to be closed even though Java was already DELIVERED")
+	}
+	if len(java.updates) != 0 {
+		t.Fatalf("expected no Java writes when already DELIVERED, got %v", java.updates)
+	}
+}
+
+// Fix 2: a force-assign that fails after the offline->eligible flip must restore
+// the rider's prior status, otherwise an offline rider is stranded on duty and
+// visible to the assignment cron.
+func TestAdminCompleteDropByOrder_PickRider_AssignFails_RestoresPrior(t *testing.T) {
+	de := &models.DeliveryExecutive{DEID: "de-9", PhoneNumber: "+260770990571", Status: models.DEStatusOffline, AssignedStoreID: "221"}
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID: "t-af", OrderID: "ORD-AF", StoreID: "221", Status: models.TripStatusCreated,
+			Tasks: []models.Task{
+				{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "d", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+			},
+		},
+		adminAssignErr: repository.ErrAdminAssignConflict,
+	}
+	deRepo := &stubDERepo{de: de}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-AF", "ops", "+260770990571")
+	if err == nil {
+		t.Fatal("expected an error when admin-assign fails")
+	}
+	if repo.completeTripCalled {
+		t.Fatal("trip must not be completed when assign fails")
+	}
+	if got := deRepo.statusCalls[len(deRepo.statusCalls)-1]; got != "+260770990571:offline" {
+		t.Fatalf("expected prior status restored to offline, last call %q (all: %v)", got, deRepo.statusCalls)
+	}
+	if de.Status != models.DEStatusOffline {
+		t.Fatalf("expected rider left offline, got %s", de.Status)
+	}
+}
+
+// Fix 2: an AdminAssign condition-failure must surface as the 409 sentinel
+// ErrForceAssignConflict, not a bare repo error that classifies to 500.
+func TestAdminCompleteDropByOrder_PickRider_AssignConflict_Sentinel(t *testing.T) {
+	de := &models.DeliveryExecutive{DEID: "de-9", PhoneNumber: "+260770990572", Status: models.DEStatusOffline, AssignedStoreID: "221"}
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID: "t-cf", OrderID: "ORD-CF", StoreID: "221", Status: models.TripStatusAssigned,
+			Tasks: []models.Task{
+				{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "d", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+			},
+		},
+		adminAssignErr: repository.ErrAdminAssignConflict,
+	}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-CF", "ops", "+260770990572")
+	if !errors.Is(err, ErrForceAssignConflict) {
+		t.Fatalf("expected ErrForceAssignConflict, got %v", err)
 	}
 }
 

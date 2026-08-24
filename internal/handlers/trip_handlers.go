@@ -121,6 +121,8 @@ func classifyTaskUpdateError(err error) (status int, code string) {
 		return http.StatusConflict, "ALREADY_DELIVERED"
 	case errors.Is(err, service.ErrDENotFound):
 		return http.StatusNotFound, "DRIVER_NOT_FOUND"
+	case errors.Is(err, service.ErrForceAssignConflict):
+		return http.StatusConflict, "FORCE_ASSIGN_CONFLICT"
 	default:
 		return http.StatusInternalServerError, "UPDATE_FAILED"
 	}

@@ -30,6 +30,11 @@ var ErrTripTerminal = errors.New("trip is in a terminal state; payment cannot be
 // read them. Callers map this to 409.
 var ErrReassignConflict = errors.New("reassign conflict")
 
+// ErrAdminAssignConflict is returned by AdminAssign when its transaction is
+// cancelled — the trip was no longer `created` (empty de_id) or the DE was no
+// longer `eligible` since the caller read them. Callers map this to 409.
+var ErrAdminAssignConflict = errors.New("admin assign conflict")
+
 type TripRepository struct {
 	client    *dynamodb.Client
 	tableName string
@@ -856,7 +861,7 @@ func (r *TripRepository) AdminAssign(ctx context.Context, tripID, orderID, deID,
 	if err != nil {
 		var txErr *types.TransactionCanceledException
 		if errors.As(err, &txErr) {
-			return op.Outcome("conflict", fmt.Errorf("admin assign conflict: trip not created or DE not eligible"))
+			return op.Outcome("conflict", fmt.Errorf("%w: trip not created or DE not eligible", ErrAdminAssignConflict))
 		}
 		return op.Fail(fmt.Errorf("failed to admin-assign trip: %w", err))
 	}

@@ -39,6 +39,7 @@ var (
 	ErrRiderRequired          = errors.New("rider required")
 	ErrRiderBusyElsewhere     = errors.New("rider busy on another trip")
 	ErrAlreadyDelivered       = errors.New("already delivered")
+	ErrForceAssignConflict    = errors.New("force-assign conflict: refresh and retry")
 )
 
 // TaskUpdateResult is returned by UpdateTaskStatus. Status is always "updated"
@@ -718,7 +719,7 @@ func (s *TripService) forceJavaDeliver(ctx context.Context, orderID, adminUserna
 	}
 }
 
-func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, adminUsername, driverPhone string, skipJava bool) error {
+func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, adminUsername, driverPhone string, skipJava bool) (err error) {
 	de, err := s.deRepo.GetByPhone(ctx, driverPhone)
 	if err != nil {
 		return err
@@ -739,13 +740,32 @@ func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, admin
 	}
 
 	prior := de.Status
+	flipped := false
 	if de.Status != models.DEStatusEligible {
-		if err := s.deRepo.UpdateStatus(ctx, de.PhoneNumber, models.DEStatusEligible, trip.StoreID, ""); err != nil {
-			return err
+		if uerr := s.deRepo.UpdateStatus(ctx, de.PhoneNumber, models.DEStatusEligible, trip.StoreID, ""); uerr != nil {
+			return uerr
 		}
+		flipped = true
 	}
-	if err := s.tripRepo.AdminAssign(ctx, trip.TripID, trip.OrderID, de.DEID, de.PhoneNumber, trip.StoreID); err != nil {
-		return err
+	// The offline->eligible flip above makes the rider visible to the
+	// assignment cron. If anything after it fails, restore the rider's prior
+	// status so a failed force-assign never strands an offline rider on duty.
+	defer func() {
+		if err != nil && flipped {
+			if rerr := s.deRepo.UpdateStatus(ctx, de.PhoneNumber, prior, "", ""); rerr != nil {
+				s.logger.WithError(rerr).WithField("phone", de.PhoneNumber).
+					Error("force-assign rollback failed; rider may be left on duty")
+			}
+		}
+	}()
+
+	if aerr := s.tripRepo.AdminAssign(ctx, trip.TripID, trip.OrderID, de.DEID, de.PhoneNumber, trip.StoreID); aerr != nil {
+		// A condition-failure (trip no longer `created` / DE no longer
+		// `eligible`) is a lost race, not a server fault — surface it as a 409.
+		if errors.Is(aerr, repository.ErrAdminAssignConflict) {
+			return fmt.Errorf("%w: %v", ErrForceAssignConflict, aerr)
+		}
+		return aerr
 	}
 	trip, err = s.tripRepo.GetByOrderID(ctx, orderID)
 	if err != nil {
@@ -754,12 +774,12 @@ func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, admin
 	if trip == nil {
 		return fmt.Errorf("%w: no trip for order %s", ErrTripNotFound, orderID)
 	}
-	if err := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava); err != nil {
-		return err
+	if cerr := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava); cerr != nil {
+		return cerr
 	}
 	if prior == models.DEStatusOffline {
-		if err := s.deRepo.UpdateStatus(ctx, de.PhoneNumber, models.DEStatusOffline, "", ""); err != nil {
-			return err
+		if uerr := s.deRepo.UpdateStatus(ctx, de.PhoneNumber, models.DEStatusOffline, "", ""); uerr != nil {
+			return uerr
 		}
 	}
 	return nil
@@ -807,7 +827,16 @@ func (s *TripService) forceProgressExisting(ctx context.Context, orderID, adminU
 	return nil
 }
 
-func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.Trip, de *models.DeliveryExecutive, adminUsername string, skipJava bool) error {
+// completePickupThenDrop force-completes the pickup (if needed) then the drop
+// on an existing trip. Java is never synced through applyTaskCompletion here:
+// its async syncJavaWithRetry would fire two unordered goroutines
+// (OUT_FOR_DELIVERY and DELIVERED) that can race and whose failures are
+// silent. Instead the trip writes (COD, payout, push, trip close) run with
+// skipJava=true, and Java is walked once, synchronously and in order, via
+// forceJavaDeliver after the trip work — so the two writes cannot race and a
+// Java refusal fails the POST (the same guarantee as the no-trip path). When
+// Java is already DELIVERED (javaAlreadyDelivered), Java is left untouched.
+func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.Trip, de *models.DeliveryExecutive, adminUsername string, javaAlreadyDelivered bool) error {
 	pickup := trip.PickupTask()
 	if pickup != nil && pickup.Status != models.TaskStatusCompleted {
 		if trip.Status != models.TripStatusAccepted {
@@ -819,7 +848,7 @@ func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.T
 		if err := validateTaskTransition(*pickup, models.TaskStatusCompleted, false); err != nil {
 			return err
 		}
-		if err := s.applyTaskCompletion(ctx, trip, pickup, de, models.TaskStatusCompleted, "", adminUsername, skipJava); err != nil {
+		if err := s.applyTaskCompletion(ctx, trip, pickup, de, models.TaskStatusCompleted, "", adminUsername, true); err != nil {
 			return err
 		}
 	}
@@ -833,7 +862,14 @@ func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.T
 		return err
 	}
 	synthesizeAdminDropReached(drop)
-	return s.applyTaskCompletion(ctx, trip, drop, de, models.TaskStatusCompleted, "", adminUsername, skipJava)
+	if err := s.applyTaskCompletion(ctx, trip, drop, de, models.TaskStatusCompleted, "", adminUsername, true); err != nil {
+		return err
+	}
+
+	if javaAlreadyDelivered {
+		return nil
+	}
+	return s.forceJavaDeliver(ctx, trip.OrderID, adminUsername)
 }
 
 // adminSelectTask resolves the pickup/drop task an admin completion targets.
