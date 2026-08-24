@@ -372,10 +372,26 @@ func (r *DERepository) UpdateStatus(ctx context.Context, phone string, status mo
 	return nil
 }
 
-// AttachToTrip marks the DE busy on the given trip. Stub for interface
-// satisfaction until the force-deliver path implements the Dynamo write.
-func (r *DERepository) AttachToTrip(_ context.Context, _, _, _, _ string) error {
-	return fmt.Errorf("AttachToTrip: not implemented")
+// AttachToTrip marks the DE busy on the given trip and binds current order/trip/store.
+func (r *DERepository) AttachToTrip(ctx context.Context, phone, orderID, tripID, storeID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String("SET #s = :busy, current_order_id = :oid, current_trip_id = :tid, current_store_id = :store, updated_at = :now REMOVE duty_index_key, scan_deadline_at"),
+		ExpressionAttributeNames: map[string]string{"#s": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":busy":  &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+			":oid":   &types.AttributeValueMemberS{Value: orderID},
+			":tid":   &types.AttributeValueMemberS{Value: tripID},
+			":store": &types.AttributeValueMemberS{Value: storeID},
+			":now":   &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	return err
 }
 
 // GetByReferralCode looks up a DE using the ReferralCodeIndex GSI.

@@ -997,8 +997,9 @@ func TestAdminCompleteDropByOrder_FindsTripAndCompletes(t *testing.T) {
 	}
 	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000003"}}
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
 
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-3", "ops-user")
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-3", "ops-user", "")
 	if err != nil {
 		t.Fatalf("expected order-scoped complete to succeed, got: %v", err)
 	}
@@ -1015,14 +1016,86 @@ func TestAdminCompleteDropByOrder_FindsTripAndCompletes(t *testing.T) {
 	}
 }
 
-func TestAdminCompleteDropByOrder_NoTrip_NotFound(t *testing.T) {
-	repo := &stubTripRepo{trip: nil}
-	deRepo := &stubDERepo{}
-	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+func TestAdminCompleteDropByOrder_NoTrip_JavaOnly(t *testing.T) {
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = java
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-J1", "ops", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(java.updates) != 2 || java.updates[0] != "OUT_FOR_DELIVERY" || java.updates[1] != "DELIVERED" {
+		t.Fatalf("updates=%v", java.updates)
+	}
+}
 
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-MISSING", "ops-user")
-	if !errors.Is(err, ErrTripNotFound) {
-		t.Fatalf("expected ErrTripNotFound, got: %v", err)
+func TestAdminCompleteDropByOrder_ForceProgress_PickupThenDrop(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t5", OrderID: "ORD-ADMIN-5", StoreID: "221",
+		DEID: "de-1", DEPhone: "+260971000005",
+		Status: models.TripStatusAccepted,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000005", Status: models.DEStatusOffline}
+	deRepo := &stubDERepo{de: de}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-5", "ops", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.completeTripCalled {
+		t.Fatal("expected drop to complete the trip")
+	}
+	if got := deRepo.statusCalls[len(deRepo.statusCalls)-1]; got != "+260971000005:offline" {
+		t.Fatalf("expected restore offline, last call %q", got)
+	}
+}
+
+func TestAdminCompleteDropByOrder_PickRider_RequiresPhone(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t1", OrderID: "ORD-U1", StoreID: "221", Status: models.TripStatusCreated,
+	}}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-U1", "ops", "")
+	if !errors.Is(err, ErrRiderRequired) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAdminCompleteDropByOrder_PickRider_AssignsAndCompletes(t *testing.T) {
+	de := &models.DeliveryExecutive{DEID: "de-9", PhoneNumber: "+260770990570", Status: models.DEStatusOffline, AssignedStoreID: "221"}
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t1", OrderID: "ORD-U2", StoreID: "221", Status: models.TripStatusCreated,
+		Tasks: []models.Task{
+			{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "d", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	deRepo := &stubDERepo{de: de}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-U2", "ops", "+260770990570"); err != nil {
+		t.Fatal(err)
+	}
+	if !repo.adminAssignCalled || !repo.completeTripCalled {
+		t.Fatal("expected assign + complete")
+	}
+	if got := deRepo.statusCalls[len(deRepo.statusCalls)-1]; got != "+260770990570:offline" {
+		t.Fatalf("restore offline, got %q", got)
+	}
+}
+
+func TestAdminCompleteDropByOrder_BusyElsewhere(t *testing.T) {
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+2609", Status: models.DEStatusBusy, CurrentOrderID: "ORD-OTHER"}
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t1", OrderID: "ORD-B1", DEPhone: "+2609", DEID: "de-1", Status: models.TripStatusAssigned,
+	}}, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-B1", "ops", "")
+	if !errors.Is(err, ErrRiderBusyElsewhere) {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -1041,33 +1114,11 @@ func TestAdminCompleteDropByOrder_TerminalTrip_Rejected(t *testing.T) {
 	}
 	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000004"}}
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "DELIVERED"}
 
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-4", "ops-user")
-	if !errors.Is(err, ErrTripClosed) {
-		t.Fatalf("expected ErrTripClosed, got: %v", err)
-	}
-}
-
-func TestAdminCompleteDropByOrder_RequiresOutForDelivery(t *testing.T) {
-	repo := &stubTripRepo{
-		trip: &models.Trip{
-			TripID:  "t5",
-			OrderID: "ORD-ADMIN-5",
-			DEID:    "de-1",
-			DEPhone: "+260971000005",
-			Status:  models.TripStatusAccepted,
-			Tasks: []models.Task{
-				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
-				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
-			},
-		},
-	}
-	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000005"}}
-	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
-
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-5", "ops-user")
-	if !errors.Is(err, ErrPrerequisiteIncomplete) {
-		t.Fatalf("expected ErrPrerequisiteIncomplete, got: %v", err)
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-4", "ops-user", "")
+	if !errors.Is(err, ErrAlreadyDelivered) {
+		t.Fatalf("expected ErrAlreadyDelivered, got: %v", err)
 	}
 }
 
@@ -1513,8 +1564,9 @@ func TestAdminCompleteDropByOrder_Drop_SynthesizesReached(t *testing.T) {
 		DEID: "de-1", PhoneNumber: "+260971000001",
 	}}
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
 
-	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-ORDER-REACHED", "ops"); err != nil {
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-ORDER-REACHED", "ops", ""); err != nil {
 		t.Fatalf("admin drop by order: %v", err)
 	}
 

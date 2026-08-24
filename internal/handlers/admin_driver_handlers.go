@@ -259,7 +259,7 @@ func (h *AdminDriverHandlers) AdminCompleteDropByOrder(w http.ResponseWriter, r 
 	}
 	adminUsername, _ := r.Context().Value("entity_id").(string)
 
-	err := h.tripService.AdminCompleteDropByOrder(r.Context(), orderID, adminUsername)
+	err := h.tripService.AdminCompleteDropByOrder(r.Context(), orderID, adminUsername, "")
 	if err != nil {
 		status, code := classifyTaskUpdateError(err)
 		if status == http.StatusInternalServerError {
