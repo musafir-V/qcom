@@ -372,6 +372,12 @@ func (r *DERepository) UpdateStatus(ctx context.Context, phone string, status mo
 	return nil
 }
 
+// AttachToTrip marks the DE busy on the given trip. Stub for interface
+// satisfaction until the force-deliver path implements the Dynamo write.
+func (r *DERepository) AttachToTrip(_ context.Context, _, _, _, _ string) error {
+	return fmt.Errorf("AttachToTrip: not implemented")
+}
+
 // GetByReferralCode looks up a DE using the ReferralCodeIndex GSI.
 // The GSI must be configured in DynamoDB: index name "ReferralCodeIndex",
 // partition key "referral_code", projecting all attributes.
@@ -578,8 +584,8 @@ func (r *DERepository) MarkOfflineIfDeadlinePassed(ctx context.Context, phone, e
 			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
 			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 		},
-		UpdateExpression:    aws.String("SET #status = :offline, updated_at = :now REMOVE duty_index_key, scan_deadline_at"),
-		ConditionExpression: aws.String("(#status = :eligible OR #status = :free) AND scan_deadline_at = :expected"),
+		UpdateExpression:         aws.String("SET #status = :offline, updated_at = :now REMOVE duty_index_key, scan_deadline_at"),
+		ConditionExpression:      aws.String("(#status = :eligible OR #status = :free) AND scan_deadline_at = :expected"),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":offline":  &types.AttributeValueMemberS{Value: string(models.DEStatusOffline)},

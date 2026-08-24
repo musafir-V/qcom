@@ -34,6 +34,11 @@ var (
 	ErrInvalidOTP             = errors.New("invalid OTP")
 	ErrInvalidTripTransition  = errors.New("invalid trip transition")
 	ErrPickupOrderMismatch    = errors.New("scanned order does not match assigned trip")
+	ErrOrderNotDeliverable    = errors.New("order not deliverable")
+	ErrJavaOrderCancelled     = errors.New("java order cancelled")
+	ErrRiderRequired          = errors.New("rider required")
+	ErrRiderBusyElsewhere     = errors.New("rider busy on another trip")
+	ErrAlreadyDelivered       = errors.New("already delivered")
 )
 
 // TaskUpdateResult is returned by UpdateTaskStatus. Status is always "updated"
@@ -65,12 +70,23 @@ type tripRepoI interface {
 	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
 	CancelByOrderID(ctx context.Context, tripID, dePhone, storeID string) error
 	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
+	AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error
 }
 
 // deRepoI is the subset of DERepository methods used by TripService.
 // Narrowing to an interface allows unit tests to inject stubs without DynamoDB.
 type deRepoI interface {
 	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
+	UpdateStatus(ctx context.Context, phone string, status models.DEStatus, storeID, orderID string) error
+	AttachToTrip(ctx context.Context, phone, orderID, tripID, storeID string) error
+	ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error)
+}
+
+// javaOrderAPI is the subset of JavaOrderClient used by TripService so tests
+// can inject a stub. *JavaOrderClient already satisfies it.
+type javaOrderAPI interface {
+	GetOrderStatus(ctx context.Context, orderID string) (string, error)
+	UpdateOrderStatus(ctx context.Context, orderID, status, actorID string) error
 }
 
 // statusEventAppender appends DE status-event log entries (presence timeline).
@@ -81,7 +97,7 @@ type statusEventAppender interface {
 type TripService struct {
 	tripRepo        tripRepoI
 	deRepo          deRepoI
-	javaClient      *JavaOrderClient
+	javaClient      javaOrderAPI
 	payoutService   *PayoutService
 	notifier        NotificationService
 	statusEventRepo statusEventAppender
@@ -522,6 +538,158 @@ func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adm
 	}
 
 	return s.applyTaskCompletion(ctx, trip, task, de, models.TaskStatusCompleted, "", adminUsername)
+}
+
+type AdminDropMode string
+
+const (
+	AdminDropModeJavaOnly      AdminDropMode = "java_only"
+	AdminDropModePickRider     AdminDropMode = "pick_rider"
+	AdminDropModeForceProgress AdminDropMode = "force_progress"
+	AdminDropModeAlreadyDone   AdminDropMode = "already_done"
+	AdminDropModeBlocked       AdminDropMode = "blocked"
+)
+
+type AdminDropCandidate struct {
+	Phone         string  `json:"phone"`
+	Name          string  `json:"name"`
+	Status        string  `json:"status"`
+	InHandCashZMW float64 `json:"in_hand_cash_zmw"`
+}
+
+type AdminDropRider struct {
+	Phone  string `json:"phone"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+type AdminDropPreview struct {
+	Mode       AdminDropMode        `json:"mode"`
+	Reason     string               `json:"reason,omitempty"`
+	TripID     string               `json:"trip_id,omitempty"`
+	JavaStatus string               `json:"java_status,omitempty"`
+	Rider      *AdminDropRider      `json:"rider,omitempty"`
+	Candidates []AdminDropCandidate `json:"candidates,omitempty"`
+}
+
+// PreviewAdminDropByOrder classifies how an admin can force-deliver an order
+// without mutating trip, rider, or Java state.
+func (s *TripService) PreviewAdminDropByOrder(ctx context.Context, orderID string) (*AdminDropPreview, error) {
+	javaStatus := ""
+	if s.javaClient != nil {
+		status, err := s.javaClient.GetOrderStatus(ctx, orderID)
+		if err != nil {
+			return nil, err
+		}
+		if status != "NOT_FOUND" {
+			javaStatus = status
+		}
+	}
+
+	if javaStatus == "CANCELLED" {
+		return &AdminDropPreview{Mode: AdminDropModeBlocked, Reason: "java_cancelled", JavaStatus: javaStatus}, nil
+	}
+
+	trip, err := s.tripRepo.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+
+	if trip == nil || !adminDropTripOpen(trip.Status) {
+		return previewMissingOrClosedTrip(javaStatus), nil
+	}
+
+	if trip.DEPhone == "" {
+		candidates, err := s.listAdminDropCandidates(ctx, trip.StoreID)
+		if err != nil {
+			return nil, err
+		}
+		return &AdminDropPreview{
+			Mode:       AdminDropModePickRider,
+			TripID:     trip.TripID,
+			JavaStatus: javaStatus,
+			Candidates: candidates,
+		}, nil
+	}
+
+	de, err := s.deRepo.GetByPhone(ctx, trip.DEPhone)
+	if err != nil {
+		return nil, err
+	}
+	rider := adminDropRiderFrom(de)
+	if de != nil && de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
+		return &AdminDropPreview{
+			Mode:       AdminDropModeBlocked,
+			Reason:     "rider_busy_elsewhere",
+			TripID:     trip.TripID,
+			Rider:      rider,
+			JavaStatus: javaStatus,
+		}, nil
+	}
+	return &AdminDropPreview{
+		Mode:       AdminDropModeForceProgress,
+		TripID:     trip.TripID,
+		Rider:      rider,
+		JavaStatus: javaStatus,
+	}, nil
+}
+
+func previewMissingOrClosedTrip(javaStatus string) *AdminDropPreview {
+	switch javaStatus {
+	case "DELIVERED":
+		return &AdminDropPreview{Mode: AdminDropModeAlreadyDone, JavaStatus: javaStatus}
+	case "READY_FOR_DELIVERY", "OUT_FOR_DELIVERY":
+		return &AdminDropPreview{Mode: AdminDropModeJavaOnly, JavaStatus: javaStatus}
+	default:
+		return &AdminDropPreview{Mode: AdminDropModeBlocked, Reason: "java_not_ready", JavaStatus: javaStatus}
+	}
+}
+
+func adminDropTripOpen(status models.TripStatus) bool {
+	switch status {
+	case models.TripStatusCreated, models.TripStatusAssigned, models.TripStatusAccepted, models.TripStatusOutForDelivery:
+		return true
+	default:
+		return false
+	}
+}
+
+func adminDropRiderFrom(de *models.DeliveryExecutive) *AdminDropRider {
+	if de == nil {
+		return nil
+	}
+	return &AdminDropRider{Phone: de.PhoneNumber, Name: de.Name, Status: string(de.Status)}
+}
+
+func (s *TripService) listAdminDropCandidates(ctx context.Context, storeID string) ([]AdminDropCandidate, error) {
+	indexKey := models.AssignedStoreIndexKeyFor(storeID)
+	var out []AdminDropCandidate
+	cursor := ""
+	for {
+		des, next, err := s.deRepo.ListByAssignedStore(ctx, indexKey, "", cursor, 100)
+		if err != nil {
+			return nil, err
+		}
+		for _, de := range des {
+			if de == nil {
+				continue
+			}
+			switch de.Status {
+			case models.DEStatusOffline, models.DEStatusEligible, models.DEStatusFree:
+				out = append(out, AdminDropCandidate{
+					Phone:         de.PhoneNumber,
+					Name:          de.Name,
+					Status:        string(de.Status),
+					InHandCashZMW: de.InHandCashZMW,
+				})
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return out, nil
 }
 
 // adminSelectTask resolves the pickup/drop task an admin completion targets.

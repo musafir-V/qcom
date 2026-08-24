@@ -458,6 +458,7 @@ type stubTripRepo struct {
 	updateStatusCalled  bool
 	updateStatusTripID  string
 	updateStatusStatus  models.TripStatus
+	adminAssignCalled   bool
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -501,8 +502,21 @@ func (s *stubTripRepo) UpdateStatus(_ context.Context, tripID string, status mod
 	return nil
 }
 
+func (s *stubTripRepo) AdminAssign(_ context.Context, _, _, deID, dePhone, _ string) error {
+	s.adminAssignCalled = true
+	if s.trip != nil {
+		s.trip.Status = models.TripStatusAccepted
+		s.trip.DEID = deID
+		s.trip.DEPhone = dePhone
+	}
+	return nil
+}
+
 func (s *stubTripRepo) Accept(_ context.Context, _, _ string) error {
-	panic("stubTripRepo.Accept: unexpected call")
+	if s.trip != nil {
+		s.trip.Status = models.TripStatusAccepted
+	}
+	return nil
 }
 
 func (s *stubTripRepo) RejectToPool(_ context.Context, _, _, _, _ string) error {
@@ -517,11 +531,65 @@ func (s *stubTripRepo) UpdatePayment(_ context.Context, _ string, payment *model
 
 // stubDERepo satisfies deRepoI for unit tests.
 type stubDERepo struct {
-	de *models.DeliveryExecutive
+	de          *models.DeliveryExecutive
+	byPhone     map[string]*models.DeliveryExecutive
+	listed      []*models.DeliveryExecutive
+	statusCalls []string
+	attachCalls int
 }
 
-func (s *stubDERepo) GetByPhone(_ context.Context, _ string) (*models.DeliveryExecutive, error) {
+func (s *stubDERepo) GetByPhone(_ context.Context, phone string) (*models.DeliveryExecutive, error) {
+	if s.byPhone != nil {
+		return s.byPhone[phone], nil
+	}
+	if s.de != nil && (phone == "" || phone == s.de.PhoneNumber) {
+		return s.de, nil
+	}
 	return s.de, nil
+}
+
+func (s *stubDERepo) UpdateStatus(_ context.Context, phone string, status models.DEStatus, _, _ string) error {
+	s.statusCalls = append(s.statusCalls, phone+":"+string(status))
+	if de, err := s.GetByPhone(context.Background(), phone); err == nil && de != nil {
+		de.Status = status
+	}
+	return nil
+}
+
+func (s *stubDERepo) AttachToTrip(_ context.Context, phone, orderID, tripID, _ string) error {
+	s.attachCalls++
+	if de, err := s.GetByPhone(context.Background(), phone); err == nil && de != nil {
+		de.Status = models.DEStatusBusy
+		de.CurrentOrderID = orderID
+		de.CurrentTripID = tripID
+	}
+	return nil
+}
+
+func (s *stubDERepo) ListByAssignedStore(_ context.Context, _, _, _ string, _ int32) ([]*models.DeliveryExecutive, string, error) {
+	return s.listed, "", nil
+}
+
+type stubJavaOrder struct {
+	status    string
+	getErr    error
+	updates   []string
+	updateErr error
+}
+
+func (s *stubJavaOrder) GetOrderStatus(_ context.Context, _ string) (string, error) {
+	if s.getErr != nil {
+		return "", s.getErr
+	}
+	return s.status, nil
+}
+
+func (s *stubJavaOrder) UpdateOrderStatus(_ context.Context, _, status, _ string) error {
+	if s.updateErr != nil {
+		return s.updateErr
+	}
+	s.updates = append(s.updates, status)
+	return nil
 }
 
 // stubNotifier satisfies NotificationService. Guarded by a mutex because
@@ -1545,5 +1613,107 @@ func TestAdminCompleteTask_Drop_KeepsExistingReachedAt(t *testing.T) {
 	}
 	if drop.ReachedAt != frozen {
 		t.Fatalf("reached_at = %q, want %q", drop.ReachedAt, frozen)
+	}
+}
+
+func TestPreviewAdminDropByOrder_NoTrip_JavaReady(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	p, err := svc.PreviewAdminDropByOrder(context.Background(), "ORD-P1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != AdminDropModeJavaOnly {
+		t.Fatalf("mode=%s", p.Mode)
+	}
+}
+
+func TestPreviewAdminDropByOrder_NoTrip_JavaPacking_Blocked(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "PACKING"}
+	p, err := svc.PreviewAdminDropByOrder(context.Background(), "ORD-P2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != AdminDropModeBlocked || p.Reason != "java_not_ready" {
+		t.Fatalf("got %+v", p)
+	}
+}
+
+func TestPreviewAdminDropByOrder_JavaCancelled_Blocked(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{TripID: "t1", Status: models.TripStatusCreated}}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "CANCELLED"}
+	p, err := svc.PreviewAdminDropByOrder(context.Background(), "ORD-P3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != AdminDropModeBlocked || p.Reason != "java_cancelled" {
+		t.Fatalf("got %+v", p)
+	}
+}
+
+func TestPreviewAdminDropByOrder_UnassignedTrip_PickRider(t *testing.T) {
+	listed := []*models.DeliveryExecutive{
+		{PhoneNumber: "+2601", Name: "Ann", Status: models.DEStatusOffline, InHandCashZMW: 10, AssignedStoreID: "221"},
+		{PhoneNumber: "+2602", Name: "Bob", Status: models.DEStatusBusy, InHandCashZMW: 1, AssignedStoreID: "221"},
+		{PhoneNumber: "+2603", Name: "Cyd", Status: models.DEStatusFree, InHandCashZMW: 99, AssignedStoreID: "221"},
+	}
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t1", OrderID: "ORD-P4", StoreID: "221", Status: models.TripStatusCreated,
+	}}, &stubDERepo{listed: listed}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	p, err := svc.PreviewAdminDropByOrder(context.Background(), "ORD-P4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != AdminDropModePickRider {
+		t.Fatalf("mode=%s", p.Mode)
+	}
+	if len(p.Candidates) != 2 {
+		t.Fatalf("candidates=%d (busy must be excluded)", len(p.Candidates))
+	}
+}
+
+func TestPreviewAdminDropByOrder_AssignedRider_ForceProgress(t *testing.T) {
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+2609", Name: "Ghan", Status: models.DEStatusOffline}
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t1", OrderID: "ORD-P5", DEPhone: "+2609", DEID: "de-1", Status: models.TripStatusAccepted,
+	}}, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	p, err := svc.PreviewAdminDropByOrder(context.Background(), "ORD-P5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != AdminDropModeForceProgress || p.Rider == nil || p.Rider.Phone != "+2609" {
+		t.Fatalf("got %+v", p)
+	}
+}
+
+func TestPreviewAdminDropByOrder_RiderBusyElsewhere_Blocked(t *testing.T) {
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+2609", Status: models.DEStatusBusy, CurrentOrderID: "ORD-OTHER"}
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t1", OrderID: "ORD-P6", DEPhone: "+2609", DEID: "de-1", Status: models.TripStatusAssigned,
+	}}, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	p, err := svc.PreviewAdminDropByOrder(context.Background(), "ORD-P6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != AdminDropModeBlocked || p.Reason != "rider_busy_elsewhere" {
+		t.Fatalf("got %+v", p)
+	}
+}
+
+func TestPreviewAdminDropByOrder_AlreadyDone(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t1", OrderID: "ORD-P7", Status: models.TripStatusCompleted,
+	}}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "DELIVERED"}
+	p, err := svc.PreviewAdminDropByOrder(context.Background(), "ORD-P7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Mode != AdminDropModeAlreadyDone {
+		t.Fatalf("mode=%s", p.Mode)
 	}
 }
