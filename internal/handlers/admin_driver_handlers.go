@@ -408,6 +408,10 @@ func cashDepositListKey(de *models.DeliveryExecutive) string {
 // query pagination and the in-memory COD filter/sum to a safe amount of work.
 const cashCollectionsMaxRangeDays = 31
 
+// driverTripsMaxRangeDays is the widest inclusive custom date span the
+// admin driver-trips endpoint accepts.
+const driverTripsMaxRangeDays = 7
+
 // cashCollectionsQueryPageSize is the DynamoDB page size used internally while
 // draining the full window; it is unrelated to the caller's items-per-page
 // limit, which slices the already-fetched, already-summed result.
@@ -421,12 +425,13 @@ const (
 // dateOnlyLayout is the required format for the from/to query params.
 const dateOnlyLayout = "2006-01-02"
 
-// catWindowRFC3339 validates a calendar-date range and converts it into the
-// inclusive [startTS, endTS] RFC3339 (UTC) bounds that match the format
-// completed_at is stored in (time.Now().UTC().Format(time.RFC3339)). The CAT
-// day boundaries are computed in Africa/Lusaka (UTC+2) and then converted to
-// UTC so the resulting strings compare correctly against stored values.
-func catWindowRFC3339(fromStr, toStr string) (startTS, endTS string, err error) {
+// catWindowRFC3339Max validates a calendar-date range against maxDays and
+// converts it into the inclusive [startTS, endTS] RFC3339 (UTC) bounds that
+// match the format completed_at is stored in
+// (time.Now().UTC().Format(time.RFC3339)). The CAT day boundaries are
+// computed in Africa/Lusaka (UTC+2) and then converted to UTC so the
+// resulting strings compare correctly against stored values.
+func catWindowRFC3339Max(fromStr, toStr string, maxDays int) (startTS, endTS string, err error) {
 	loc := timezone.ZambiaLocation()
 
 	from, err := time.ParseInLocation(dateOnlyLayout, fromStr, loc)
@@ -442,8 +447,8 @@ func catWindowRFC3339(fromStr, toStr string) (startTS, endTS string, err error) 
 	}
 
 	spanDays := int(to.Sub(from).Hours()/24) + 1
-	if spanDays > cashCollectionsMaxRangeDays {
-		return "", "", fmt.Errorf("%w: range spans %d days, max %d", errCashCollectionsRangeTooWide, spanDays, cashCollectionsMaxRangeDays)
+	if spanDays > maxDays {
+		return "", "", fmt.Errorf("%w: range spans %d days, max %d", errCashCollectionsRangeTooWide, spanDays, maxDays)
 	}
 
 	start := from // already midnight CAT via ParseInLocation
@@ -451,6 +456,11 @@ func catWindowRFC3339(fromStr, toStr string) (startTS, endTS string, err error) 
 	endInclusive := endExclusive.Add(-time.Second)
 
 	return start.UTC().Format(time.RFC3339), endInclusive.UTC().Format(time.RFC3339), nil
+}
+
+// catWindowRFC3339 is the cash-collections window helper (31-day max).
+func catWindowRFC3339(fromStr, toStr string) (string, string, error) {
+	return catWindowRFC3339Max(fromStr, toStr, cashCollectionsMaxRangeDays)
 }
 
 var (
@@ -639,6 +649,138 @@ func (h *AdminDriverHandlers) GetDriverCashCollections(w http.ResponseWriter, r 
 		"order_count": result.OrderCount,
 		"items":       result.Items,
 		"next_cursor": result.NextCursor,
+	})
+}
+
+// driverTripItem is one completed-trip row in the driver-trips response.
+type driverTripItem struct {
+	CompletedAt string  `json:"completed_at"`
+	OrderID     string  `json:"order_id"`
+	DistanceKM  float64 `json:"distance_km"`
+}
+
+// driverTripsResult is the full-window summary plus one page of items.
+type driverTripsResult struct {
+	TotalDistanceKM float64
+	TripCount       int
+	Items           []driverTripItem
+	NextCursor      string
+}
+
+// fetchDriverTrips drains every trip in [startTS, endTS] for deID via lister
+// (same pagination as fetchCashCollections) and returns ALL completed trips
+// with distance — no Payment / CollectCash filter. Totals span the entire
+// window before the requested page is sliced out.
+func fetchDriverTrips(ctx context.Context, lister cashCollectionsTripLister, deID, startTS, endTS string, offset, limit int) (*driverTripsResult, error) {
+	var allTrips []*models.Trip
+	var lastKey map[string]types.AttributeValue
+	for {
+		trips, next, err := lister.ListByDECompletedBetween(ctx, deID, startTS, endTS, cashCollectionsQueryPageSize, lastKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list trips: %w", err)
+		}
+		allTrips = append(allTrips, trips...)
+		if len(next) == 0 {
+			break
+		}
+		lastKey = next
+	}
+
+	var total float64
+	items := make([]driverTripItem, 0, len(allTrips))
+	for _, trip := range allTrips {
+		items = append(items, driverTripItem{
+			CompletedAt: trip.CompletedAt,
+			OrderID:     trip.OrderID,
+			DistanceKM:  trip.DistanceKM,
+		})
+		total += trip.DistanceKM
+	}
+
+	result := &driverTripsResult{
+		TotalDistanceKM: total,
+		TripCount:       len(items),
+		Items:           []driverTripItem{},
+	}
+
+	if offset < len(items) {
+		end := offset + limit
+		if end > len(items) {
+			end = len(items)
+		}
+		result.Items = items[offset:end]
+		if end < len(items) {
+			result.NextCursor = encodeCashCollectionsCursor(end)
+		}
+	}
+
+	return result, nil
+}
+
+// GET /api/v1/admin/drivers/{phone}/trips?from=YYYY-MM-DD&to=YYYY-MM-DD&cursor=&limit=
+// Lists all completed trips for a driver within an inclusive calendar-date
+// range (Africa/Lusaka, max 7 days), newest first, with full-window
+// trip_count and total_distance_km alongside a paginated items page.
+func (h *AdminDriverHandlers) GetDriverTrips(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	de, err := h.deRepo.GetByPhone(r.Context(), phone)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to fetch driver for trips")
+		h.respondWithError(w, http.StatusInternalServerError, "DE_FETCH_FAILED", "Failed to fetch driver")
+		return
+	}
+	if de == nil {
+		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+		return
+	}
+
+	q := r.URL.Query()
+	from := strings.TrimSpace(q.Get("from"))
+	to := strings.TrimSpace(q.Get("to"))
+	if from == "" || to == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "from and to are required (YYYY-MM-DD)")
+		return
+	}
+
+	startTS, endTS, err := catWindowRFC3339Max(from, to, driverTripsMaxRangeDays)
+	if err != nil {
+		switch {
+		case errors.Is(err, errCashCollectionsInvalidDate):
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_DATE", err.Error())
+		case errors.Is(err, errCashCollectionsInvalidRange):
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_RANGE", err.Error())
+		case errors.Is(err, errCashCollectionsRangeTooWide):
+			h.respondWithError(w, http.StatusBadRequest, "RANGE_TOO_WIDE", err.Error())
+		default:
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_DATE", err.Error())
+		}
+		return
+	}
+
+	offset, err := decodeCashCollectionsCursor(strings.TrimSpace(q.Get("cursor")))
+	if err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_CURSOR", "Invalid pagination cursor")
+		return
+	}
+	limit := clampCashCollectionsLimit(q.Get("limit"))
+
+	result, err := fetchDriverTrips(r.Context(), h.tripRepo, de.DEID, startTS, endTS, offset, limit)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to fetch driver trips")
+		h.respondWithError(w, http.StatusInternalServerError, "TRIPS_FETCH_FAILED", "Failed to fetch trips")
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"trip_count":        result.TripCount,
+		"total_distance_km": result.TotalDistanceKM,
+		"items":             result.Items,
+		"next_cursor":       result.NextCursor,
 	})
 }
 
