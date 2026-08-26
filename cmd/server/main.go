@@ -210,9 +210,10 @@ func main() {
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
 	adminSMSOTPRoutingHandlers := handlers.NewAdminSMSOTPRoutingHandlers(smsOTPRoutingConfigRepo, logger)
 	adminTripReachedHandlers := handlers.NewAdminTripReachedHandlers(tripReachedConfigRepo, logger)
+	adminTripsByOrdersHandlers := handlers.NewAdminTripsByOrdersHandlers(tripRepo, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, adminTripReachedHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, adminTripReachedHandlers, adminTripsByOrdersHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -346,6 +347,7 @@ func setupRouter(
 	adminStoreHandlers *handlers.AdminStoreHandlers,
 	adminSMSOTPRoutingHandlers *handlers.AdminSMSOTPRoutingHandlers,
 	adminTripReachedHandlers *handlers.AdminTripReachedHandlers,
+	adminTripsByOrdersHandlers *handlers.AdminTripsByOrdersHandlers,
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
 	disbursementHandlers *handlers.DisbursementHandlers,
@@ -427,6 +429,7 @@ func setupRouter(
 	admin.HandleFunc("/config/drop-reached", adminTripReachedHandlers.PatchConfig).Methods("PATCH", "OPTIONS")
 
 	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/trips/by-orders", adminTripsByOrdersHandlers.GetTripsByOrders).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/trips/{trip_id}/reassign-candidates", adminHandlers.ReassignCandidates).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/trips/{trip_id}/reassign", adminHandlers.ReassignTrip).Methods("POST", "OPTIONS")
 
