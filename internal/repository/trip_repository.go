@@ -154,6 +154,38 @@ func (r *TripRepository) GetByOrderID(ctx context.Context, orderID string) (*mod
 	return &trip, nil
 }
 
+// ListByOrderID returns every trip on OrderIndex for orderID (no Limit).
+// Empty match is nil, nil.
+func (r *TripRepository) ListByOrderID(ctx context.Context, orderID string) ([]*models.Trip, error) {
+	op := logging.Start(ctx, r.logger, "TripRepository.ListByOrderID", logrus.Fields{"order_id": orderID})
+	defer op.End()
+
+	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		IndexName:              aws.String("OrderIndex"),
+		KeyConditionExpression: aws.String("trip_order_id = :oid"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":oid": &types.AttributeValueMemberS{Value: orderID},
+		},
+	})
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to query OrderIndex: %w", err))
+	}
+	if len(result.Items) == 0 {
+		return nil, nil
+	}
+
+	trips := make([]*models.Trip, 0, len(result.Items))
+	for _, item := range result.Items {
+		var trip models.Trip
+		if err := attributevalue.UnmarshalMap(item, &trip); err != nil {
+			return nil, op.Fail(fmt.Errorf("failed to unmarshal trip: %w", err))
+		}
+		trips = append(trips, &trip)
+	}
+	return trips, nil
+}
+
 // Assign atomically sets de_id and status=assigned on the trip, and sets
 // status=busy + current_order_id on the DE — in a single DynamoDB transaction.
 // Conditions: trip must have no de_id yet; DE must have status=eligible.
