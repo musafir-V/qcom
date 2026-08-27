@@ -246,3 +246,39 @@ func TestStampAssignmentDecision_ResolvesRuleAtAssignmentTime(t *testing.T) {
 		t.Fatalf("unexpected rate decision: multiplier=%.2f flat=%.2f", trip.RateMultiplier, trip.RateFlatZMW)
 	}
 }
+
+func TestDEEligibleForAssign(t *testing.T) {
+	loc := mustLoadLusaka(t)
+	now := time.Date(2026, 8, 27, 17, 20, 0, 0, loc)
+	store := models.Darkstore{OpensAt: "08:00", ClosesAt: "22:10"}
+	scanToday := time.Date(2026, 8, 27, 13, 28, 0, 0, loc).UTC().Format(time.RFC3339)
+	scanYesterday := time.Date(2026, 8, 26, 18, 0, 0, 0, loc).UTC().Format(time.RFC3339)
+
+	de := func(id string, lastScan string, cash float64) *models.DeliveryExecutive {
+		return &models.DeliveryExecutive{DEID: id, LastScanAt: lastScan, InHandCashZMW: cash}
+	}
+	trip := &models.Trip{RejectedDEIDs: []string{"rejecter"}}
+
+	tests := []struct {
+		name string
+		de   *models.DeliveryExecutive
+		used map[string]bool
+		cash float64
+		want bool
+	}{
+		{"fresh scan", de("a", scanToday, 0), map[string]bool{}, 500, true},
+		{"stale yesterday scan", de("a", scanYesterday, 0), map[string]bool{}, 500, false},
+		{"empty last scan", de("a", "", 0), map[string]bool{}, 500, false},
+		{"already used this tick", de("a", scanToday, 0), map[string]bool{"a": true}, 500, false},
+		{"previously rejected this trip", de("rejecter", scanToday, 0), map[string]bool{}, 500, false},
+		{"over cash limit", de("a", scanToday, 600), map[string]bool{}, 500, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deEligibleForAssign(tt.de, trip, store, tt.cash, tt.used, now); got != tt.want {
+				t.Fatalf("deEligibleForAssign() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

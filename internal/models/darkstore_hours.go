@@ -57,6 +57,27 @@ func (d *Darkstore) IsOperationalAt(t time.Time) bool {
 	return now >= open && now < close
 }
 
+// ScannedSinceOpen reports whether lastScanAt (RFC3339) is at or after today's
+// opens_at in Africa/Lusaka. Empty/unparseable lastScanAt or invalid hours
+// fail closed (false). closes_at is not considered.
+func (d *Darkstore) ScannedSinceOpen(lastScanAt string, now time.Time) bool {
+	open, _, ok := d.openCloseMinutes()
+	if !ok || lastScanAt == "" {
+		return false
+	}
+	scanned, err := time.Parse(time.RFC3339, lastScanAt)
+	if err != nil {
+		return false
+	}
+	local := now.In(timezone.ZambiaLocation())
+	opensToday := time.Date(
+		local.Year(), local.Month(), local.Day(),
+		open/60, open%60, 0, 0,
+		timezone.ZambiaLocation(),
+	)
+	return !scanned.Before(opensToday)
+}
+
 // NextOpensAt returns the next scheduled opening as RFC3339 in Africa/Lusaka.
 // The second return value is false when operating hours are invalid.
 func (d *Darkstore) NextOpensAt(t time.Time) (string, bool) {

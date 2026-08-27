@@ -184,7 +184,7 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 
 	now := timezone.Now()
 	for _, store := range stores {
-		c.processStore(ctx, store.DarkstoreID, cfg, autoRejectSecs, cashLimit, now)
+		c.processStore(ctx, store, cfg, autoRejectSecs, cashLimit, now)
 	}
 
 	// Stamp cron liveness after processing every active store this tick.
@@ -193,17 +193,18 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 
 // processStore runs the order→trip→DE assignment pipeline for a single
 // darkstore: fetch its READY_FOR_DELIVERY orders and eligible DEs, create any
-// missing trips, assign pooled trips FIFO, and sweep missed scans. Errors are
-// logged with the store id and cause only this store to be skipped; other
-// active stores in the same tick are unaffected.
+// missing trips, and assign pooled trips FIFO. Errors are logged with the
+// store id and cause only this store to be skipped; other active stores in
+// the same tick are unaffected.
 func (c *AssignmentCron) processStore(
 	ctx context.Context,
-	storeID string,
+	store models.Darkstore,
 	cfg *models.PayoutConfig,
 	autoRejectSecs int,
 	cashLimit float64,
 	now time.Time,
 ) {
+	storeID := store.DarkstoreID
 	// Fetch READY_FOR_DELIVERY orders from Java for this store.
 	orders, err := c.javaClient.GetReadyForDeliveryOrders(ctx, storeID)
 	if err != nil {
@@ -339,12 +340,12 @@ func (c *AssignmentCron) processStore(
 	sortTripsByCreatedAt(unassigned)
 
 	// Assign each unassigned trip to the first eligible DE that has not already
-	// rejected it and is not already taken this tick.
+	// rejected it, is not already taken this tick, and scanned since today's open.
 	usedDE := make(map[string]bool)
 	assignedCount := 0
 	for _, trip := range unassigned {
 		for _, de := range eligibleDEs {
-			if usedDE[de.DEID] || trip.HasRejected(de.DEID) || de.CashExceeds(cashLimit) {
+			if !deEligibleForAssign(de, trip, store, cashLimit, usedDE, now) {
 				continue
 			}
 			assignedAt := now
@@ -423,76 +424,6 @@ func (c *AssignmentCron) processStore(
 	}
 
 	metrics.RecordCronStore(storeID, len(orders), len(eligibleDEs), leftOut, len(newTrips), assignedCount, distanceFailedCount)
-
-	// Presence sweep: auto-offline on-duty riders whose scan deadline passed.
-	c.sweepMissedScans(ctx, storeID, now)
-}
-
-// sweepMissedScans flips on-duty riders (eligible/free) offline once their scan
-// deadline has passed, appends a missed_scan event, and pushes them to re-scan.
-// It runs inside the cron's distributed lock so a single instance sweeps.
-func (c *AssignmentCron) sweepMissedScans(ctx context.Context, storeID string, now time.Time) {
-	onDuty, err := c.deRepo.FindOnDutyByStore(ctx, storeID)
-	if err != nil {
-		c.logger.WithError(err).Warn("assignment cron: presence sweep — failed to fetch on-duty DEs")
-		return
-	}
-
-	for _, de := range onDuty {
-		// busy is paused; a DE without a deadline is not being tracked.
-		if de.Status == models.DEStatusBusy || de.ScanDeadlineAt == "" {
-			continue
-		}
-		deadline, err := time.Parse(time.RFC3339, de.ScanDeadlineAt)
-		if err != nil {
-			c.logger.WithError(err).WithField("phone", de.PhoneNumber).
-				Warn("assignment cron: presence sweep — bad scan_deadline_at; skipping")
-			continue
-		}
-		if now.Before(deadline) {
-			continue
-		}
-
-		fromState := de.Status
-		if err := c.deRepo.MarkOfflineIfDeadlinePassed(ctx, de.PhoneNumber, de.ScanDeadlineAt); err != nil {
-			if errors.Is(err, repository.ErrScanDeadlineConflict) {
-				// Rider re-scanned or changed state between read and write — benign.
-				continue
-			}
-			c.logger.WithError(err).WithField("phone", de.PhoneNumber).
-				Warn("assignment cron: presence sweep — failed to mark offline")
-			continue
-		}
-
-		c.appendStatusEvent(ctx, &models.DEStatusEvent{
-			Phone:     de.PhoneNumber,
-			FromState: fromState,
-			ToState:   models.DEStatusOffline,
-			Reason:    models.ReasonMissedScan,
-			StoreID:   storeID,
-			TS:        now.UTC().Format(time.RFC3339),
-		})
-		c.logger.WithFields(logrus.Fields{
-			"phone": de.PhoneNumber, "de_id": de.DEID, "store_id": storeID,
-		}).Info("assignment cron: presence sweep — DE flipped offline (missed scan)")
-
-		// Best-effort push: never block the tick. Detached context.
-		offlineDE := de
-		go func() {
-			c.notifier.Send(context.Background(), models.NotificationSendRequest{
-				RecipientType: models.RecipientTypeDriver,
-				RecipientID:   offlineDE.DEID,
-				EventType:     "PRESENCE_OFFLINE",
-				Priority:      models.PriorityHigh,
-				Title:         "You're offline",
-				Body:          "Scan the store QR to get orders.",
-				Data: map[string]string{
-					"type":     "PRESENCE_OFFLINE",
-					"store_id": storeID,
-				},
-			})
-		}()
-	}
 }
 
 // appendStatusEvent writes a status-event best-effort; never fails the tick.
@@ -604,6 +535,26 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 func (c *AssignmentCron) detectCancellations(ctx context.Context, currentReadyOrders []JavaOrder) {
 	_ = ctx
 	_ = currentReadyOrders
+}
+
+// deEligibleForAssign is the cron-only gate for offering a trip to a DE:
+// not already taken this tick, has not rejected this trip, under the cash
+// limit, and last store QR is at or after today's opens_at.
+func deEligibleForAssign(
+	de *models.DeliveryExecutive,
+	trip *models.Trip,
+	store models.Darkstore,
+	cashLimit float64,
+	usedDE map[string]bool,
+	now time.Time,
+) bool {
+	if de == nil || trip == nil {
+		return false
+	}
+	if usedDE[de.DEID] || trip.HasRejected(de.DEID) || de.CashExceeds(cashLimit) {
+		return false
+	}
+	return store.ScannedSinceOpen(de.LastScanAt, now)
 }
 
 // sortTripsByCreatedAt sorts trips ascending by created_at (oldest first = FIFO).

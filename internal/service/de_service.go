@@ -177,8 +177,8 @@ type ScanLocation struct {
 
 // StartDuty validates the store QR + a geofenced presence scan and transitions
 // the DE to eligible. Valid from: offline or free. On success it stamps the
-// next scan deadline (now + ScanInterval), the last-scan location, and appends
-// a status event (scan_start from offline, scan_return from free).
+// last-scan location/time and appends a status event (scan_start from offline,
+// scan_return from free).
 func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc ScanLocation) (string, error) {
 	op := logging.Start(ctx, s.logger, "StartDuty", logrus.Fields{"phone": dePhone})
 	defer op.End()
@@ -249,9 +249,8 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc S
 	fromState := de.Status
 	now := timezone.Now()
 	nowUTC := now.UTC().Format(time.RFC3339)
-	deadline := now.UTC().Add(models.ScanInterval).Format(time.RFC3339)
 
-	if err := s.deRepo.MarkEligibleFromScan(ctx, dePhone, storeID, deadline, loc.Lat, loc.Lng, nowUTC); err != nil {
+	if err := s.deRepo.MarkEligibleFromScan(ctx, dePhone, storeID, loc.Lat, loc.Lng, nowUTC); err != nil {
 		return "", op.Fail(fmt.Errorf("failed to update DE status: %w", err))
 	}
 

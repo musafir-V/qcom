@@ -312,8 +312,7 @@ func (r *TripRepository) UpdateStatus(ctx context.Context, tripID string, status
 // CompleteTripAndFreeDE atomically marks the trip completed (with final tasks),
 // frees the assigned DE, and accrues the COD cash amount to the DE's in-hand
 // balance. The DE must be busy on this trip. On completion the DE stays on-duty
-// at storeID: status becomes free with a fresh scan deadline (now + ScanInterval)
-// and duty_index_key = DE_ONDUTY#{store}, so the sweep keeps tracking presence.
+// at storeID: status becomes free and duty_index_key = DE_ONDUTY#{store}.
 func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone, storeID string, tasks []models.Task, codAmount float64) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.CompleteTripAndFreeDE", logrus.Fields{
 		"trip_id": tripID, "de_phone": dePhone, "cod_amount_zmw": codAmount,
@@ -327,7 +326,6 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 
 	nowT := time.Now().UTC()
 	now := nowT.Format(time.RFC3339)
-	deadline := nowT.Add(models.ScanInterval).Format(time.RFC3339)
 
 	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
@@ -360,19 +358,18 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 					},
 					UpdateExpression: aws.String(
 						"SET #status = :free, updated_at = :now, in_hand_cash_zmw = if_not_exists(in_hand_cash_zmw, :zero) + :cod, " +
-							"current_store_id = :store, duty_index_key = :duty, scan_deadline_at = :deadline " +
-							"REMOVE current_order_id, current_trip_id",
+							"current_store_id = :store, duty_index_key = :duty " +
+							"REMOVE current_order_id, current_trip_id, scan_deadline_at",
 					),
 					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
 					ExpressionAttributeNames: map[string]string{"#status": "status"},
 					ExpressionAttributeValues: map[string]types.AttributeValue{
-						":free":     &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
-						":busy":     &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
-						":tid":      &types.AttributeValueMemberS{Value: tripID},
-						":now":      &types.AttributeValueMemberS{Value: now},
-						":store":    &types.AttributeValueMemberS{Value: storeID},
-						":duty":     &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
-						":deadline": &types.AttributeValueMemberS{Value: deadline},
+						":free":  &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
+						":busy":  &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+						":tid":   &types.AttributeValueMemberS{Value: tripID},
+						":now":   &types.AttributeValueMemberS{Value: now},
+						":store": &types.AttributeValueMemberS{Value: storeID},
+						":duty":  &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
 						// Always persist COD accrual at 2dp so float64 noise cannot
 						// pollute in_hand_cash_zmw and break later cash deposits.
 						":cod":  &types.AttributeValueMemberN{Value: money.FormatZMW(codAmount)},
@@ -609,7 +606,7 @@ func (r *TripRepository) ListByDEWindow(
 // CancelByOrderID cancels a trip and frees the assigned DE atomically.
 // Used by the assignment cron when it detects a Java order has been cancelled.
 // dePhone is needed to update the DE record; pass "" if the trip is unassigned.
-// storeID keeps the freed DE on-duty (free + fresh scan deadline + duty index);
+// storeID keeps the freed DE on-duty (free + duty index);
 // pass "" to leave the DE off the on-duty index.
 func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone, storeID string) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.CancelByOrderID", logrus.Fields{"trip_id": tripID})
@@ -617,7 +614,6 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone, s
 
 	nowT := time.Now().UTC()
 	now := nowT.Format(time.RFC3339)
-	deadline := nowT.Add(models.ScanInterval).Format(time.RFC3339)
 
 	items := []types.TransactWriteItem{
 		{
@@ -653,14 +649,13 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone, s
 			},
 		}
 		if storeID != "" {
-			// Keep the freed DE on-duty at the store with a fresh presence deadline.
+			// Keep the freed DE on-duty at the store (no scan deadline).
 			deUpdate.UpdateExpression = aws.String(
-				"SET #status = :free, current_store_id = :store, duty_index_key = :duty, scan_deadline_at = :deadline, updated_at = :now " +
-					"REMOVE current_order_id, current_trip_id",
+				"SET #status = :free, current_store_id = :store, duty_index_key = :duty, updated_at = :now " +
+					"REMOVE current_order_id, current_trip_id, scan_deadline_at",
 			)
 			deUpdate.ExpressionAttributeValues[":store"] = &types.AttributeValueMemberS{Value: storeID}
 			deUpdate.ExpressionAttributeValues[":duty"] = &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)}
-			deUpdate.ExpressionAttributeValues[":deadline"] = &types.AttributeValueMemberS{Value: deadline}
 		} else {
 			deUpdate.UpdateExpression = aws.String("SET #status = :free, updated_at = :now REMOVE current_order_id, current_trip_id, duty_index_key, scan_deadline_at")
 		}
@@ -705,8 +700,8 @@ func (r *TripRepository) UpdatePayment(ctx context.Context, tripID string, payme
 			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 		},
-		UpdateExpression:    aws.String("SET payment = :payment, updated_at = :now"),
-		ConditionExpression: aws.String("attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed"),
+		UpdateExpression:         aws.String("SET payment = :payment, updated_at = :now"),
+		ConditionExpression:      aws.String("attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed"),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":payment":         paymentAttr,
@@ -772,7 +767,6 @@ func (r *TripRepository) RejectToPool(ctx context.Context, tripID, dePhone, stor
 
 	nowT := time.Now().UTC()
 	now := nowT.Format(time.RFC3339)
-	deadline := nowT.Add(models.ScanInterval).Format(time.RFC3339)
 
 	_, err := r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
@@ -805,11 +799,11 @@ func (r *TripRepository) RejectToPool(ctx context.Context, tripID, dePhone, stor
 						"PK": &types.AttributeValueMemberS{Value: "DE!" + dePhone},
 						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 					},
-					// Rider returns to eligible (on-duty) and resumes the presence
-					// clock with a fresh deadline.
+					// Rider returns to eligible (on-duty). Last scan is unchanged
+					// so the cron daily-open gate still applies.
 					UpdateExpression: aws.String(
-						"SET #status = :eligible, current_store_id = :store, duty_index_key = :duty, scan_deadline_at = :deadline, updated_at = :now " +
-							"REMOVE current_order_id, current_trip_id",
+						"SET #status = :eligible, current_store_id = :store, duty_index_key = :duty, updated_at = :now " +
+							"REMOVE current_order_id, current_trip_id, scan_deadline_at",
 					),
 					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
 					ExpressionAttributeNames: map[string]string{"#status": "status"},
@@ -818,7 +812,6 @@ func (r *TripRepository) RejectToPool(ctx context.Context, tripID, dePhone, stor
 						":busy":     &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
 						":store":    &types.AttributeValueMemberS{Value: storeID},
 						":duty":     &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
-						":deadline": &types.AttributeValueMemberS{Value: deadline},
 						":tid":      &types.AttributeValueMemberS{Value: tripID},
 						":now":      &types.AttributeValueMemberS{Value: now},
 					},
@@ -943,7 +936,6 @@ func (r *TripRepository) Reassign(
 
 	nowT := time.Now().UTC()
 	now := nowT.Format(time.RFC3339)
-	deadline := nowT.Add(models.ScanInterval).Format(time.RFC3339)
 
 	tripSet := "SET de_id = :to_de_id, de_phone = :to_de_phone, " +
 		"reassignments = list_append(if_not_exists(reassignments, :empty), :entry), " +
@@ -983,10 +975,9 @@ func (r *TripRepository) Reassign(
 				},
 			},
 			{
-				// Outgoing rider: released to free and on duty at the trip's store,
-				// with a fresh scan deadline. free is deliberate — the assignment
-				// cron matches eligible only, so they get no new order until they
-				// return to a store and scan the QR.
+				// Outgoing rider: released to free and on duty at the trip's store.
+				// free is deliberate — the assignment cron matches eligible only,
+				// so they get no new order until they return and scan the QR.
 				Update: &types.Update{
 					TableName: aws.String(r.tableName),
 					Key: map[string]types.AttributeValue{
@@ -995,19 +986,18 @@ func (r *TripRepository) Reassign(
 					},
 					UpdateExpression: aws.String(
 						"SET #status = :free, current_store_id = :store, duty_index_key = :duty, " +
-							"scan_deadline_at = :deadline, updated_at = :now " +
-							"REMOVE current_order_id, current_trip_id",
+							"updated_at = :now " +
+							"REMOVE current_order_id, current_trip_id, scan_deadline_at",
 					),
 					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
 					ExpressionAttributeNames: map[string]string{"#status": "status"},
 					ExpressionAttributeValues: map[string]types.AttributeValue{
-						":free":     &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
-						":busy":     &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
-						":store":    &types.AttributeValueMemberS{Value: storeID},
-						":duty":     &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
-						":deadline": &types.AttributeValueMemberS{Value: deadline},
-						":tid":      &types.AttributeValueMemberS{Value: tripID},
-						":now":      &types.AttributeValueMemberS{Value: now},
+						":free":  &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
+						":busy":  &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+						":store": &types.AttributeValueMemberS{Value: storeID},
+						":duty":  &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
+						":tid":   &types.AttributeValueMemberS{Value: tripID},
+						":now":   &types.AttributeValueMemberS{Value: now},
 					},
 				},
 			},
