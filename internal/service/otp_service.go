@@ -71,7 +71,7 @@ func NewOTPService(
 }
 
 // GenerateOTP routes to Africa's Talking (default) or Twilio Verify.
-// +91 numbers skip SMS entirely (use masterOTPBypass on verify).
+// Non-Zambian numbers skip SMS entirely (use masterOTPBypass on verify).
 // The OTP string is never returned to callers (Twilio owns its codes;
 // AT codes stay in the local store). On provider failure after failover,
 // returns soft success ("", nil) so clients can still use masterOTPBypass.
@@ -82,10 +82,10 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	forceTwilio := s.forceTwilio(ctx)
 	op.With("force_twilio", forceTwilio)
 
-	// +91 numbers do not receive SMS (AT does not deliver there). Login uses
+	// Non-Zambian numbers do not receive SMS (AT is Zambia-only). Login uses
 	// masterOTPBypass on verify; still return success so the client proceeds.
-	if isIndiaPhone(phoneNumber) {
-		op.With("outcome", "india_bypass_skip_send")
+	if !isZambiaPhone(phoneNumber) {
+		op.With("outcome", "non_zambia_skip_send")
 		return "", nil
 	}
 

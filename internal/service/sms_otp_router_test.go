@@ -21,23 +21,27 @@ func TestShouldSendViaAfricaTalking(t *testing.T) {
 	if shouldSendViaAfricaTalking("+918882946897", false, true) {
 		t.Fatal("+91 → no AT send (bypass OTP)")
 	}
+	if shouldSendViaAfricaTalking("+254712345678", false, true) {
+		t.Fatal("non-Zambia → no AT send")
+	}
 }
 
-func TestIsIndiaPhone(t *testing.T) {
+func TestIsZambiaPhone(t *testing.T) {
 	tests := []struct {
 		phone string
 		want  bool
 	}{
-		{"+918882946897", true},
-		{"+919515365236", true},
-		{" +917766066119", true},
-		{"+260778210256", false},
-		{"918882946897", false},
+		{"+260778210256", true},
+		{"+260768737229", true},
+		{" +260968210256", true},
+		{"+918882946897", false},
+		{"+254712345678", false},
+		{"260778210256", false},
 		{"", false},
 	}
 	for _, tt := range tests {
-		if got := isIndiaPhone(tt.phone); got != tt.want {
-			t.Fatalf("isIndiaPhone(%q) = %v, want %v", tt.phone, got, tt.want)
+		if got := isZambiaPhone(tt.phone); got != tt.want {
+			t.Fatalf("isZambiaPhone(%q) = %v, want %v", tt.phone, got, tt.want)
 		}
 	}
 }

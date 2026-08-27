@@ -46,10 +46,10 @@ func (s *stubAfricaTalkingSender) SendOTP(_ context.Context, phoneNumber, otp st
 }
 
 type stubOTPStore struct {
-	mu    sync.Mutex
-	data  map[string]models.OTPData
-	gets  int
-	stores int
+	mu      sync.Mutex
+	data    map[string]models.OTPData
+	gets    int
+	stores  int
 	deletes int
 }
 
@@ -389,35 +389,40 @@ func TestVerifyOTP_ForceTwilioIgnoresLocal(t *testing.T) {
 	}
 }
 
-func TestGenerateOTP_IndiaPhone_SkipsSend(t *testing.T) {
-	twilio := &stubTwilioVerifier{}
-	at := &stubAfricaTalkingSender{configured: true}
-	store := newStubOTPStore()
-	svc := newTestOTPService(twilio, at, store, &stubRoutingConfig{forceTwilio: false})
+func TestGenerateOTP_NonZambiaPhone_SkipsSend(t *testing.T) {
+	phones := []string{"+918882946897", "+254712345678", "+14155552671"}
+	for _, phone := range phones {
+		t.Run(phone, func(t *testing.T) {
+			twilio := &stubTwilioVerifier{}
+			at := &stubAfricaTalkingSender{configured: true}
+			store := newStubOTPStore()
+			svc := newTestOTPService(twilio, at, store, &stubRoutingConfig{forceTwilio: false})
 
-	otp, err := svc.GenerateOTP(context.Background(), "+918882946897")
-	if err != nil {
-		t.Fatalf("GenerateOTP error: %v", err)
-	}
-	if otp != "" {
-		t.Fatalf("otp = %q, want empty", otp)
-	}
-	if len(at.sent) != 0 {
-		t.Fatalf("AT sent = %v, want none for +91", at.sent)
-	}
-	if len(twilio.started) != 0 {
-		t.Fatalf("twilio started = %v, want none for +91", twilio.started)
-	}
-	if _, ok := store.get("+918882946897"); ok {
-		t.Fatal("did not expect a local OTP for +91 bypass")
-	}
+			otp, err := svc.GenerateOTP(context.Background(), phone)
+			if err != nil {
+				t.Fatalf("GenerateOTP error: %v", err)
+			}
+			if otp != "" {
+				t.Fatalf("otp = %q, want empty", otp)
+			}
+			if len(at.sent) != 0 {
+				t.Fatalf("AT sent = %v, want none for non-Zambia", at.sent)
+			}
+			if len(twilio.started) != 0 {
+				t.Fatalf("twilio started = %v, want none for non-Zambia", twilio.started)
+			}
+			if _, ok := store.get(phone); ok {
+				t.Fatal("did not expect a local OTP for non-Zambia bypass")
+			}
 
-	valid, err := svc.VerifyOTP(context.Background(), "+918882946897", masterOTPBypass)
-	if err != nil {
-		t.Fatalf("VerifyOTP error: %v", err)
-	}
-	if !valid {
-		t.Fatal("expected master OTP bypass to succeed for +91")
+			valid, err := svc.VerifyOTP(context.Background(), phone, masterOTPBypass)
+			if err != nil {
+				t.Fatalf("VerifyOTP error: %v", err)
+			}
+			if !valid {
+				t.Fatal("expected master OTP bypass to succeed for non-Zambia")
+			}
+		})
 	}
 }
 
