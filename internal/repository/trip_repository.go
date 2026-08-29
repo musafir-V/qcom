@@ -309,6 +309,12 @@ func (r *TripRepository) UpdateStatus(ctx context.Context, tripID string, status
 	return nil
 }
 
+// markOutForDeliveryUpdateExpression freezes drop_deadline once.
+// if_not_exists keeps the first persisted epoch if pickup-complete races.
+func markOutForDeliveryUpdateExpression() string {
+	return "SET #status = :status, updated_at = :now, drop_deadline = if_not_exists(drop_deadline, :dd)"
+}
+
 // MarkOutForDelivery sets status to out_for_delivery and freezes drop_deadline
 // as a Dynamo Number. Changing admin x/y later must not move this value.
 func (r *TripRepository) MarkOutForDelivery(ctx context.Context, tripID string, dropDeadline int64) error {
@@ -324,7 +330,7 @@ func (r *TripRepository) MarkOutForDelivery(ctx context.Context, tripID string, 
 			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 		},
-		UpdateExpression: aws.String("SET #status = :status, updated_at = :now, drop_deadline = :dd"),
+		UpdateExpression: aws.String(markOutForDeliveryUpdateExpression()),
 		ExpressionAttributeNames: map[string]string{
 			"#status": "status",
 		},

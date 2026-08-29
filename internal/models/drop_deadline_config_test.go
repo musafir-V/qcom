@@ -1,6 +1,7 @@
 package models
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -67,6 +68,18 @@ func TestComputeDropDeadlineUnix_NegativeMinutesClampedToZero(t *testing.T) {
 	got := ComputeDropDeadlineUnix(now, 1, -10, 0)
 	if got != now.Unix() {
 		t.Fatalf("got %d, want %d", got, now.Unix())
+	}
+}
+
+func TestComputeDropDeadlineUnix_OverflowDoesNotWrapToPast(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	got := ComputeDropDeadlineUnix(now, 0, 2, 200000000)
+	if got < now.Unix() {
+		t.Fatalf("got %d before now %d (duration wrapped to MinInt64)", got, now.Unix())
+	}
+	want := now.Add(time.Duration(math.MaxInt64)).Unix()
+	if got != want {
+		t.Fatalf("got %d, want clamped MaxInt64 duration unix %d", got, want)
 	}
 }
 

@@ -63,11 +63,11 @@ func (h *AdminDropDeadlineHandlers) PatchConfig(w http.ResponseWriter, r *http.R
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "minutes_per_km and extra_minutes are required")
 		return
 	}
-	if *req.MinutesPerKm <= 0 {
+	if *req.MinutesPerKm <= 0 || !models.MinutesFitDropDeadlineDuration(*req.MinutesPerKm) {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "minutes_per_km must be greater than 0")
 		return
 	}
-	if *req.ExtraMinutes < 0 {
+	if *req.ExtraMinutes < 0 || !models.MinutesFitDropDeadlineDuration(*req.ExtraMinutes) {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "extra_minutes must be greater than or equal to 0")
 		return
 	}

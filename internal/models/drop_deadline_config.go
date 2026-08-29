@@ -1,11 +1,27 @@
 package models
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 const (
 	DefaultDropDeadlineMinutesPerKm = 2.0
 	DefaultDropDeadlineExtraMinutes = 0.0
 )
+
+// maxDropDeadlineMinutes is the largest minute count that converts to
+// time.Duration without overflowing int64 nanoseconds.
+var maxDropDeadlineMinutes = float64(math.MaxInt64) / float64(time.Minute)
+
+// MinutesFitDropDeadlineDuration reports whether mins can be converted to
+// time.Duration without overflow, NaN, or Inf. extra_minutes=0 is valid.
+func MinutesFitDropDeadlineDuration(mins float64) bool {
+	if math.IsNaN(mins) || math.IsInf(mins, 0) || mins < 0 {
+		return false
+	}
+	return mins <= maxDropDeadlineMinutes
+}
 
 type DropDeadlineConfig struct {
 	MinutesPerKm float64 `json:"minutes_per_km" dynamodbav:"minutes_per_km"`
@@ -31,8 +47,12 @@ func (c *DropDeadlineConfig) EffectiveExtraMinutes() float64 {
 
 func ComputeDropDeadlineUnix(now time.Time, distanceKM, minutesPerKm, extraMinutes float64) int64 {
 	mins := distanceKM*minutesPerKm + extraMinutes
-	if mins < 0 {
+	if mins < 0 || math.IsNaN(mins) {
 		mins = 0
 	}
-	return now.Add(time.Duration(mins * float64(time.Minute))).Unix()
+	ns := mins * float64(time.Minute)
+	if math.IsInf(ns, 0) || ns > float64(math.MaxInt64) {
+		return now.Add(time.Duration(math.MaxInt64)).Unix()
+	}
+	return now.Add(time.Duration(ns)).Unix()
 }

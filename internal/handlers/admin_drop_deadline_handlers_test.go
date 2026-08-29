@@ -201,6 +201,41 @@ func TestPatchDropDeadline_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestPatchDropDeadline_RejectsOverflowingY(t *testing.T) {
+	stub := &stubDropDeadlineConfigStore{}
+	h := newTestDropDeadlineHandlers(stub)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/config/drop-deadline", strings.NewReader(`{"minutes_per_km":2,"extra_minutes":200000000}`))
+	rec := httptest.NewRecorder()
+	h.PatchConfig(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_REQUEST") {
+		t.Fatalf("response = %s, want INVALID_REQUEST", rec.Body.String())
+	}
+	if stub.putTo != nil {
+		t.Fatalf("must not persist overflowing extra_minutes, Put got %+v", stub.putTo)
+	}
+}
+
+func TestPatchDropDeadline_AcceptsSafeBoundaryY(t *testing.T) {
+	stub := &stubDropDeadlineConfigStore{}
+	h := newTestDropDeadlineHandlers(stub)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/config/drop-deadline", strings.NewReader(`{"minutes_per_km":2,"extra_minutes":200}`))
+	rec := httptest.NewRecorder()
+	h.PatchConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if stub.putTo == nil || stub.putTo.ExtraMinutes != 200 {
+		t.Fatalf("Put extra_minutes = %+v, want 200", stub.putTo)
+	}
+}
+
 func TestPatchDropDeadline_RejectsNegativeY(t *testing.T) {
 	h := newTestDropDeadlineHandlers(&stubDropDeadlineConfigStore{})
 
