@@ -62,6 +62,14 @@ func TestComputeDropDeadlineUnix_UsesXAndY(t *testing.T) {
 	}
 }
 
+func TestComputeDropDeadlineUnix_NegativeMinutesClampedToZero(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	got := ComputeDropDeadlineUnix(now, 1, -10, 0)
+	if got != now.Unix() {
+		t.Fatalf("got %d, want %d", got, now.Unix())
+	}
+}
+
 func TestComputeDropDeadlineUnix_NotCustomerETA(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	// Customer ETA would be ceil(0.5*2)+3 = 4 min. Driver timer is 0.5*2+0 = 1 min.
