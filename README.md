@@ -1,379 +1,281 @@
-# QCom Authentication Service
+# qcom
 
-A Go-based authentication service with OTP verification via phone number and JWT token management using HS256 algorithm.
+Go last-mile service for [Bunzo](https://bunzodelivery.com). Production hostname: `https://api.bunzodelivery.com`.
 
-## Features
+Module: `github.com/qcom/qcom`. Binary: `cmd/server` → `qcom-server`.
 
-- Phone number-based authentication
-- OTP generation and verification (logged for development)
-- JWT access and refresh tokens (HS256)
-- DynamoDB for user storage, OTPs, and refresh tokens (with TTL auto-expiration)
-- RESTful API with proper HTTP standards
+This is **not** the whole Bunzo backend.
 
-## Architecture
+## What this service owns
 
-```
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐
-│   Client    │───▶│  Go Server   │───▶│  DynamoDB   │
-└─────────────┘    └──────────────┘    └─────────────┘
-                                         ├─ Users
-                                         ├─ OTPs (TTL)
-                                         └─ Tokens (TTL)
-```
+- Customer, rider (DE), and admin auth
+- Serviceability (darkstore polygons, ETA) and darkstore CRUD
+- Rider duty, trip assignment, and trip progression
+- Customer order tracking (trip state + order-service payload)
+- Earnings, disbursements, cash deposits, referrals
+- Customer disputes
+- Device tokens and FCM push
+- Voice tokens / Vonage answer+event webhooks
+- Uploads (presigned S3) and marketing QR redirects
 
-## API Endpoints
+Assignment is a 10s in-process cron (`internal/service/assignment_cron.go`). Each tick lists active darkstores, polls the Java **order-service** for `READY_FOR_DELIVERY` orders, creates trips, and assigns eligible DEs. A DynamoDB lock stops overlapping ticks across instances.
 
-### Authentication
+## What this service does not own
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| `POST` | `/api/v1/auth/initiate-otp` | Request OTP for phone number | No |
-| `POST` | `/api/v1/auth/verify-otp` | Verify OTP and get tokens | No |
-| `POST` | `/api/v1/auth/refresh` | Refresh access token | No |
-| `POST` | `/api/v1/auth/logout` | Revoke refresh token | Yes |
-| `GET` | `/api/v1/me` | Get current user info | Yes |
-| `GET` | `/health` | Health check | No |
+Catalog, cart, checkout, and payment capture (Airtel / MTN / card) are **not** in this repo. They live in the Java services (product-service, order-service).
 
-### Content
+qcom's only Java client is order-service, configured with `JAVA_ORDER_SERVICE_URL` (`internal/service/java_order_client.go`). Paths are prefixed `/order-service`.
 
-| Method | Endpoint | Description | Auth Required |
-|--------|----------|-------------|---------------|
-| `POST` | `/api/v1/home` | Get home page content | Yes |
+Storage here is **DynamoDB + S3**. This process does not use Postgres or Redis.
 
-## Quick Start
+## Stack
 
-### Prerequisites
+| | |
+|---|---|
+| Language | Go 1.25.8 (`go.mod`) |
+| HTTP | gorilla/mux, `:PORT` (default `8080`) |
+| Auth | Phone OTP + HS256 JWT (customer / DE); username+password JWT (admin) |
+| OTP SMS | Twilio Verify (required at boot); Africa's Talking when configured (Zambian `+260` numbers) |
+| Push | FCM via `FIREBASE_CREDENTIALS_B64` (no-op if unset) |
+| Voice | Vonage (`VONAGE_VOICE_*`) |
+| Maps | Google Maps (`GOOGLE_MAPS_API_KEY`) |
+| Metrics | Prometheus on `127.0.0.1:METRICS_PORT` (default `2112`), not on the public port |
 
-- Go 1.23+
-- Docker and Docker Compose
-- AWS CLI (for table creation)
-- curl (for testing)
+## Run locally
 
-### Using Makefile (Recommended)
-
-The easiest way to work with this project is using the Makefile:
+Prerequisites: Go 1.25.8, Docker + Docker Compose, AWS CLI (table/seed scripts), Twilio Verify credentials (the process **will not start** without them).
 
 ```bash
-# Show all available commands
-make help
-
-# Build the application
+make setup          # DynamoDB :8000 + LocalStack S3 :4566, then scripts/create-table.sh
+# export the required env vars (see below)
 make build
-
-# Setup development environment (start containers, create table)
-make setup
-
-# Run the application
-make run
-
-# Run integration tests (builds, starts dependencies, runs tests)
-make test-integration
-
-# Start development environment and run server
-make dev
+make run            # ./bin/qcom-server
 ```
 
-### Manual Setup
+Equivalent: `go run ./cmd/server` or `go build -o ./bin/qcom-server ./cmd/server`.
 
-#### 1. Start Dependencies
+`make docker-up` / `make docker-down` start/stop compose only. `make dev` is `setup` + `run`. `make help` lists the rest.
+
+Local DynamoDB/S3 need dummy AWS credentials on the host (the SDK still signs requests):
 
 ```bash
-make docker-up
-# or
-docker-compose up -d
+export AWS_ACCESS_KEY_ID=dummy
+export AWS_SECRET_ACCESS_KEY=dummy
+export AWS_DEFAULT_REGION=us-east-1
 ```
 
-#### 2. Create DynamoDB Table
+There is no `.env` loader in the binary. Export vars in the shell. Compose does not inject them into `qcom-server`.
+
+Optional after `make setup`:
 
 ```bash
-make setup
-# or manually:
-chmod +x scripts/create-table.sh
-./scripts/create-table.sh
+./scripts/seed-darkstores.sh      # sample store polygons
+./scripts/seed-home-page.sh       # PAGE#HOME for POST /api/v1/home
+./scripts/seed-dispute-config.sh
 ```
 
-#### 2.1. (Optional) Seed Home Page Data
+Assignment, track enrichment, and dispute-against-order need a reachable order-service (`JAVA_ORDER_SERVICE_URL`, default `http://localhost:8081`). The HTTP API still boots without it.
+
+## Environment variables
+
+Loaded by `config.Load()` in `internal/config/config.go`, plus three bootstrap vars read in `cmd/server/main.go`. Empty string in the source means “no default”.
+
+### Required to boot
+
+| Variable | Notes |
+|---|---|
+| `JWT_SECRET_KEY` | HS256 secret; **min 32 bytes**. No default. |
+| `TWILIO_ACCOUNT_SID` | No default. |
+| `TWILIO_AUTH_TOKEN` | No default. |
+| `TWILIO_VERIFY_SERVICE_SID` | No default. |
+
+### Optional (defaults in code)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PORT` | `8080` | Public HTTP listen port. |
+| `METRICS_PORT` | `2112` | Loopback-only `/metrics`. |
+| `DYNAMODB_ENDPOINT` | _(empty)_ | Set `http://localhost:8000` locally; empty = AWS. |
+| `DYNAMODB_REGION` | `us-east-1` | |
+| `DYNAMODB_TABLE_NAME` | `QComTable` | Single-table. |
+| `JWT_ACCESS_EXPIRY` | `15m` | Go duration. |
+| `JWT_REFRESH_EXPIRY` | `168h` | 7 days. |
+| `OTP_LENGTH` | `6` | |
+| `OTP_EXPIRY` | `10m` | |
+| `OTP_MAX_ATTEMPTS` | `5` | |
+| `S3_ENDPOINT` | _(empty)_ | Set `http://localhost:4566` for LocalStack; empty = AWS. |
+| `S3_REGION` | `ap-southeast-2` | |
+| `S3_BUCKET` | `printdrop-documents` | Default upload bucket. |
+| `S3_TRIP_PHOTOS_BUCKET` | same as `S3_BUCKET` | |
+| `S3_PRESIGN_EXPIRY_SECONDS` | `300` | |
+| `S3_FORCE_PATH_STYLE` | `false` | Set `true` for LocalStack. |
+| `GOOGLE_MAPS_API_KEY` | _(empty)_ | Geocode / ETA / distance. |
+| `JAVA_ORDER_SERVICE_URL` | `http://localhost:8081` | Order-service base URL. |
+| `AFRICASTALKING_USERNAME` | _(empty)_ | OTP SMS; unused if empty. |
+| `AFRICASTALKING_API_KEY` | _(empty)_ | Unused if empty. |
+| `AFRICASTALKING_BASE_URL` | `https://api.africastalking.com` | |
+| `FIREBASE_CREDENTIALS_B64` | _(empty)_ | Base64 service-account JSON; FCM no-op if empty/invalid. |
+| `DISPUTE_ELIGIBLE_ORDER_STATUSES` | `DELIVERED` | Comma-separated; uppercased. |
+| `VONAGE_VOICE_APP_ID` | _(empty)_ | |
+| `VONAGE_VOICE_PRIVATE_KEY` | _(empty)_ | Base64 private key. |
+| `VONAGE_VOICE_SIGNATURE_SECRET` | _(empty)_ | Event webhook HMAC. |
+| `SERVICEABILITY_BYPASS_USER_IDS` | _(empty)_ | Comma-separated JWT `entity_id`s. |
+| `IS_TEST` / `IS_TRUE` | unset | Either equal to `true` skips the polygon check and uses the first darkstore from `ListAll` (excluding the dummy store). |
+| `ADMIN_BOOTSTRAP_USERNAME` | _(empty)_ | With password, creates that admin username if it does not already exist. |
+| `ADMIN_BOOTSTRAP_PASSWORD` | _(empty)_ | Min 8 chars (same rule as admin create). |
+| `ADMIN_BOOTSTRAP_NAME` | username | |
+
+Production instances load `/app/.env` via systemd (`deploy/qcom.service`); `scripts/fetch-env.sh` writes that file from SSM `/qcom/prod/*`.
+
+## Auth
+
+**Customer and rider.** `POST /api/v1/auth/initiate-otp` then `POST /api/v1/auth/verify-otp` with an E.164 `phone_number` (`+[1-9]` + 1–14 digits). Response is an HS256 access token + refresh token (`Authorization: Bearer …`).
+
+`X-App-Type: de` selects rider login (DE must already exist). Anything else is customer (get-or-create). Refresh: `POST /api/v1/auth/refresh`. Logout requires a valid access token.
+
+**Admin.** `POST /api/v1/admin/login` with username/password. Token `entity_type` is `admin`. All `/api/v1/admin/*` except login use `RequireAdminAuth`.
+
+**Guest.** `X-User-Category: guest` is accepted only on serviceability and reverse geocode (no JWT).
+
+## HTTP surface
+
+Registered in `setupRouter` in `cmd/server/main.go`. 80+ method+path pairs; grouped below. CORS/OPTIONS is on almost every route. Do not treat this as an OpenAPI spec.
+
+### Public
+
+| Method | Path | Auth |
+|---|---|---|
+| `GET` | `/health` | None |
+| `GET` | `/q/{slug}` | None (marketing QR redirect) |
+| `POST` | `/api/v1/auth/initiate-otp` | None |
+| `POST` | `/api/v1/auth/verify-otp` | None |
+| `POST` | `/api/v1/auth/refresh` | None |
+| `POST` | `/api/v1/auth/logout` | Bearer |
+| `POST` | `/api/v1/de/register` | None |
+| `GET` | `/api/v1/stores/{storeId}/qr` | None (darkstore duty QR) |
+| `PATCH` | `/api/v1/config/payout` | None (runtime payout config) |
+| `POST` | `/api/v1/admin/login` | None |
+
+### Webhooks (no JWT)
+
+| Method | Path |
+|---|---|
+| `POST` | `/webhooks/voice/answer` |
+| `POST` | `/webhooks/voice/event` |
+| `POST` | `/webhooks/outbound-whatsapp-message-status` |
+| `POST` | `/webhooks/inbound-whatsapp-message` |
+
+Voice webhooks are Vonage (answer NCCO; event HMAC). WhatsApp handlers ack and log.
+
+### Customer (`RequireAuth` unless noted)
+
+| Method | Path |
+|---|---|
+| `GET` | `/api/v1/me` |
+| `DELETE` | `/api/v1/users/me` |
+| `POST` | `/api/v1/home` |
+| `POST` | `/api/v1/uploads/url` |
+| `GET` | `/api/v1/uploads/view-url` |
+| `POST` | `/api/v1/print/files/upload-url` |
+| `POST` | `/api/v1/serviceability` |
+| `POST` | `/api/v1/geocode/reverse` |
+| `GET` | `/api/v1/addresses/suggest` |
+| `GET` `POST` | `/api/v1/addresses` |
+| `GET` `PATCH` `DELETE` | `/api/v1/addresses/{id}` |
+| `GET` | `/api/v1/orders/{orderId}/track` |
+| `PUT` | `/api/v1/device-token` |
+| `POST` | `/api/v1/voice/token` |
+| `GET` | `/api/v1/disputes/dispositions` |
+| `POST` | `/api/v1/disputes` |
+| `GET` | `/api/v1/disputes/by-order` |
+| `GET` | `/api/v1/disputes/{id}` |
+
+Serviceability and reverse geocode: Bearer **or** `X-User-Category: guest`. Dispute routes: `RequireCustomerAuth`. Voice token: any valid access token (`RequireAuth`).
+
+### Rider / DE (`RequireDEAuth`)
+
+| Method | Path |
+|---|---|
+| `GET` | `/api/v1/de/me` |
+| `POST` | `/api/v1/de/duty/start` |
+| `POST` | `/api/v1/de/duty/end` |
+| `GET` | `/api/v1/de/trip` |
+| `GET` | `/api/v1/de/referral` |
+| `GET` | `/api/v1/de/earnings/summary` |
+| `GET` | `/api/v1/de/earnings/disbursements` |
+| `POST` | `/api/v1/trip/{tripId}/accept` |
+| `POST` | `/api/v1/trip/{tripId}/reject` |
+| `POST` | `/api/v1/trip/{tripId}/verify-pickup` |
+| `POST` | `/api/v1/trip/{tripId}/task/{taskId}/status/update` |
+| `POST` | `/api/v1/trip/{tripId}/task/{taskId}/photo/presign` |
+
+### Admin (`RequireAdminAuth` after login)
+
+Under `/api/v1/admin/`:
+
+- Account: `/me`, `/users`, `/users/{username}/password`
+- SMS OTP routing: `/sms-otp-routing`
+- Drop-reached config: `/config/drop-reached`
+- Assign / reassign: `/assign`, `/trips/by-orders`, `/trips/{trip_id}/reassign-candidates`, `/trips/{trip_id}/reassign`
+- Drivers: `/drivers`, `/drivers/{phone}` and sub-resources (earnings, disbursements, in-kind, referrals, cash ledger/collections, trips, presence, current trip, admin pickup/drop complete, assigned store)
+- Darkstores: `/darkstores`, `/darkstores/{id}`, activate/deactivate
+- Manual drop by order: `/orders/{orderId}/drop/preview`, `/orders/{orderId}/drop/complete`
+- Cash / payouts: `/de/{phone}/cash-deposit`, `/de/{deId}/disbursement`
+- Fare/reward rules: `/rules`, `/rules/{id}`, `/rules/{id}/versions`
+- Disputes: `/disputes`, `/disputes/summary`, `/disputes/{id}`
+- Marketing QR: `/qr/campaigns` and placements/analytics
+- Driver doc presign: `/uploads/url`
+
+### Internal (no JWT; intended as service-to-service)
+
+| Method | Path |
+|---|---|
+| `POST` | `/internal/v1/notifications/send` |
+| `POST` | `/internal/v1/trips/cancel-by-order` |
+| `POST` | `/internal/v1/trips/payment/update` |
+| `POST` | `/internal/v1/uploads/url` |
+| `GET` | `/internal/v1/uploads/view-url` |
+
+No JWT. Used for order-service cancel/payment updates, picker uploads, and FCM send. Auth is network isolation.
+
+`GET /metrics` is **not** on the public router; it is bound to loopback only.
+
+## Tests
 
 ```bash
-chmod +x scripts/seed-home-page.sh
-./scripts/seed-home-page.sh
+make test                 # go test -v ./...
+make test-coverage        # coverage.out + coverage.html
+make test-upload          # go test -v -tags=integration -timeout 120s ./tests/integration/...  (Docker)
+make test-integration     # scripts/integration-test.sh (build + local DynamoDB + curl)
+make test-smoke           # live API; SMOKE_BASE_URL defaults to https://api.bunzodelivery.com
 ```
 
-This will create a sample `PAGE#HOME` record in DynamoDB for testing the home endpoint.
+`go test ./...` skips files with `//go:build integration` or `//go:build smoke`. `make test-integration` boots the real binary and sets `JWT_SECRET_KEY`; the three Twilio vars must already be in the environment.
 
-#### 3. Generate JWT Secret Key
+`make fmt`, `make vet`, `make lint` (`golangci-lint`), `make check` (fmt+vet+lint).
+
+## Production
+
+systemd on EC2 behind an ALB (ASG `qcom-asg`). Unit: `deploy/qcom.service` (`ExecStart=/app/qcom/bin/qcom-server`, `EnvironmentFile=/app/.env`). No Kubernetes manifests in this repo.
 
 ```bash
-# Generate a secure 32-byte key
-openssl rand -base64 32
+make deploy               # scripts/deploy.sh — ASG rolling replace; needs .deploy.local.env
 ```
 
-#### 4. Set Environment Variables
+Health check used by deploy: `https://api.bunzodelivery.com/health`.
 
-```bash
-export JWT_SECRET_KEY="<your-generated-key>"
-export DYNAMODB_ENDPOINT="http://localhost:8000"
-export DYNAMODB_REGION="us-east-1"
-export DYNAMODB_TABLE_NAME="QComTable"
-export PORT="8080"
-```
-
-#### 5. Run the Server
-
-```bash
-make run
-# or
-go run cmd/server/main.go
-```
-
-## Makefile Commands
-
-| Command | Description |
-|---------|-------------|
-| `make help` | Show all available commands |
-| `make build` | Build the application |
-| `make run` | Run the application |
-| `make test-integration` | Build, start dependencies, and run integration tests |
-| `make setup` | Setup development environment (start containers, create table) |
-| `make docker-up` | Start Docker containers |
-| `make docker-down` | Stop Docker containers |
-| `make docker-restart` | Restart Docker containers |
-| `make dev` | Start development environment and run server |
-| `make dev-test` | Start server with local containers for manual API testing |
-| `make clean` | Clean build artifacts |
-| `make clean-all` | Clean everything including Docker containers |
-| `make deps` | Download Go dependencies |
-| `make test` | Run unit tests |
-| `make fmt` | Format code |
-| `make vet` | Run go vet |
-| `make lint` | Run linter |
-| `make check` | Run all checks (format, vet, lint) |
-
-## Integration Tests
-
-Run the integration test script that:
-1. Starts Docker container (DynamoDB only)
-2. Creates the DynamoDB table with TTL enabled
-3. Starts the application
-4. Tests all API endpoints using curl
-5. Validates responses
-
-```bash
-make test-integration
-# or manually:
-chmod +x scripts/integration-test.sh
-./scripts/integration-test.sh
-```
-
-The script will:
-- Test health check
-- Test OTP initiation
-- Test OTP verification
-- Test protected endpoints
-- Test token refresh
-- Test logout
-- **Test home page endpoint** (new)
-- Clean up resources
-
-### Quick Home Endpoint Test
-
-To quickly test just the home endpoint (requires server already running):
-
-```bash
-./scripts/test-home-endpoint.sh
-```
-
-For detailed testing documentation, see [TESTING_HOME_API.md](TESTING_HOME_API.md).
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8080` | Server port |
-| `JWT_SECRET_KEY` | (required) | Secret key for JWT signing (min 32 bytes) |
-| `JWT_ACCESS_EXPIRY` | `15m` | Access token expiration |
-| `JWT_REFRESH_EXPIRY` | `168h` | Refresh token expiration (7 days) |
-| `DYNAMODB_ENDPOINT` | `` | DynamoDB endpoint (empty for AWS) |
-| `DYNAMODB_REGION` | `us-east-1` | AWS region |
-| `DYNAMODB_TABLE_NAME` | `QComTable` | DynamoDB table name |
-| `OTP_LENGTH` | `6` | OTP length |
-| `OTP_EXPIRY` | `10m` | OTP expiration |
-| `OTP_MAX_ATTEMPTS` | `5` | Max OTP verification attempts |
-
-## API Usage Examples
-
-For detailed curl command examples, see:
-- **Interactive script:** `examples/api-examples.sh` - Run this script to test all endpoints interactively
-- **Command reference:** `examples/curl-commands.md` - Complete reference with all curl commands
-
-### Quick Examples
-
-### 1. Initiate OTP
-
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/initiate-otp \
-  -H "Content-Type: application/json" \
-  -d '{"phone_number": "+1234567890"}'
-```
-
-Response:
-```json
-{
-  "message": "OTP sent successfully"
-}
-```
-
-**Note:** OTP is logged in server logs for development.
-
-### 2. Verify OTP
-
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "phone_number": "+1234567890",
-    "otp": "123456"
-  }'
-```
-
-Response:
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "token_type": "Bearer",
-  "expires_in": 900,
-  "user": {
-    "phone_number": "+1234567890",
-    "name": ""
-  }
-}
-```
-
-### 3. Use Access Token
-
-```bash
-curl -X GET http://localhost:8080/api/v1/me \
-  -H "Authorization: Bearer <access_token>"
-```
-
-### 4. Refresh Token
-
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/refresh \
-  -H "Content-Type: application/json" \
-  -d '{
-    "refresh_token": "<refresh_token>"
-  }'
-```
-
-### 5. Logout
-
-```bash
-curl -X POST http://localhost:8080/api/v1/auth/logout \
-  -H "Authorization: Bearer <access_token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "refresh_token": "<refresh_token>"
-  }'
-```
-
-### 6. Get Home Page Content
-
-```bash
-curl -X POST http://localhost:8080/api/v1/home \
-  -H "Authorization: Bearer <access_token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "latitude": 37.7749,
-    "longitude": -122.4194
-  }'
-```
-
-Response:
-```json
-{
-  "data": {
-    "PK": "PAGE#HOME",
-    "SK": "PAGE#HOME",
-    "content": {
-      "...": "page content from DynamoDB"
-    }
-  }
-}
-```
-
-**Note:** The endpoint accepts latitude and longitude (logged but not currently used for filtering). It queries DynamoDB for the `PAGE#HOME` partition key and returns the stored JSON data.
-
-## DynamoDB Schema
-
-### User Table
-
-**Partition Key (PK):** `USER!<phoneNumber>`  
-**Sort Key (SK):** `METADATA`
-
-**Attributes:**
-- `phone_number` (String): Phone number in E.164 format
-- `name` (String): User's name (optional)
-- `created_at` (String): ISO 8601 timestamp
-- `updated_at` (String): ISO 8601 timestamp
-
-### Page Content
-
-**Partition Key (PK):** `PAGE#HOME` (or other page identifiers)  
-**Sort Key (SK):** `PAGE#HOME` (same as PK)
-
-**Attributes:**
-- `content` (Map): JSON content for the page
-
-## Security Features
-
-- **HS256 JWT Signing:** Symmetric HMAC-SHA256 algorithm
-- **Token Rotation:** Refresh tokens are rotated on each use
-- **Token Revocation:** Refresh tokens can be revoked
-- **OTP Hashing:** OTPs are hashed with bcrypt before storage
-- **Rate Limiting:** OTP attempts are limited
-- **Secure Storage:** OTPs and tokens stored in DynamoDB with automatic TTL expiration
-
-## Development
-
-### Project Structure
+## Layout
 
 ```
-.
-├── cmd/
-│   └── server/
-│       └── main.go          # Application entry point
-├── internal/
-│   ├── config/               # Configuration management
-│   ├── handlers/             # HTTP handlers
-│   ├── middleware/           # HTTP middleware
-│   ├── models/               # Data models
-│   ├── repository/           # Data access layer
-│   └── service/              # Business logic
-├── scripts/                  # Utility scripts
-│   ├── create-table.sh       # Create DynamoDB table
-│   ├── seed-home-page.sh     # Seed sample home page data
-│   └── integration-test.sh   # Integration test script
-└── docker-compose.yml        # Local development setup
+cmd/server/          entrypoint + router
+internal/config/     env loading
+internal/handlers/   HTTP
+internal/middleware/ CORS, auth, logging, metrics, trace
+internal/service/    OTP, JWT, trips, assignment cron, FCM, Vonage, Java client
+internal/repository/ DynamoDB
+deploy/qcom.service  systemd unit
+scripts/             table, seeds, deploy, SSM
+tests/integration/   build tag integration
+tests/smoke/         build tag smoke
+docker-compose.yml   DynamoDB Local + LocalStack S3
 ```
-
-### Running Tests
-
-```bash
-# Run integration tests
-./scripts/integration-test.sh
-```
-
-## Production Considerations
-
-1. **JWT Secret Key:** Use a secrets manager (AWS Secrets Manager, HashiCorp Vault)
-2. **OTP Delivery:** Implement WhatsApp API integration
-3. **Rate Limiting:** Add rate limiting middleware
-4. **Monitoring:** Add Prometheus metrics and distributed tracing
-5. **HTTPS:** Always use HTTPS in production
-6. **Key Rotation:** Implement JWT secret key rotation strategy
-
-## License
-
-MIT
