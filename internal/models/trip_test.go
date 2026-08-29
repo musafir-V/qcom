@@ -246,3 +246,57 @@ func TestTripReassignments_NotSerialisedToJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestTripJSON_DropDeadlineOmittedWhenNil(t *testing.T) {
+	trip := &Trip{TripID: "t1"}
+	raw, err := json.Marshal(trip)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "drop_deadline") {
+		t.Fatalf("drop_deadline should be omitted when nil: %s", raw)
+	}
+}
+
+func TestTripJSON_DropDeadlineEpochSecondsNumber(t *testing.T) {
+	deadline := int64(1710000000)
+	trip := &Trip{TripID: "t1", DropDeadline: &deadline}
+	raw, err := json.Marshal(trip)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"drop_deadline":"`) {
+		t.Fatalf("drop_deadline must be a JSON number, not a string: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"drop_deadline":1710000000`) {
+		t.Fatalf("expected epoch seconds number 1710000000, got %s", raw)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	v, ok := decoded["drop_deadline"].(float64)
+	if !ok || int64(v) != 1710000000 {
+		t.Fatalf("drop_deadline = %v (%T), want 1710000000 number", decoded["drop_deadline"], decoded["drop_deadline"])
+	}
+}
+
+func TestTripDynamo_DropDeadlineNumber(t *testing.T) {
+	deadline := int64(1710000000)
+	trip := &Trip{TripID: "t1", DropDeadline: &deadline}
+	m, err := attributevalue.MarshalMap(trip)
+	if err != nil {
+		t.Fatalf("MarshalMap: %v", err)
+	}
+	av, ok := m["drop_deadline"]
+	if !ok {
+		t.Fatal("missing drop_deadline")
+	}
+	n, ok := av.(*types.AttributeValueMemberN)
+	if !ok {
+		t.Fatalf("drop_deadline type = %T, want AttributeValueMemberN", av)
+	}
+	if n.Value != "1710000000" {
+		t.Fatalf("drop_deadline = %q, want 1710000000", n.Value)
+	}
+}
