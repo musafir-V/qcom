@@ -103,15 +103,15 @@ type statusEventAppender interface {
 }
 
 type TripService struct {
-	tripRepo        tripRepoI
-	deRepo          deRepoI
-	javaClient      javaOrderAPI
-	payoutService   *PayoutService
-	notifier        NotificationService
-	statusEventRepo     statusEventAppender
-	reachedConfig       reachedConfigStore
-	dropDeadlineConfig  dropDeadlineConfigStore
-	logger              *logrus.Logger
+	tripRepo           tripRepoI
+	deRepo             deRepoI
+	javaClient         javaOrderAPI
+	payoutService      *PayoutService
+	notifier           NotificationService
+	statusEventRepo    statusEventAppender
+	reachedConfig      reachedConfigStore
+	dropDeadlineConfig dropDeadlineConfigStore
+	logger             *logrus.Logger
 }
 
 func NewTripService(
@@ -122,17 +122,19 @@ func NewTripService(
 	notifier NotificationService,
 	statusEventRepo *repository.DEStatusEventRepository,
 	reachedConfig reachedConfigStore,
+	dropDeadlineConfig dropDeadlineConfigStore,
 	logger *logrus.Logger,
 ) *TripService {
 	return &TripService{
-		tripRepo:        tripRepo,
-		deRepo:          deRepo,
-		javaClient:      javaClient,
-		payoutService:   payoutService,
-		notifier:        notifier,
-		statusEventRepo: statusEventRepo,
-		reachedConfig:   reachedConfig,
-		logger:          logger,
+		tripRepo:           tripRepo,
+		deRepo:             deRepo,
+		javaClient:         javaClient,
+		payoutService:      payoutService,
+		notifier:           notifier,
+		statusEventRepo:    statusEventRepo,
+		reachedConfig:      reachedConfig,
+		dropDeadlineConfig: dropDeadlineConfig,
+		logger:             logger,
 	}
 }
 

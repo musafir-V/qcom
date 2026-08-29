@@ -343,7 +343,7 @@ func setupServer() (*httptest.Server, error) {
 	javaOrderClient := service.NewJavaOrderClient("http://localhost:9", logger)
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
 	notificationService := service.NewNotificationService(&config.FirebaseConfig{}, deviceTokenRepo, logger)
-	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, nil, nil, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, nil, nil, nil, logger)
 	cashDepositService := service.NewCashDepositService(deRepo, cashConfigRepo, logger)
 	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, logger)
 
