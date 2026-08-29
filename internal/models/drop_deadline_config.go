@@ -10,8 +10,8 @@ const (
 	DefaultDropDeadlineExtraMinutes = 0.0
 )
 
-// maxDropDeadlineMinutes is the largest minute count that converts to
-// time.Duration without overflowing int64 nanoseconds.
+// maxDropDeadlineMinutes is the exclusive upper bound: mins * Minute at this
+// value is 2^63 and time.Duration wraps negative. Accepted values must be below it.
 var maxDropDeadlineMinutes = float64(math.MaxInt64) / float64(time.Minute)
 
 // MinutesFitDropDeadlineDuration reports whether mins can be converted to
@@ -20,7 +20,7 @@ func MinutesFitDropDeadlineDuration(mins float64) bool {
 	if math.IsNaN(mins) || math.IsInf(mins, 0) || mins < 0 {
 		return false
 	}
-	return mins <= maxDropDeadlineMinutes
+	return mins < maxDropDeadlineMinutes
 }
 
 type DropDeadlineConfig struct {
@@ -51,7 +51,7 @@ func ComputeDropDeadlineUnix(now time.Time, distanceKM, minutesPerKm, extraMinut
 		mins = 0
 	}
 	ns := mins * float64(time.Minute)
-	if math.IsInf(ns, 0) || ns > float64(math.MaxInt64) {
+	if math.IsInf(ns, 0) || ns >= float64(math.MaxInt64) {
 		return now.Add(time.Duration(math.MaxInt64)).Unix()
 	}
 	return now.Add(time.Duration(ns)).Unix()

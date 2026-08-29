@@ -71,6 +71,23 @@ func TestComputeDropDeadlineUnix_NegativeMinutesClampedToZero(t *testing.T) {
 	}
 }
 
+func TestComputeDropDeadlineUnix_MaxBoundDoesNotWrapToPast(t *testing.T) {
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	got := ComputeDropDeadlineUnix(now, 0, 0, maxDropDeadlineMinutes)
+	if got < now.Unix() {
+		t.Fatalf("got %d before now %d at maxDropDeadlineMinutes (Duration wrapped)", got, now.Unix())
+	}
+}
+
+func TestMinutesFitDropDeadlineDuration_RejectsMaxBound(t *testing.T) {
+	if MinutesFitDropDeadlineDuration(maxDropDeadlineMinutes) {
+		t.Fatal("max bound must be rejected so PATCH cannot persist a wrapping Duration")
+	}
+	if !MinutesFitDropDeadlineDuration(200) {
+		t.Fatal("safe extra_minutes=200 must still fit")
+	}
+}
+
 func TestComputeDropDeadlineUnix_OverflowDoesNotWrapToPast(t *testing.T) {
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	got := ComputeDropDeadlineUnix(now, 0, 2, 200000000)
