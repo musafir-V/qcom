@@ -120,8 +120,8 @@ Loaded by `config.Load()` in `internal/config/config.go`, plus three bootstrap v
 | `VONAGE_VOICE_PRIVATE_KEY` | _(empty)_ | Base64 private key. |
 | `VONAGE_VOICE_SIGNATURE_SECRET` | _(empty)_ | Event webhook HMAC. |
 | `SERVICEABILITY_BYPASS_USER_IDS` | _(empty)_ | Comma-separated JWT `entity_id`s. |
-| `IS_TEST` / `IS_TRUE` | unset | Either equal to `true` skips the polygon check and uses the first active darkstore. |
-| `ADMIN_BOOTSTRAP_USERNAME` | _(empty)_ | With password, creates the first admin if missing. |
+| `IS_TEST` / `IS_TRUE` | unset | Either equal to `true` skips the polygon check and uses the first darkstore from `ListAll` (excluding the dummy store). |
+| `ADMIN_BOOTSTRAP_USERNAME` | _(empty)_ | With password, creates that admin username if it does not already exist. |
 | `ADMIN_BOOTSTRAP_PASSWORD` | _(empty)_ | Min 8 chars (same rule as admin create). |
 | `ADMIN_BOOTSTRAP_NAME` | username | |
 
@@ -190,7 +190,7 @@ Voice webhooks are Vonage (answer NCCO; event HMAC). WhatsApp handlers ack and l
 | `GET` | `/api/v1/disputes/by-order` |
 | `GET` | `/api/v1/disputes/{id}` |
 
-Serviceability and reverse geocode: Bearer **or** `X-User-Category: guest`. Dispute routes: `RequireCustomerAuth`. Voice token: any valid customer/DE access token.
+Serviceability and reverse geocode: Bearer **or** `X-User-Category: guest`. Dispute routes: `RequireCustomerAuth`. Voice token: any valid access token (`RequireAuth`).
 
 ### Rider / DE (`RequireDEAuth`)
 
@@ -236,7 +236,7 @@ Under `/api/v1/admin/`:
 | `POST` | `/internal/v1/uploads/url` |
 | `GET` | `/internal/v1/uploads/view-url` |
 
-Called by order-service (cancel, payment method, picker uploads). Auth is network isolation, not a bearer token.
+No JWT. Used for order-service cancel/payment updates, picker uploads, and FCM send. Auth is network isolation.
 
 `GET /metrics` is **not** on the public router; it is bound to loopback only.
 
@@ -250,7 +250,7 @@ make test-integration     # scripts/integration-test.sh (build + local DynamoDB 
 make test-smoke           # live API; SMOKE_BASE_URL defaults to https://api.bunzodelivery.com
 ```
 
-`go test ./...` skips files with `//go:build integration` or `//go:build smoke`. `make test-integration` boots the real binary, so the four required env vars must be set (the script does not set the Twilio ones).
+`go test ./...` skips files with `//go:build integration` or `//go:build smoke`. `make test-integration` boots the real binary and sets `JWT_SECRET_KEY`; the three Twilio vars must already be in the environment.
 
 `make fmt`, `make vet`, `make lint` (`golangci-lint`), `make check` (fmt+vet+lint).
 
