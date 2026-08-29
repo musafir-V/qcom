@@ -70,6 +70,7 @@ func main() {
 	otpRepo := repository.NewOTPRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	smsOTPRoutingConfigRepo := repository.NewSMSOTPRoutingConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 	tripReachedConfigRepo := repository.NewTripReachedConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	dropDeadlineConfigRepo := repository.NewDropDeadlineConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
 
 	// Initialize services
 	jwtService, err := service.NewJWTService(&cfg.JWT, logger)
@@ -104,7 +105,7 @@ func main() {
 	payoutService := service.NewPayoutService(payoutConfigRepo, earningsLedgerRepo, deRepo, tripRepo, referralService, logger)
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
-	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, deStatusEventRepo, tripReachedConfigRepo, logger)
+	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, deStatusEventRepo, tripReachedConfigRepo, dropDeadlineConfigRepo, logger)
 	adminService := service.NewAdminService(tripRepo, deRepo, cashConfigRepo, deStatusEventRepo, notificationService, logger)
 	appCtx, appCancel := context.WithCancel(context.Background())
 	ruleCache := service.NewRuleCache(ruleRepo, 60*time.Second, logger)
@@ -210,10 +211,11 @@ func main() {
 	adminDisputeHandlers := handlers.NewAdminDisputeHandlers(adminDisputeService, uploadService, logger)
 	adminSMSOTPRoutingHandlers := handlers.NewAdminSMSOTPRoutingHandlers(smsOTPRoutingConfigRepo, logger)
 	adminTripReachedHandlers := handlers.NewAdminTripReachedHandlers(tripReachedConfigRepo, logger)
+	adminDropDeadlineHandlers := handlers.NewAdminDropDeadlineHandlers(dropDeadlineConfigRepo, logger)
 	adminTripsByOrdersHandlers := handlers.NewAdminTripsByOrdersHandlers(tripRepo, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, adminTripReachedHandlers, adminTripsByOrdersHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, adminTripReachedHandlers, adminDropDeadlineHandlers, adminTripsByOrdersHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -347,6 +349,7 @@ func setupRouter(
 	adminStoreHandlers *handlers.AdminStoreHandlers,
 	adminSMSOTPRoutingHandlers *handlers.AdminSMSOTPRoutingHandlers,
 	adminTripReachedHandlers *handlers.AdminTripReachedHandlers,
+	adminDropDeadlineHandlers *handlers.AdminDropDeadlineHandlers,
 	adminTripsByOrdersHandlers *handlers.AdminTripsByOrdersHandlers,
 	trackHandlers *handlers.TrackHandlers,
 	earningsHandlers *handlers.EarningsHandlers,
@@ -427,6 +430,8 @@ func setupRouter(
 
 	admin.HandleFunc("/config/drop-reached", adminTripReachedHandlers.GetConfig).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/config/drop-reached", adminTripReachedHandlers.PatchConfig).Methods("PATCH", "OPTIONS")
+	admin.HandleFunc("/config/drop-deadline", adminDropDeadlineHandlers.GetConfig).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/config/drop-deadline", adminDropDeadlineHandlers.PatchConfig).Methods("PATCH", "OPTIONS")
 
 	admin.HandleFunc("/assign", adminHandlers.AssignOrder).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/trips/by-orders", adminTripsByOrdersHandlers.GetTripsByOrders).Methods("GET", "OPTIONS")

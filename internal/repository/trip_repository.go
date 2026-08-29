@@ -309,6 +309,43 @@ func (r *TripRepository) UpdateStatus(ctx context.Context, tripID string, status
 	return nil
 }
 
+// markOutForDeliveryUpdateExpression freezes drop_deadline once.
+// if_not_exists keeps the first persisted epoch if pickup-complete races.
+func markOutForDeliveryUpdateExpression() string {
+	return "SET #status = :status, updated_at = :now, drop_deadline = if_not_exists(drop_deadline, :dd)"
+}
+
+// MarkOutForDelivery sets status to out_for_delivery and freezes drop_deadline
+// as a Dynamo Number. Changing admin x/y later must not move this value.
+func (r *TripRepository) MarkOutForDelivery(ctx context.Context, tripID string, dropDeadline int64) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.MarkOutForDelivery", logrus.Fields{
+		"trip_id": tripID, "drop_deadline": dropDeadline,
+	})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String(markOutForDeliveryUpdateExpression()),
+		ExpressionAttributeNames: map[string]string{
+			"#status": "status",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":status": &types.AttributeValueMemberS{Value: string(models.TripStatusOutForDelivery)},
+			":now":    &types.AttributeValueMemberS{Value: now},
+			":dd":     &types.AttributeValueMemberN{Value: strconv.FormatInt(dropDeadline, 10)},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to mark trip out for delivery: %w", err))
+	}
+	return nil
+}
+
 // CompleteTripAndFreeDE atomically marks the trip completed (with final tasks),
 // frees the assigned DE, and accrues the COD cash amount to the DE's in-hand
 // balance. The DE must be busy on this trip. On completion the DE stays on-duty

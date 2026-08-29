@@ -14,6 +14,7 @@ import (
 
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/repository"
+	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
@@ -458,6 +459,7 @@ type stubTripRepo struct {
 	updateStatusCalled  bool
 	updateStatusTripID  string
 	updateStatusStatus  models.TripStatus
+	dropDeadline        int64
 	adminAssignCalled   bool
 	adminAssignErr      error
 }
@@ -501,6 +503,29 @@ func (s *stubTripRepo) UpdateStatus(_ context.Context, tripID string, status mod
 	s.updateStatusTripID = tripID
 	s.updateStatusStatus = status
 	return nil
+}
+
+func (s *stubTripRepo) MarkOutForDelivery(_ context.Context, tripID string, dropDeadline int64) error {
+	s.updateStatusCalled = true
+	s.updateStatusTripID = tripID
+	s.updateStatusStatus = models.TripStatusOutForDelivery
+	s.dropDeadline = dropDeadline
+	return nil
+}
+
+type stubDropDeadlineConfigStore struct {
+	cfg    *models.DropDeadlineConfig
+	getErr error
+}
+
+func (s *stubDropDeadlineConfigStore) Get(_ context.Context) (*models.DropDeadlineConfig, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
+	if s.cfg == nil {
+		return &models.DropDeadlineConfig{}, nil
+	}
+	return s.cfg, nil
 }
 
 func (s *stubTripRepo) AdminAssign(_ context.Context, _, _, deID, dePhone, _ string) error {
@@ -765,6 +790,104 @@ func TestUpdateTaskStatus_PickupCompletion_NotifiesCustomer(t *testing.T) {
 	}
 	if !repo.updateStatusCalled || repo.updateStatusStatus != models.TripStatusOutForDelivery {
 		t.Fatalf("expected trip status mirrored to out_for_delivery, got called=%v status=%q", repo.updateStatusCalled, repo.updateStatusStatus)
+	}
+}
+
+func TestUpdateTaskStatus_PickupCompletion_FreezesDropDeadline(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:     "t2",
+			OrderID:    "ORD-PICKUP-1",
+			DEID:       "de-1",
+			Status:     models.TripStatusAccepted,
+			DistanceKM: 3.2,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	before := timezone.Now()
+	_, err := svc.UpdateTaskStatus(context.Background(), "t2", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "", nil, nil)
+	after := timezone.Now()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantLo := models.ComputeDropDeadlineUnix(before, 3.2, 2, 0)
+	wantHi := models.ComputeDropDeadlineUnix(after, 3.2, 2, 0)
+	if repo.dropDeadline < wantLo || repo.dropDeadline > wantHi {
+		t.Fatalf("dropDeadline = %d, want [%d, %d] (3.2km * 2 + 0 = 384s)", repo.dropDeadline, wantLo, wantHi)
+	}
+}
+
+func TestUpdateTaskStatus_PickupCompletion_UsesConfigXY(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:     "t3",
+			OrderID:    "ORD-PICKUP-XY",
+			DEID:       "de-1",
+			Status:     models.TripStatusAccepted,
+			DistanceKM: 2,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.dropDeadlineConfig = &stubDropDeadlineConfigStore{
+		cfg: &models.DropDeadlineConfig{MinutesPerKm: 3, ExtraMinutes: 4},
+	}
+
+	before := timezone.Now()
+	_, err := svc.UpdateTaskStatus(context.Background(), "t3", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "", nil, nil)
+	after := timezone.Now()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantLo := models.ComputeDropDeadlineUnix(before, 2, 3, 4)
+	wantHi := models.ComputeDropDeadlineUnix(after, 2, 3, 4)
+	if repo.dropDeadline < wantLo || repo.dropDeadline > wantHi {
+		t.Fatalf("dropDeadline = %d, want [%d, %d] (~now+600s)", repo.dropDeadline, wantLo, wantHi)
+	}
+}
+
+func TestGetCurrentTrip_ReturnsStoredDropDeadlineNotRecomputed(t *testing.T) {
+	stored := int64(1700000000)
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:       "t1",
+			OrderID:      "ORD-1",
+			Status:       models.TripStatusOutForDelivery,
+			DistanceKM:   1,
+			DropDeadline: &stored,
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID:           "de-1",
+		PhoneNumber:    "+260971000001",
+		CurrentOrderID: "ORD-1",
+	}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.dropDeadlineConfig = &stubDropDeadlineConfigStore{
+		cfg: &models.DropDeadlineConfig{MinutesPerKm: 99, ExtraMinutes: 99},
+	}
+
+	got, err := svc.GetCurrentTrip(context.Background(), "+260971000001")
+	if err != nil {
+		t.Fatalf("GetCurrentTrip: %v", err)
+	}
+	if got == nil || got.DropDeadline == nil {
+		t.Fatal("expected stored drop_deadline")
+	}
+	if *got.DropDeadline != stored {
+		t.Fatalf("drop_deadline = %d, want stored %d (must not recompute)", *got.DropDeadline, stored)
 	}
 }
 

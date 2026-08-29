@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/qcom/qcom/internal/models"
@@ -26,5 +27,15 @@ func TestReassign_SamePhone_RejectedBeforeTransaction(t *testing.T) {
 		false, models.TripReassignment{})
 	if err == nil {
 		t.Fatal("expected an error when fromDEPhone == toDEPhone, got nil")
+	}
+}
+
+func TestMarkOutForDeliveryUpdateExpression_PreservesFirstDeadline(t *testing.T) {
+	expr := markOutForDeliveryUpdateExpression()
+	if !strings.Contains(expr, "if_not_exists(drop_deadline, :dd)") {
+		t.Fatalf("expression = %q, want if_not_exists so a later write cannot move the first freeze", expr)
+	}
+	if strings.Contains(expr, "drop_deadline = :dd") {
+		t.Fatalf("expression = %q, unconditional SET overwrites a concurrent first freeze", expr)
 	}
 }

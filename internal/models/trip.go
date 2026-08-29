@@ -95,6 +95,7 @@ type Trip struct {
 	UpdatedAt   string `json:"updated_at" dynamodbav:"updated_at"`
 	AssignedAt     string   `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
 	AcceptDeadline string   `json:"accept_deadline,omitempty" dynamodbav:"accept_deadline,omitempty"`
+	DropDeadline   *int64   `json:"drop_deadline,omitempty" dynamodbav:"drop_deadline,omitempty"`
 	RejectedDEIDs  []string `json:"rejected_de_ids,omitempty" dynamodbav:"rejected_de_ids,omitempty"`
 	// Reassignments is admin-facing audit only. json:"-" is load-bearing:
 	// GetCurrentTrip returns *models.Trip straight to the driver app, and this

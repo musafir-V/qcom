@@ -58,6 +58,12 @@ type reachedConfigStore interface {
 	Get(ctx context.Context) (*models.TripReachedConfig, error)
 }
 
+// dropDeadlineConfigStore loads the driver drop-task countdown x/y config.
+// A nil store on TripService applies the same defaults as a missing row.
+type dropDeadlineConfigStore interface {
+	Get(ctx context.Context) (*models.DropDeadlineConfig, error)
+}
+
 // tripRepoI is the subset of TripRepository methods used by TripService.
 // Using an interface here allows unit tests to inject stub implementations
 // without spinning up a real DynamoDB client.
@@ -67,6 +73,7 @@ type tripRepoI interface {
 	CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone, storeID string, tasks []models.Task, codAmount float64) error
 	UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error
 	UpdateStatus(ctx context.Context, tripID string, status models.TripStatus) error
+	MarkOutForDelivery(ctx context.Context, tripID string, dropDeadline int64) error
 	Accept(ctx context.Context, tripID, deID string) error
 	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
 	CancelByOrderID(ctx context.Context, tripID, dePhone, storeID string) error
@@ -96,14 +103,15 @@ type statusEventAppender interface {
 }
 
 type TripService struct {
-	tripRepo        tripRepoI
-	deRepo          deRepoI
-	javaClient      javaOrderAPI
-	payoutService   *PayoutService
-	notifier        NotificationService
-	statusEventRepo statusEventAppender
-	reachedConfig   reachedConfigStore
-	logger          *logrus.Logger
+	tripRepo           tripRepoI
+	deRepo             deRepoI
+	javaClient         javaOrderAPI
+	payoutService      *PayoutService
+	notifier           NotificationService
+	statusEventRepo    statusEventAppender
+	reachedConfig      reachedConfigStore
+	dropDeadlineConfig dropDeadlineConfigStore
+	logger             *logrus.Logger
 }
 
 func NewTripService(
@@ -114,17 +122,19 @@ func NewTripService(
 	notifier NotificationService,
 	statusEventRepo *repository.DEStatusEventRepository,
 	reachedConfig reachedConfigStore,
+	dropDeadlineConfig dropDeadlineConfigStore,
 	logger *logrus.Logger,
 ) *TripService {
 	return &TripService{
-		tripRepo:        tripRepo,
-		deRepo:          deRepo,
-		javaClient:      javaClient,
-		payoutService:   payoutService,
-		notifier:        notifier,
-		statusEventRepo: statusEventRepo,
-		reachedConfig:   reachedConfig,
-		logger:          logger,
+		tripRepo:           tripRepo,
+		deRepo:             deRepo,
+		javaClient:         javaClient,
+		payoutService:      payoutService,
+		notifier:           notifier,
+		statusEventRepo:    statusEventRepo,
+		reachedConfig:      reachedConfig,
+		dropDeadlineConfig: dropDeadlineConfig,
+		logger:             logger,
 	}
 }
 
@@ -1015,7 +1025,18 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 
 	switch {
 	case task.Type == models.TaskTypePickup && task.Status == models.TaskStatusCompleted:
-		if err := s.tripRepo.UpdateStatus(bgCtx, trip.TripID, models.TripStatusOutForDelivery); err != nil {
+		var cfg *models.DropDeadlineConfig
+		if s.dropDeadlineConfig != nil {
+			var err error
+			cfg, err = s.dropDeadlineConfig.Get(bgCtx)
+			if err != nil {
+				s.logger.WithError(err).WithField("trip_id", trip.TripID).
+					Error("failed to load drop-deadline config; using defaults")
+				cfg = nil
+			}
+		}
+		deadline := models.ComputeDropDeadlineUnix(timezone.Now(), trip.DistanceKM, cfg.EffectiveMinutesPerKm(), cfg.EffectiveExtraMinutes())
+		if err := s.tripRepo.MarkOutForDelivery(bgCtx, trip.TripID, deadline); err != nil {
 			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
 		}
 		if !skipJava {
