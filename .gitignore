@@ -12,3 +12,7 @@ data/ssm-export*.json
 
 # Subagent-driven-development scratch: ledgers, task briefs, review packages.
 .superpowers/
+
+# never commit markdown
+*.md
+
