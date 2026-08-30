@@ -426,6 +426,84 @@ func TestGenerateOTP_NonZambiaPhone_SkipsSend(t *testing.T) {
 	}
 }
 
+func TestGenerateOTP_SkipListPhone_SkipsSend(t *testing.T) {
+	phones := []string{"+260978794944", "260978794944", " +260978794944"}
+	for _, phone := range phones {
+		t.Run(phone, func(t *testing.T) {
+			twilio := &stubTwilioVerifier{}
+			at := &stubAfricaTalkingSender{configured: true}
+			store := newStubOTPStore()
+			svc := newTestOTPService(twilio, at, store, &stubRoutingConfig{forceTwilio: false})
+
+			otp, err := svc.GenerateOTP(context.Background(), phone)
+			if err != nil {
+				t.Fatalf("GenerateOTP error: %v", err)
+			}
+			if otp != "" {
+				t.Fatalf("otp = %q, want empty", otp)
+			}
+			if len(at.sent) != 0 {
+				t.Fatalf("AT sent = %v, want none for skip-list phone", at.sent)
+			}
+			if len(twilio.started) != 0 {
+				t.Fatalf("twilio started = %v, want none for skip-list phone", twilio.started)
+			}
+			if _, ok := store.get(phone); ok {
+				t.Fatal("did not expect a local OTP for skip-list phone")
+			}
+		})
+	}
+}
+
+func TestGenerateOTP_NonListedZambiaPhone_StillSends(t *testing.T) {
+	phone := "+260770021110"
+	twilio := &stubTwilioVerifier{}
+	at := &stubAfricaTalkingSender{configured: true}
+	store := newStubOTPStore()
+	svc := newTestOTPService(twilio, at, store, &stubRoutingConfig{forceTwilio: false})
+
+	if _, err := svc.GenerateOTP(context.Background(), phone); err != nil {
+		t.Fatalf("GenerateOTP error: %v", err)
+	}
+	if len(at.sent) != 1 {
+		t.Fatalf("AT sent = %v, want 1 call for non-listed Zambia number", at.sent)
+	}
+	if len(twilio.started) != 0 {
+		t.Fatalf("twilio started = %v, want none", twilio.started)
+	}
+}
+
+func TestVerifyOTP_SkipListPhone_MasterBypass(t *testing.T) {
+	svc := newTestOTPService(&stubTwilioVerifier{}, &stubAfricaTalkingSender{}, newStubOTPStore(), &stubRoutingConfig{})
+
+	valid, err := svc.VerifyOTP(context.Background(), "+260978794944", masterOTPBypass)
+	if err != nil {
+		t.Fatalf("VerifyOTP error: %v", err)
+	}
+	if !valid {
+		t.Fatal("expected master OTP bypass to succeed for skip-list phone")
+	}
+}
+
+func TestSkipOTPSMS(t *testing.T) {
+	tests := []struct {
+		phone string
+		want  bool
+	}{
+		{"+260978794944", true},
+		{"260978794944", true},
+		{" +260978794944", true},
+		{"+260770021110", false},
+		{"0978794944", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := skipOTPSMS(tt.phone); got != tt.want {
+			t.Fatalf("skipOTPSMS(%q) = %v, want %v", tt.phone, got, tt.want)
+		}
+	}
+}
+
 func TestVerifyOTP_MasterBypass(t *testing.T) {
 	svc := newTestOTPService(&stubTwilioVerifier{}, &stubAfricaTalkingSender{}, newStubOTPStore(), &stubRoutingConfig{})
 

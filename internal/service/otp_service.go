@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/qcom/qcom/internal/config"
@@ -15,6 +16,30 @@ import (
 )
 
 const masterOTPBypass = "112233"
+
+// skipOTPSMSPhones are E.164 numbers that skip SMS send. Login uses
+// masterOTPBypass on verify. Append more numbers here as needed.
+var skipOTPSMSPhones = []string{
+	"+260978794944",
+}
+
+// skipOTPSMS reports whether phone is on the hardcoded skip-send list.
+// Trims space and ensures a leading + so +260978794944 and 260978794944 match.
+func skipOTPSMS(phone string) bool {
+	normalized := strings.TrimSpace(phone)
+	if normalized == "" {
+		return false
+	}
+	if !strings.HasPrefix(normalized, "+") {
+		normalized = "+" + normalized
+	}
+	for _, listed := range skipOTPSMSPhones {
+		if normalized == listed {
+			return true
+		}
+	}
+	return false
+}
 
 type twilioOTPVerifier interface {
 	StartSMSVerification(ctx context.Context, phoneNumber string) error
@@ -71,10 +96,11 @@ func NewOTPService(
 }
 
 // GenerateOTP routes to Africa's Talking (default) or Twilio Verify.
-// Non-Zambian numbers skip SMS entirely (use masterOTPBypass on verify).
-// The OTP string is never returned to callers (Twilio owns its codes;
-// AT codes stay in the local store). On provider failure after failover,
-// returns soft success ("", nil) so clients can still use masterOTPBypass.
+// Non-Zambian numbers and skipOTPSMSPhones skip SMS entirely (use
+// masterOTPBypass on verify). The OTP string is never returned to callers
+// (Twilio owns its codes; AT codes stay in the local store). On provider
+// failure after failover, returns soft success ("", nil) so clients can
+// still use masterOTPBypass.
 func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (string, error) {
 	op := logging.Start(ctx, s.logger, "GenerateOTP", logrus.Fields{"phone": phoneNumber})
 	defer op.End()
@@ -86,6 +112,11 @@ func (s *OTPService) GenerateOTP(ctx context.Context, phoneNumber string) (strin
 	// masterOTPBypass on verify; still return success so the client proceeds.
 	if !isZambiaPhone(phoneNumber) {
 		op.With("outcome", "non_zambia_skip_send")
+		return "", nil
+	}
+
+	if skipOTPSMS(phoneNumber) {
+		op.With("outcome", "skip_list_skip_send")
 		return "", nil
 	}
 
