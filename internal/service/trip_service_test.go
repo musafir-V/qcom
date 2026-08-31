@@ -534,12 +534,41 @@ func TestEditTripByOrder_IdempotentSecondCall(t *testing.T) {
 	if err != nil || !res1.Updated {
 		t.Fatalf("first call: res=%+v err=%v", res1, err)
 	}
+	firstItems := append([]models.TripItem(nil), repo.editedItems...)
+	var firstPayment models.Payment
+	if repo.editedPayment != nil {
+		firstPayment = *repo.editedPayment
+	}
+	firstTasks := append([]models.Task(nil), repo.editedTasks...)
+
 	res2, err := svc.EditTripByOrder(context.Background(), in)
 	if err != nil {
 		t.Fatalf("second call error: %v", err)
 	}
 	if !res2.Updated || res2.Reason != "" {
 		t.Fatalf("second identical call must succeed, got %+v", res2)
+	}
+	if len(repo.editedItems) != len(firstItems) {
+		t.Fatalf("second call items len = %d, first = %d", len(repo.editedItems), len(firstItems))
+	}
+	for i := range firstItems {
+		if repo.editedItems[i] != firstItems[i] {
+			t.Fatalf("second call item[%d] = %+v, first = %+v", i, repo.editedItems[i], firstItems[i])
+		}
+	}
+	if repo.editedPayment == nil {
+		t.Fatal("second call payment is nil")
+	}
+	if *repo.editedPayment != firstPayment {
+		t.Fatalf("second call payment = %+v, first = %+v", *repo.editedPayment, firstPayment)
+	}
+	if len(repo.editedTasks) != len(firstTasks) {
+		t.Fatalf("second call tasks len = %d, first = %d", len(repo.editedTasks), len(firstTasks))
+	}
+	for i := range firstTasks {
+		if repo.editedTasks[i] != firstTasks[i] {
+			t.Fatalf("second call task[%d] = %+v, first = %+v", i, repo.editedTasks[i], firstTasks[i])
+		}
 	}
 }
 
@@ -573,28 +602,28 @@ func TestEditTripByOrder_TerminalTrip_Rejected(t *testing.T) {
 // CancelTripByOrder. GetByID and CompleteTripAndFreeDE are used by UpdateTaskStatus
 // (drop path). updateTasksFn, if set, is called by UpdateTasks (pickup path).
 type stubTripRepo struct {
-	trip                   *models.Trip
-	cancelCalled           bool
-	cancelTripID           string
-	cancelDEPhone          string
-	updateTasksFn          func(ctx context.Context, tripID string, tasks []models.Task) error
-	updateTasksCalled      bool
-	capturedTasks          []models.Task
-	completeTripCalled     bool
-	updatePaymentCalled    bool
-	updatePaymentErr       error
-	capturedPayment        *models.Payment
+	trip                    *models.Trip
+	cancelCalled            bool
+	cancelTripID            string
+	cancelDEPhone           string
+	updateTasksFn           func(ctx context.Context, tripID string, tasks []models.Task) error
+	updateTasksCalled       bool
+	capturedTasks           []models.Task
+	completeTripCalled      bool
+	updatePaymentCalled     bool
+	updatePaymentErr        error
+	capturedPayment         *models.Payment
 	updateEditByOrderCalled bool
-	updateEditByOrderErr   error
-	editedItems            []models.TripItem
-	editedPayment          *models.Payment
-	editedTasks            []models.Task
-	updateStatusCalled     bool
-	updateStatusTripID     string
-	updateStatusStatus     models.TripStatus
-	dropDeadline           int64
-	adminAssignCalled      bool
-	adminAssignErr         error
+	updateEditByOrderErr    error
+	editedItems             []models.TripItem
+	editedPayment           *models.Payment
+	editedTasks             []models.Task
+	updateStatusCalled      bool
+	updateStatusTripID      string
+	updateStatusStatus      models.TripStatus
+	dropDeadline            int64
+	adminAssignCalled       bool
+	adminAssignErr          error
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -1022,6 +1051,29 @@ func TestVerifyPickup_BlockedUntilReadyForDelivery(t *testing.T) {
 	err := svc.VerifyPickup(context.Background(), "t-verify-pack", "+260971000001", "ORD-VERIFY-PACK")
 	if !errors.Is(err, ErrOrderNotPacked) {
 		t.Fatalf("VerifyPickup error = %v, want ErrOrderNotPacked", err)
+	}
+}
+
+func TestVerifyPickup_AllowedWhenRFD(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-verify-rfd",
+			OrderID: "ORD-VERIFY-RFD",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+
+	err := svc.VerifyPickup(context.Background(), "t-verify-rfd", "+260971000001", "ORD-VERIFY-RFD")
+	if err != nil {
+		t.Fatalf("VerifyPickup error = %v, want nil", err)
 	}
 }
 

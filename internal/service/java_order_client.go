@@ -17,16 +17,16 @@ import (
 
 // JavaOrder is the subset of fields the cron needs from the Java order response.
 type JavaOrder struct {
-	OrderID     string          `json:"orderId"`
-	OrderNumber string          `json:"orderNumber"`
-	Status      string          `json:"status"`
-	Delivery    JavaDelivery    `json:"delivery"`
+	OrderID     string       `json:"orderId"`
+	OrderNumber string       `json:"orderNumber"`
+	Status      string       `json:"status"`
+	Delivery    JavaDelivery `json:"delivery"`
 	// StoreID is intentionally not decoded from the order-service response: the
 	// payload either omits it or serializes it as a number, and every order
 	// returned by the per-store query belongs to that store anyway. It is
 	// populated from the store the cron queried — see GetReadyForDeliveryOrders.
-	StoreID string `json:"-"`
-	Items       []JavaOrderItem `json:"items"`
+	StoreID string          `json:"-"`
+	Items   []JavaOrderItem `json:"items"`
 
 	PaymentMethod string  `json:"paymentMethod"`
 	PaymentStatus string  `json:"paymentStatus"`
@@ -109,7 +109,8 @@ func NewJavaOrderClient(baseURL string, logger *logrus.Logger) *JavaOrderClient 
 	}
 }
 
-// GetReadyForDeliveryOrders fetches all READY_FOR_DELIVERY orders for a store.
+// GetReadyForDeliveryOrders fetches assignable orders for a store (CONFIRMED,
+// PACKING, and READY_FOR_DELIVERY) via the by-statuses endpoint.
 // Handles pagination — returns all pages combined.
 func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID string) ([]JavaOrder, error) {
 	op := logging.Start(ctx, c.logger, "JavaOrderClient.GetReadyForDeliveryOrders", logrus.Fields{"store_id": storeID})

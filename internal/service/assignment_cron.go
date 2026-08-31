@@ -20,8 +20,9 @@ const (
 	cronInterval    = 10 * time.Second
 	cronLockTTLSecs = 30
 
-	// eligibleOrderStatus is the Java order status that makes an order eligible
-	// for rider assignment. Only fully-packed orders should enter the delivery pipeline.
+	// eligibleOrderStatus is the pickup gate: VerifyPickup and pickup-complete
+	// require this Java status. It is not the assignment poll filter (the cron
+	// polls CONFIRMED/PACKING/READY_FOR_DELIVERY via by-statuses separately).
 	eligibleOrderStatus = "READY_FOR_DELIVERY"
 
 	// recipientFallback is used for the drop task when the order has no
