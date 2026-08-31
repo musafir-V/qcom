@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -91,6 +93,8 @@ type JavaDelivery struct {
 // The Java order-service is served behind this route prefix.
 const orderServicePathPrefix = "/order-service"
 
+var assignableOrderStatuses = []string{"CONFIRMED", "PACKING", "READY_FOR_DELIVERY"}
+
 type JavaOrderClient struct {
 	baseURL    string
 	httpClient *http.Client
@@ -116,10 +120,21 @@ func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID
 	pageSize := 50
 
 	for {
-		url := fmt.Sprintf("%s%s/api/v1/orders/store/%s?status=%s&pageNum=%d&pageSize=%d",
-			c.baseURL, orderServicePathPrefix, storeID, eligibleOrderStatus, page, pageSize)
+		path := fmt.Sprintf("%s%s/api/v1/orders/store/%s/by-statuses",
+			c.baseURL, orderServicePathPrefix, storeID)
+		u, err := url.Parse(path)
+		if err != nil {
+			return nil, op.Fail(fmt.Errorf("failed to parse URL: %w", err))
+		}
+		q := u.Query()
+		for _, st := range assignableOrderStatuses {
+			q.Add("statuses", st)
+		}
+		q.Set("pageNum", strconv.Itoa(page))
+		q.Set("pageSize", strconv.Itoa(pageSize))
+		u.RawQuery = q.Encode()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		if err != nil {
 			return nil, op.Fail(fmt.Errorf("failed to build request: %w", err))
 		}
