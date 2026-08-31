@@ -111,6 +111,8 @@ func classifyTaskUpdateError(err error) (status int, code string) {
 		return http.StatusBadRequest, "INVALID_COORDINATES"
 	case errors.Is(err, service.ErrOrderNotDeliverable):
 		return http.StatusConflict, "ORDER_NOT_DELIVERABLE"
+	case errors.Is(err, service.ErrOrderNotPacked):
+		return http.StatusConflict, "ORDER_NOT_PACKED"
 	case errors.Is(err, service.ErrJavaOrderCancelled):
 		return http.StatusConflict, "ORDER_CANCELLED"
 	case errors.Is(err, service.ErrRiderRequired):
@@ -230,6 +232,8 @@ func classifyVerifyPickupError(err error) (status int, code string) {
 		return http.StatusBadRequest, "PICKUP_ORDER_MISMATCH"
 	case errors.Is(err, service.ErrInvalidTripTransition):
 		return http.StatusConflict, "INVALID_TRIP_STATE"
+	case errors.Is(err, service.ErrOrderNotPacked):
+		return http.StatusConflict, "ORDER_NOT_PACKED"
 	default:
 		return http.StatusInternalServerError, "VERIFY_FAILED"
 	}
