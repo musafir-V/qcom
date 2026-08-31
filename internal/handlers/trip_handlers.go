@@ -330,9 +330,10 @@ func (h *TripHandlers) CancelTripByOrder(w http.ResponseWriter, r *http.Request)
 // Called by Java order-service when an order's payment method changes (e.g. a COD
 // order is paid online). Re-snapshots the trip's payment and pushes the rider.
 // Responses:
-//   200 {"updated": true}                                 — trip payment updated
-//   200 {"updated": false, "reason": "no_active_trip"}    — no trip exists yet (no-op)
-//   409 {"updated": false, "reason": "trip_terminal"}     — trip already closed; not updated
+//
+//	200 {"updated": true}                                 — trip payment updated
+//	200 {"updated": false, "reason": "no_active_trip"}    — no trip exists yet (no-op)
+//	409 {"updated": false, "reason": "trip_terminal"}     — trip already closed; not updated
 func (h *TripHandlers) UpdateTripPaymentByOrder(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		OrderID       string  `json:"order_id"`
@@ -380,17 +381,18 @@ func (h *TripHandlers) UpdateTripPaymentByOrder(w http.ResponseWriter, r *http.R
 // Called by Java order-service when a packed order's snapshot changes. Overwrites
 // trip items, payment, and pickup delivery zone. No rider push.
 // Responses:
-//   200 {"updated": true}                                 — trip snapshot updated
-//   200 {"updated": false, "reason": "no_active_trip"}    — no trip exists yet (no-op)
-//   409 {"updated": false, "reason": "trip_terminal"}     — trip already closed; not updated
+//
+//	200 {"updated": true}                                 — trip snapshot updated
+//	200 {"updated": false, "reason": "no_active_trip"}    — no trip exists yet (no-op)
+//	409 {"updated": false, "reason": "trip_terminal"}     — trip already closed; not updated
 func (h *TripHandlers) EditTripByOrder(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		OrderID       string  `json:"order_id"`
-		PaymentMethod string  `json:"payment_method"`
+		PaymentMethod *string `json:"payment_method"`
 		GrandTotal    float64 `json:"grand_total"`
 		Currency      string  `json:"currency"`
 		DeliveryZone  string  `json:"delivery_zone"`
-		Items         []struct {
+		Items         *[]struct {
 			SKU      string `json:"sku"`
 			Name     string `json:"name"`
 			ImageURL string `json:"image_url"`
@@ -405,9 +407,17 @@ func (h *TripHandlers) EditTripByOrder(w http.ResponseWriter, r *http.Request) {
 		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id is required")
 		return
 	}
+	if req.PaymentMethod == nil {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "payment_method is required")
+		return
+	}
+	if req.Items == nil {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "items is required")
+		return
+	}
 
-	items := make([]service.EditTripItemInput, 0, len(req.Items))
-	for _, it := range req.Items {
+	items := make([]service.EditTripItemInput, 0, len(*req.Items))
+	for _, it := range *req.Items {
 		items = append(items, service.EditTripItemInput{
 			SKU:      it.SKU,
 			Name:     it.Name,
@@ -418,7 +428,7 @@ func (h *TripHandlers) EditTripByOrder(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.tripService.EditTripByOrder(r.Context(), service.EditTripByOrderInput{
 		OrderID:       req.OrderID,
-		PaymentMethod: req.PaymentMethod,
+		PaymentMethod: *req.PaymentMethod,
 		GrandTotal:    req.GrandTotal,
 		Currency:      req.Currency,
 		DeliveryZone:  req.DeliveryZone,

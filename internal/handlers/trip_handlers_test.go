@@ -186,19 +186,13 @@ func TestClassifyVerifyPickupError_OrderNotPacked(t *testing.T) {
 }
 
 func TestEditTripByOrder_MissingOrderID(t *testing.T) {
-	logger := logrus.New()
-	logger.SetOutput(io.Discard)
-	h := &TripHandlers{logger: logger}
-
-	req := httptest.NewRequest(http.MethodPost, "/internal/v1/trips/edit-by-order", strings.NewReader(`{
+	rec := postEditTripByOrder(t, `{
 		"payment_method": "COD",
 		"grand_total": 100,
 		"currency": "ZMW",
 		"delivery_zone": "Blue Rack 2",
 		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
-	}`))
-	rec := httptest.NewRecorder()
-	h.EditTripByOrder(rec, req)
+	}`)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d, want 400", rec.Code)
@@ -209,5 +203,114 @@ func TestEditTripByOrder_MissingOrderID(t *testing.T) {
 	}
 	if body.Error.Code != "MISSING_FIELD" {
 		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
+	}
+}
+
+func TestEditTripByOrder_OmittedItemsRejected(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "COD",
+		"grand_total": 100
+	}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("omitted items must 400, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "MISSING_FIELD" {
+		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
+	}
+	if !strings.Contains(body.Error.Message, "items") {
+		t.Fatalf("message %q must name items", body.Error.Message)
+	}
+}
+
+func TestEditTripByOrder_EmptyItemsListAllowed(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "COD",
+		"grand_total": 100,
+		"items": []
+	}`)
+	assertEditByOrderProceeded(t, rec, "items:[]")
+}
+
+func TestEditTripByOrder_OmittedPaymentMethodRejected(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"grand_total": 100,
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("omitted payment_method must 400, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "MISSING_FIELD" {
+		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
+	}
+	if !strings.Contains(body.Error.Message, "payment_method") {
+		t.Fatalf("message %q must name payment_method", body.Error.Message)
+	}
+}
+
+func TestEditTripByOrder_EmptyPaymentMethodAllowed(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "",
+		"grand_total": 100,
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+	assertEditByOrderProceeded(t, rec, "payment_method:\"\"")
+}
+
+func TestEditTripByOrder_ZeroGrandTotalAllowed(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "COD",
+		"grand_total": 0,
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+	assertEditByOrderProceeded(t, rec, "grand_total 0")
+}
+
+func TestEditTripByOrder_ValidBodyProceeds(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "COD",
+		"grand_total": 100,
+		"currency": "ZMW",
+		"delivery_zone": "Blue Rack 2",
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+	assertEditByOrderProceeded(t, rec, "valid body")
+}
+
+func postEditTripByOrder(t *testing.T, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	h := &TripHandlers{logger: logger}
+	req := httptest.NewRequest(http.MethodPost, "/internal/v1/trips/edit-by-order", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	func() {
+		defer func() { _ = recover() }()
+		h.EditTripByOrder(rec, req)
+	}()
+	return rec
+}
+
+func assertEditByOrderProceeded(t *testing.T, rec *httptest.ResponseRecorder, label string) {
+	t.Helper()
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("%s must not 400, got %s", label, rec.Body.String())
+	}
+	var body ErrorResponse
+	if rec.Body.Len() > 0 && json.NewDecoder(strings.NewReader(rec.Body.String())).Decode(&body) == nil && body.Error.Code == "MISSING_FIELD" {
+		t.Fatalf("%s must not be MISSING_FIELD, got %s", label, rec.Body.String())
 	}
 }
