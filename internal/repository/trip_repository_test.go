@@ -39,3 +39,20 @@ func TestMarkOutForDeliveryUpdateExpression_PreservesFirstDeadline(t *testing.T)
 		t.Fatalf("expression = %q, unconditional SET overwrites a concurrent first freeze", expr)
 	}
 }
+
+func TestUpdateEditByOrderUpdateExpression_IncludesPackedSnapshotFields(t *testing.T) {
+	expr := updateEditByOrderUpdateExpression()
+	for _, field := range []string{"items", "payment", "tasks", "updated_at"} {
+		if !strings.Contains(expr, field) {
+			t.Fatalf("expression = %q, want SET to include %q", expr, field)
+		}
+	}
+}
+
+func TestUpdateEditByOrderConditionExpression_MatchesUpdatePayment(t *testing.T) {
+	cond := updateEditByOrderConditionExpression()
+	want := "attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed"
+	if cond != want {
+		t.Fatalf("condition = %q, want %q", cond, want)
+	}
+}
