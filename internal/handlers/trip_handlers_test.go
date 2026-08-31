@@ -1,12 +1,17 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/qcom/qcom/internal/service"
+	"github.com/sirupsen/logrus"
 )
 
 func TestClassifyTaskUpdateError(t *testing.T) {
@@ -177,5 +182,32 @@ func TestClassifyVerifyPickupError_OrderNotPacked(t *testing.T) {
 	}
 	if code != "ORDER_NOT_PACKED" {
 		t.Errorf("code: got %q, want %q", code, "ORDER_NOT_PACKED")
+	}
+}
+
+func TestEditTripByOrder_MissingOrderID(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	h := &TripHandlers{logger: logger}
+
+	req := httptest.NewRequest(http.MethodPost, "/internal/v1/trips/edit-by-order", strings.NewReader(`{
+		"payment_method": "COD",
+		"grand_total": 100,
+		"currency": "ZMW",
+		"delivery_zone": "Blue Rack 2",
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`))
+	rec := httptest.NewRecorder()
+	h.EditTripByOrder(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", rec.Code)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "MISSING_FIELD" {
+		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
 	}
 }

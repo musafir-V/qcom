@@ -375,6 +375,71 @@ func (h *TripHandlers) UpdateTripPaymentByOrder(w http.ResponseWriter, r *http.R
 	})
 }
 
+// POST /internal/v1/trips/edit-by-order
+// Body: { "order_id", "payment_method", "grand_total", "currency", "delivery_zone", "items": [...] }
+// Called by Java order-service when a packed order's snapshot changes. Overwrites
+// trip items, payment, and pickup delivery zone. No rider push.
+// Responses:
+//   200 {"updated": true}                                 — trip snapshot updated
+//   200 {"updated": false, "reason": "no_active_trip"}    — no trip exists yet (no-op)
+//   409 {"updated": false, "reason": "trip_terminal"}     — trip already closed; not updated
+func (h *TripHandlers) EditTripByOrder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrderID       string  `json:"order_id"`
+		PaymentMethod string  `json:"payment_method"`
+		GrandTotal    float64 `json:"grand_total"`
+		Currency      string  `json:"currency"`
+		DeliveryZone  string  `json:"delivery_zone"`
+		Items         []struct {
+			SKU      string `json:"sku"`
+			Name     string `json:"name"`
+			ImageURL string `json:"image_url"`
+			Quantity int    `json:"quantity"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.OrderID) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id is required")
+		return
+	}
+
+	items := make([]service.EditTripItemInput, 0, len(req.Items))
+	for _, it := range req.Items {
+		items = append(items, service.EditTripItemInput{
+			SKU:      it.SKU,
+			Name:     it.Name,
+			ImageURL: it.ImageURL,
+			Quantity: it.Quantity,
+		})
+	}
+
+	result, err := h.tripService.EditTripByOrder(r.Context(), service.EditTripByOrderInput{
+		OrderID:       req.OrderID,
+		PaymentMethod: req.PaymentMethod,
+		GrandTotal:    req.GrandTotal,
+		Currency:      req.Currency,
+		DeliveryZone:  req.DeliveryZone,
+		Items:         items,
+	})
+	if err != nil {
+		h.logger.WithError(err).WithField("order_id", req.OrderID).Error("EditTripByOrder failed")
+		h.respondWithError(w, http.StatusInternalServerError, "EDIT_FAILED", "Failed to edit trip by order")
+		return
+	}
+
+	status := http.StatusOK
+	if result.Reason == "trip_terminal" {
+		status = http.StatusConflict
+	}
+	h.respondWithJSON(w, status, map[string]interface{}{
+		"updated": result.Updated,
+		"reason":  result.Reason,
+	})
+}
+
 func (h *TripHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

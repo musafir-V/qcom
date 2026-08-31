@@ -79,6 +79,7 @@ type tripRepoI interface {
 	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
 	CancelByOrderID(ctx context.Context, tripID, dePhone, storeID string) error
 	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
+	UpdateEditByOrder(ctx context.Context, tripID string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error
 	AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error
 }
 
@@ -268,6 +269,75 @@ func (s *TripService) UpdateTripPayment(ctx context.Context, in PaymentUpdateInp
 
 	op.With("collect_cash", payment.CollectCash)
 	s.notifyDriverPaymentUpdated(ctx, trip, payment)
+	return PaymentUpdateResult{Updated: true}, nil
+}
+
+// EditTripByOrderInput is an upstream (order-service) packed-snapshot edit for an order.
+type EditTripByOrderInput struct {
+	OrderID       string
+	PaymentMethod string
+	GrandTotal    float64
+	Currency      string
+	DeliveryZone  string
+	Items         []EditTripItemInput
+}
+
+// EditTripItemInput is one packed line item from the edit-by-order body.
+type EditTripItemInput struct {
+	SKU      string
+	Name     string
+	ImageURL string
+	Quantity int
+}
+
+// EditTripByOrder overwrites a trip's packed snapshot (items, payment, pickup
+// delivery zone) after the order is re-packed upstream. Idempotent; no rider push.
+func (s *TripService) EditTripByOrder(ctx context.Context, in EditTripByOrderInput) (PaymentUpdateResult, error) {
+	op := logging.Start(ctx, s.logger, "TripService.EditTripByOrder", logrus.Fields{
+		"order_id": in.OrderID,
+	})
+	defer op.End()
+
+	trip, err := s.tripRepo.GetByOrderID(ctx, in.OrderID)
+	if err != nil {
+		return PaymentUpdateResult{}, op.Fail(err)
+	}
+	if trip == nil {
+		op.Outcome("no_active_trip", nil)
+		return PaymentUpdateResult{Updated: false, Reason: "no_active_trip"}, nil
+	}
+
+	items := make([]models.TripItem, 0, len(in.Items))
+	for _, it := range in.Items {
+		items = append(items, models.TripItem{
+			Sku:      it.SKU,
+			Name:     it.Name,
+			ImageURL: it.ImageURL,
+			Quantity: it.Quantity,
+		})
+	}
+
+	payment := paymentFromOrder(JavaOrder{
+		PaymentMethod: in.PaymentMethod,
+		GrandTotal:    in.GrandTotal,
+		Currency:      in.Currency,
+	})
+
+	tasks := append([]models.Task(nil), trip.Tasks...)
+	for i := range tasks {
+		if tasks[i].Type == models.TaskTypePickup {
+			tasks[i].DeliveryZone = in.DeliveryZone
+		}
+	}
+
+	if err := s.tripRepo.UpdateEditByOrder(ctx, trip.TripID, items, payment, tasks); err != nil {
+		if errors.Is(err, repository.ErrTripTerminal) {
+			op.Outcome("trip_terminal", nil)
+			return PaymentUpdateResult{Updated: false, Reason: "trip_terminal"}, nil
+		}
+		return PaymentUpdateResult{}, op.Fail(err)
+	}
+
 	return PaymentUpdateResult{Updated: true}, nil
 }
 
