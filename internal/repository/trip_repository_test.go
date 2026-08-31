@@ -42,7 +42,13 @@ func TestMarkOutForDeliveryUpdateExpression_PreservesFirstDeadline(t *testing.T)
 
 func TestUpdateEditByOrderUpdateExpression_IncludesPackedSnapshotFields(t *testing.T) {
 	expr := updateEditByOrderUpdateExpression()
-	for _, field := range []string{"items", "payment", "tasks", "updated_at"} {
+	if !strings.Contains(expr, "#items") {
+		t.Fatalf("expression = %q, want #items alias (items is a Dynamo reserved word)", expr)
+	}
+	if strings.Contains(expr, "SET items ") || strings.Contains(expr, ", items =") {
+		t.Fatalf("expression = %q, bare items token is reserved", expr)
+	}
+	for _, field := range []string{"payment", "tasks", "updated_at"} {
 		if !strings.Contains(expr, field) {
 			t.Fatalf("expression = %q, want SET to include %q", expr, field)
 		}

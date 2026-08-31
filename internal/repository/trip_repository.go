@@ -760,7 +760,7 @@ func (r *TripRepository) UpdatePayment(ctx context.Context, tripID string, payme
 
 // updateEditByOrderUpdateExpression sets the packed snapshot fields on trip metadata.
 func updateEditByOrderUpdateExpression() string {
-	return "SET items = :items, payment = :payment, tasks = :tasks, updated_at = :now"
+	return "SET #items = :items, payment = :payment, tasks = :tasks, updated_at = :now"
 }
 
 // updateEditByOrderConditionExpression matches UpdatePayment: reject terminal trips.
@@ -798,7 +798,7 @@ func (r *TripRepository) UpdateEditByOrder(ctx context.Context, tripID string, i
 		},
 		UpdateExpression:         aws.String(updateEditByOrderUpdateExpression()),
 		ConditionExpression:      aws.String(updateEditByOrderConditionExpression()),
-		ExpressionAttributeNames: map[string]string{"#status": "status"},
+		ExpressionAttributeNames: map[string]string{"#status": "status", "#items": "items"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":items":           itemsAttr,
 			":payment":         paymentAttr,
