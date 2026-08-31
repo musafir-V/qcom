@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,8 +13,15 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// editTripByOrderService is the EditTripByOrder surface so handler tests can
+// inject a stub. Production NewTripHandlers leaves this nil and uses tripService.
+type editTripByOrderService interface {
+	EditTripByOrder(ctx context.Context, in service.EditTripByOrderInput) (service.PaymentUpdateResult, error)
+}
+
 type TripHandlers struct {
 	tripService   *service.TripService
+	editTrip      editTripByOrderService
 	uploadService *service.UploadService
 	logger        *logrus.Logger
 }
@@ -426,7 +434,11 @@ func (h *TripHandlers) EditTripByOrder(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	result, err := h.tripService.EditTripByOrder(r.Context(), service.EditTripByOrderInput{
+	editor := h.editTrip
+	if editor == nil {
+		editor = h.tripService
+	}
+	result, err := editor.EditTripByOrder(r.Context(), service.EditTripByOrderInput{
 		OrderID:       req.OrderID,
 		PaymentMethod: *req.PaymentMethod,
 		GrandTotal:    req.GrandTotal,

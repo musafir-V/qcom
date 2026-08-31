@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,14 @@ import (
 	"github.com/qcom/qcom/internal/service"
 	"github.com/sirupsen/logrus"
 )
+
+type stubEditTripByOrder struct {
+	result service.PaymentUpdateResult
+}
+
+func (s *stubEditTripByOrder) EditTripByOrder(_ context.Context, _ service.EditTripByOrderInput) (service.PaymentUpdateResult, error) {
+	return s.result, nil
+}
 
 func TestClassifyTaskUpdateError(t *testing.T) {
 	cases := []struct {
@@ -234,7 +243,7 @@ func TestEditTripByOrder_EmptyItemsListAllowed(t *testing.T) {
 		"grand_total": 100,
 		"items": []
 	}`)
-	assertEditByOrderProceeded(t, rec, "items:[]")
+	assertEditByOrderSucceeded(t, rec, "items:[]")
 }
 
 func TestEditTripByOrder_OmittedPaymentMethodRejected(t *testing.T) {
@@ -265,7 +274,7 @@ func TestEditTripByOrder_EmptyPaymentMethodAllowed(t *testing.T) {
 		"grand_total": 100,
 		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
 	}`)
-	assertEditByOrderProceeded(t, rec, "payment_method:\"\"")
+	assertEditByOrderSucceeded(t, rec, "payment_method:\"\"")
 }
 
 func TestEditTripByOrder_ZeroGrandTotalAllowed(t *testing.T) {
@@ -275,10 +284,10 @@ func TestEditTripByOrder_ZeroGrandTotalAllowed(t *testing.T) {
 		"grand_total": 0,
 		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
 	}`)
-	assertEditByOrderProceeded(t, rec, "grand_total 0")
+	assertEditByOrderSucceeded(t, rec, "grand_total 0")
 }
 
-func TestEditTripByOrder_ValidBodyProceeds(t *testing.T) {
+func TestEditTripByOrder_ValidBodySucceeds(t *testing.T) {
 	rec := postEditTripByOrder(t, `{
 		"order_id": "ORD-1",
 		"payment_method": "COD",
@@ -287,30 +296,36 @@ func TestEditTripByOrder_ValidBodyProceeds(t *testing.T) {
 		"delivery_zone": "Blue Rack 2",
 		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
 	}`)
-	assertEditByOrderProceeded(t, rec, "valid body")
+	assertEditByOrderSucceeded(t, rec, "valid body")
 }
 
 func postEditTripByOrder(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
-	h := &TripHandlers{logger: logger}
+	h := &TripHandlers{
+		logger:   logger,
+		editTrip: &stubEditTripByOrder{result: service.PaymentUpdateResult{Updated: true}},
+	}
 	req := httptest.NewRequest(http.MethodPost, "/internal/v1/trips/edit-by-order", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	func() {
-		defer func() { _ = recover() }()
-		h.EditTripByOrder(rec, req)
-	}()
+	h.EditTripByOrder(rec, req)
 	return rec
 }
 
-func assertEditByOrderProceeded(t *testing.T, rec *httptest.ResponseRecorder, label string) {
+func assertEditByOrderSucceeded(t *testing.T, rec *httptest.ResponseRecorder, label string) {
 	t.Helper()
-	if rec.Code == http.StatusBadRequest {
-		t.Fatalf("%s must not 400, got %s", label, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s: status %d, want 200, body %s", label, rec.Code, rec.Body.String())
 	}
-	var body ErrorResponse
-	if rec.Body.Len() > 0 && json.NewDecoder(strings.NewReader(rec.Body.String())).Decode(&body) == nil && body.Error.Code == "MISSING_FIELD" {
-		t.Fatalf("%s must not be MISSING_FIELD, got %s", label, rec.Body.String())
+	var got struct {
+		Updated bool   `json:"updated"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("%s: decode success body: %v (body %s)", label, err, rec.Body.String())
+	}
+	if !got.Updated || got.Reason != "" {
+		t.Fatalf("%s: got %+v, want updated=true", label, got)
 	}
 }
