@@ -35,6 +35,7 @@ var (
 	ErrInvalidTripTransition  = errors.New("invalid trip transition")
 	ErrPickupOrderMismatch    = errors.New("scanned order does not match assigned trip")
 	ErrOrderNotDeliverable    = errors.New("order not deliverable")
+	ErrOrderNotPacked         = errors.New("order is not packed")
 	ErrJavaOrderCancelled     = errors.New("java order cancelled")
 	ErrRiderRequired          = errors.New("rider required")
 	ErrRiderBusyElsewhere     = errors.New("rider busy on another trip")
@@ -452,6 +453,16 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 	if photoS3Key != "" {
 		task.PhotoS3Key = photoS3Key
 	}
+
+	// Rider pickup completion is gated on Java READY_FOR_DELIVERY so OFD is
+	// not written while the store is still packing. Admin / skipJava paths
+	// go through applyTaskCompletion directly and stay ungated.
+	if task.Type == models.TaskTypePickup && newStatus == models.TaskStatusCompleted {
+		if err := s.requirePacked(ctx, trip.OrderID); err != nil {
+			return nil, op.Outcome("order_not_packed", err)
+		}
+	}
+
 	if err := s.applyTaskCompletion(ctx, trip, task, de, newStatus, otp, "", false); err != nil {
 		return nil, err
 	}
@@ -1273,6 +1284,22 @@ func (s *TripService) GetTripForPhotoPresign(ctx context.Context, tripID, taskID
 	return trip, task, nil
 }
 
+// requirePacked ensures the Java order is READY_FOR_DELIVERY before rider
+// pickup verification or completion. A nil javaClient fails closed.
+func (s *TripService) requirePacked(ctx context.Context, orderID string) error {
+	if s.javaClient == nil {
+		return ErrOrderNotPacked
+	}
+	status, err := s.javaClient.GetOrderStatus(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if status != eligibleOrderStatus {
+		return ErrOrderNotPacked
+	}
+	return nil
+}
+
 // VerifyPickup confirms the DE scanned the correct bill QR for their trip.
 // It does not mutate state — the swipe-to-confirm afterward completes the
 // pickup task via UpdateTaskStatus.
@@ -1286,6 +1313,9 @@ func (s *TripService) VerifyPickup(ctx context.Context, tripID, callerDEPhone, s
 	}
 	if err := validatePickupScan(trip, scannedOrderID); err != nil {
 		return op.Outcome("verify_failed", err)
+	}
+	if err := s.requirePacked(ctx, trip.OrderID); err != nil {
+		return op.Outcome("order_not_packed", err)
 	}
 	return nil
 }

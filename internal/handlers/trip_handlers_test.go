@@ -119,6 +119,12 @@ func TestClassifyTaskUpdateError(t *testing.T) {
 			wantCode:   "FORCE_ASSIGN_CONFLICT",
 		},
 		{
+			name:       "order not packed",
+			err:        fmt.Errorf("%w", service.ErrOrderNotPacked),
+			wantStatus: http.StatusConflict,
+			wantCode:   "ORDER_NOT_PACKED",
+		},
+		{
 			name:       "unknown error defaults to 500",
 			err:        errors.New("dynamodb timeout"),
 			wantStatus: http.StatusInternalServerError,
@@ -161,5 +167,15 @@ func TestClassifyAcceptRejectError(t *testing.T) {
 				t.Errorf("code: got %q, want %q", code, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestClassifyVerifyPickupError_OrderNotPacked(t *testing.T) {
+	status, code := classifyVerifyPickupError(fmt.Errorf("%w", service.ErrOrderNotPacked))
+	if status != http.StatusConflict {
+		t.Errorf("status: got %d, want %d", status, http.StatusConflict)
+	}
+	if code != "ORDER_NOT_PACKED" {
+		t.Errorf("code: got %q, want %q", code, "ORDER_NOT_PACKED")
 	}
 }
