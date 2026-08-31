@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -289,5 +290,23 @@ func TestGetReadyForDeliveryOrders_UsesByStatusesRepeatedQuery(t *testing.T) {
 	}
 	if got, want := orders[0].EffectiveOrderID(), "ORD999"; got != want {
 		t.Errorf("order id = %q, want %q", got, want)
+	}
+}
+
+func TestGetReadyForDeliveryOrders_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	orders, err := newTestJavaClient(srv.URL).GetReadyForDeliveryOrders(context.Background(), "100")
+	if err == nil {
+		t.Fatal("expected error for non-OK status, got nil")
+	}
+	if orders != nil {
+		t.Fatalf("expected nil orders on error, got %+v", orders)
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("error = %v, want status code 500 in message", err)
 	}
 }

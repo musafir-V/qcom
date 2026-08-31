@@ -130,6 +130,23 @@ func TestTripItemsFromOrder_LegacyQuantityWhenOrderedAbsent(t *testing.T) {
 	}
 }
 
+func TestTripItemsFromOrder_ZeroWhenOrderedAndLegacyAbsent(t *testing.T) {
+	order := JavaOrder{
+		Items: []JavaOrderItem{
+			{ProductName: "Mystery", Sku: "SKU-M", FulfilledQuantity: intPtr(9)},
+		},
+	}
+
+	items := tripItemsFromOrder(order)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Quantity != 0 {
+		t.Errorf("quantity = %d, want 0 (no ordered/legacy; fulfilled ignored at create)", items[0].Quantity)
+	}
+}
+
 func TestTripItemsFromOrder_EmptyIsNil(t *testing.T) {
 	if items := tripItemsFromOrder(JavaOrder{}); items != nil {
 		t.Errorf("expected nil items for order with no items, got %+v", items)

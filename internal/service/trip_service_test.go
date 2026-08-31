@@ -1057,6 +1057,67 @@ func TestUpdateTaskStatus_PickupComplete_BlockedUntilReadyForDelivery(t *testing
 	}
 }
 
+func TestUpdateTaskStatus_PickupComplete_JavaStatusError(t *testing.T) {
+	javaErr := errors.New("boom")
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-pickup-java-err",
+			OrderID: "ORD-PICKUP-JAVA-ERR",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{getErr: javaErr}
+
+	_, err := svc.UpdateTaskStatus(context.Background(), "t-pickup-java-err", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "", nil, nil)
+	if !errors.Is(err, javaErr) {
+		t.Fatalf("PickupComplete error = %v, want java status error %v", err, javaErr)
+	}
+	if errors.Is(err, ErrOrderNotPacked) {
+		t.Fatal("java status error must not be treated as not-packed")
+	}
+	if repo.updateStatusCalled {
+		t.Fatal("must not write OFD when java status lookup fails")
+	}
+	if repo.dropDeadline != 0 {
+		t.Fatalf("dropDeadline = %d, want 0 (no OFD write)", repo.dropDeadline)
+	}
+	if repo.updateTasksCalled {
+		t.Fatal("must not complete pickup task when java status lookup fails")
+	}
+}
+
+func TestUpdateTaskStatus_PickupComplete_NilJavaClientFailsClosed(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-pickup-no-java",
+			OrderID: "ORD-PICKUP-NO-JAVA",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	_, err := svc.UpdateTaskStatus(context.Background(), "t-pickup-no-java", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "", nil, nil)
+	if !errors.Is(err, ErrOrderNotPacked) {
+		t.Fatalf("PickupComplete error = %v, want ErrOrderNotPacked when java client absent", err)
+	}
+	if repo.updateStatusCalled || repo.updateTasksCalled {
+		t.Fatal("must not mutate trip when java client is nil")
+	}
+}
+
 func TestUpdateTaskStatus_PickupComplete_AllowedWhenRFD(t *testing.T) {
 	repo := &stubTripRepo{
 		trip: &models.Trip{
