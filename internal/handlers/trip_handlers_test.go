@@ -1,13 +1,27 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/qcom/qcom/internal/service"
+	"github.com/sirupsen/logrus"
 )
+
+type stubEditTripByOrder struct {
+	result service.PaymentUpdateResult
+}
+
+func (s *stubEditTripByOrder) EditTripByOrder(_ context.Context, _ service.EditTripByOrderInput) (service.PaymentUpdateResult, error) {
+	return s.result, nil
+}
 
 func TestClassifyTaskUpdateError(t *testing.T) {
 	cases := []struct {
@@ -119,6 +133,12 @@ func TestClassifyTaskUpdateError(t *testing.T) {
 			wantCode:   "FORCE_ASSIGN_CONFLICT",
 		},
 		{
+			name:       "order not packed",
+			err:        fmt.Errorf("%w", service.ErrOrderNotPacked),
+			wantStatus: http.StatusConflict,
+			wantCode:   "ORDER_NOT_PACKED",
+		},
+		{
 			name:       "unknown error defaults to 500",
 			err:        errors.New("dynamodb timeout"),
 			wantStatus: http.StatusInternalServerError,
@@ -161,5 +181,151 @@ func TestClassifyAcceptRejectError(t *testing.T) {
 				t.Errorf("code: got %q, want %q", code, tc.wantCode)
 			}
 		})
+	}
+}
+
+func TestClassifyVerifyPickupError_OrderNotPacked(t *testing.T) {
+	status, code := classifyVerifyPickupError(fmt.Errorf("%w", service.ErrOrderNotPacked))
+	if status != http.StatusConflict {
+		t.Errorf("status: got %d, want %d", status, http.StatusConflict)
+	}
+	if code != "ORDER_NOT_PACKED" {
+		t.Errorf("code: got %q, want %q", code, "ORDER_NOT_PACKED")
+	}
+}
+
+func TestEditTripByOrder_MissingOrderID(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"payment_method": "COD",
+		"grand_total": 100,
+		"currency": "ZMW",
+		"delivery_zone": "Blue Rack 2",
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", rec.Code)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "MISSING_FIELD" {
+		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
+	}
+}
+
+func TestEditTripByOrder_OmittedItemsRejected(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "COD",
+		"grand_total": 100
+	}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("omitted items must 400, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "MISSING_FIELD" {
+		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
+	}
+	if !strings.Contains(body.Error.Message, "items") {
+		t.Fatalf("message %q must name items", body.Error.Message)
+	}
+}
+
+func TestEditTripByOrder_EmptyItemsListAllowed(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "COD",
+		"grand_total": 100,
+		"items": []
+	}`)
+	assertEditByOrderSucceeded(t, rec, "items:[]")
+}
+
+func TestEditTripByOrder_OmittedPaymentMethodRejected(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"grand_total": 100,
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("omitted payment_method must 400, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "MISSING_FIELD" {
+		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
+	}
+	if !strings.Contains(body.Error.Message, "payment_method") {
+		t.Fatalf("message %q must name payment_method", body.Error.Message)
+	}
+}
+
+func TestEditTripByOrder_EmptyPaymentMethodAllowed(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "",
+		"grand_total": 100,
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+	assertEditByOrderSucceeded(t, rec, "payment_method:\"\"")
+}
+
+func TestEditTripByOrder_ZeroGrandTotalAllowed(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "COD",
+		"grand_total": 0,
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+	assertEditByOrderSucceeded(t, rec, "grand_total 0")
+}
+
+func TestEditTripByOrder_ValidBodySucceeds(t *testing.T) {
+	rec := postEditTripByOrder(t, `{
+		"order_id": "ORD-1",
+		"payment_method": "COD",
+		"grand_total": 100,
+		"currency": "ZMW",
+		"delivery_zone": "Blue Rack 2",
+		"items": [{"sku": "SKU-1", "name": "Milk", "quantity": 1}]
+	}`)
+	assertEditByOrderSucceeded(t, rec, "valid body")
+}
+
+func postEditTripByOrder(t *testing.T, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	h := &TripHandlers{
+		logger:   logger,
+		editTrip: &stubEditTripByOrder{result: service.PaymentUpdateResult{Updated: true}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/internal/v1/trips/edit-by-order", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.EditTripByOrder(rec, req)
+	return rec
+}
+
+func assertEditByOrderSucceeded(t *testing.T, rec *httptest.ResponseRecorder, label string) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s: status %d, want 200, body %s", label, rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Updated bool   `json:"updated"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("%s: decode success body: %v (body %s)", label, err, rec.Body.String())
+	}
+	if !got.Updated || got.Reason != "" {
+		t.Fatalf("%s: got %+v, want updated=true", label, got)
 	}
 }

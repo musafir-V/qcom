@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -212,7 +213,7 @@ func TestGetReadyForDeliveryOrders_StampsStoreIDAndToleratesNumericStoreId(t *te
 		"meta": {"last": true}
 	}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got, want := r.URL.Path, "/order-service/api/v1/orders/store/100"; got != want {
+		if got, want := r.URL.Path, "/order-service/api/v1/orders/store/100/by-statuses"; got != want {
 			t.Errorf("unexpected path %q, want %q", got, want)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -232,5 +233,80 @@ func TestGetReadyForDeliveryOrders_StampsStoreIDAndToleratesNumericStoreId(t *te
 	}
 	if got, want := orders[0].EffectiveOrderID(), "ORD1037370658"; got != want {
 		t.Errorf("order id = %q, want %q", got, want)
+	}
+}
+
+func TestGetReadyForDeliveryOrders_UsesByStatusesRepeatedQuery(t *testing.T) {
+	var requestCount int
+	const body = `{
+		"content": [
+			{"orderNumber": "ORD999", "status": "READY_FOR_DELIVERY",
+			 "delivery": {"address": "1 Main", "latitude": -15.4, "longitude": 28.3, "phone": "0970000000"},
+			 "items": []}
+		],
+		"meta": {"last": true}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if got, want := r.URL.Path, "/order-service/api/v1/orders/store/100/by-statuses"; got != want {
+			t.Errorf("unexpected path %q, want %q", got, want)
+		}
+		q := r.URL.Query()
+		if _, ok := q["status"]; ok {
+			t.Errorf("unexpected status= query key: %v", q["status"])
+		}
+		if got, want := q["statuses"], []string{"CONFIRMED", "PACKING", "READY_FOR_DELIVERY"}; len(got) != len(want) {
+			t.Errorf("statuses = %v, want %v", got, want)
+		} else {
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("statuses[%d] = %q, want %q", i, got[i], want[i])
+				}
+			}
+		}
+		if got, want := q.Get("pageNum"), "0"; got != want {
+			t.Errorf("pageNum = %q, want %q", got, want)
+		}
+		if got, want := q.Get("pageSize"), "50"; got != want {
+			t.Errorf("pageSize = %q, want %q", got, want)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	orders, err := newTestJavaClient(srv.URL).GetReadyForDeliveryOrders(context.Background(), "100")
+	if err != nil {
+		t.Fatalf("GetReadyForDeliveryOrders error: %v", err)
+	}
+	if requestCount != 1 {
+		t.Errorf("expected exactly 1 GET, got %d", requestCount)
+	}
+	if len(orders) != 1 {
+		t.Fatalf("expected 1 order, got %d", len(orders))
+	}
+	if got, want := orders[0].EffectiveOrderID(), "ORD999"; got != want {
+		t.Errorf("order id = %q, want %q", got, want)
+	}
+}
+
+func TestGetReadyForDeliveryOrders_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	orders, err := newTestJavaClient(srv.URL).GetReadyForDeliveryOrders(context.Background(), "100")
+	if err == nil {
+		t.Fatal("expected error for non-OK status, got nil")
+	}
+	if orders != nil {
+		t.Fatalf("expected nil orders on error, got %+v", orders)
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("error = %v, want status code 500 in message", err)
 	}
 }

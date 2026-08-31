@@ -35,6 +35,7 @@ var (
 	ErrInvalidTripTransition  = errors.New("invalid trip transition")
 	ErrPickupOrderMismatch    = errors.New("scanned order does not match assigned trip")
 	ErrOrderNotDeliverable    = errors.New("order not deliverable")
+	ErrOrderNotPacked         = errors.New("order is not packed")
 	ErrJavaOrderCancelled     = errors.New("java order cancelled")
 	ErrRiderRequired          = errors.New("rider required")
 	ErrRiderBusyElsewhere     = errors.New("rider busy on another trip")
@@ -78,6 +79,7 @@ type tripRepoI interface {
 	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
 	CancelByOrderID(ctx context.Context, tripID, dePhone, storeID string) error
 	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
+	UpdateEditByOrder(ctx context.Context, tripID string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error
 	AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error
 }
 
@@ -270,6 +272,75 @@ func (s *TripService) UpdateTripPayment(ctx context.Context, in PaymentUpdateInp
 	return PaymentUpdateResult{Updated: true}, nil
 }
 
+// EditTripByOrderInput is an upstream (order-service) packed-snapshot edit for an order.
+type EditTripByOrderInput struct {
+	OrderID       string
+	PaymentMethod string
+	GrandTotal    float64
+	Currency      string
+	DeliveryZone  string
+	Items         []EditTripItemInput
+}
+
+// EditTripItemInput is one packed line item from the edit-by-order body.
+type EditTripItemInput struct {
+	SKU      string
+	Name     string
+	ImageURL string
+	Quantity int
+}
+
+// EditTripByOrder overwrites a trip's packed snapshot (items, payment, pickup
+// delivery zone) after the order is re-packed upstream. Idempotent; no rider push.
+func (s *TripService) EditTripByOrder(ctx context.Context, in EditTripByOrderInput) (PaymentUpdateResult, error) {
+	op := logging.Start(ctx, s.logger, "TripService.EditTripByOrder", logrus.Fields{
+		"order_id": in.OrderID,
+	})
+	defer op.End()
+
+	trip, err := s.tripRepo.GetByOrderID(ctx, in.OrderID)
+	if err != nil {
+		return PaymentUpdateResult{}, op.Fail(err)
+	}
+	if trip == nil {
+		op.Outcome("no_active_trip", nil)
+		return PaymentUpdateResult{Updated: false, Reason: "no_active_trip"}, nil
+	}
+
+	items := make([]models.TripItem, 0, len(in.Items))
+	for _, it := range in.Items {
+		items = append(items, models.TripItem{
+			Sku:      it.SKU,
+			Name:     it.Name,
+			ImageURL: it.ImageURL,
+			Quantity: it.Quantity,
+		})
+	}
+
+	payment := paymentFromOrder(JavaOrder{
+		PaymentMethod: in.PaymentMethod,
+		GrandTotal:    in.GrandTotal,
+		Currency:      in.Currency,
+	})
+
+	tasks := append([]models.Task(nil), trip.Tasks...)
+	for i := range tasks {
+		if tasks[i].Type == models.TaskTypePickup {
+			tasks[i].DeliveryZone = in.DeliveryZone
+		}
+	}
+
+	if err := s.tripRepo.UpdateEditByOrder(ctx, trip.TripID, items, payment, tasks); err != nil {
+		if errors.Is(err, repository.ErrTripTerminal) {
+			op.Outcome("trip_terminal", nil)
+			return PaymentUpdateResult{Updated: false, Reason: "trip_terminal"}, nil
+		}
+		return PaymentUpdateResult{}, op.Fail(err)
+	}
+
+	return PaymentUpdateResult{Updated: true}, nil
+}
+
 // notifyDriverPaymentUpdated sends the assigned rider a quiet heads-up so their
 // app re-polls and they don't (e.g.) ask for cash that's already been paid.
 //
@@ -452,6 +523,16 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 	if photoS3Key != "" {
 		task.PhotoS3Key = photoS3Key
 	}
+
+	// Rider pickup completion is gated on Java READY_FOR_DELIVERY so OFD is
+	// not written while the store is still packing. Admin / skipJava paths
+	// go through applyTaskCompletion directly and stay ungated.
+	if task.Type == models.TaskTypePickup && newStatus == models.TaskStatusCompleted {
+		if err := s.requirePacked(ctx, trip.OrderID); err != nil {
+			return nil, op.Outcome("order_not_packed", err)
+		}
+	}
+
 	if err := s.applyTaskCompletion(ctx, trip, task, de, newStatus, otp, "", false); err != nil {
 		return nil, err
 	}
@@ -1273,6 +1354,22 @@ func (s *TripService) GetTripForPhotoPresign(ctx context.Context, tripID, taskID
 	return trip, task, nil
 }
 
+// requirePacked ensures the Java order is READY_FOR_DELIVERY before rider
+// pickup verification or completion. A nil javaClient fails closed.
+func (s *TripService) requirePacked(ctx context.Context, orderID string) error {
+	if s.javaClient == nil {
+		return ErrOrderNotPacked
+	}
+	status, err := s.javaClient.GetOrderStatus(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if status != eligibleOrderStatus {
+		return ErrOrderNotPacked
+	}
+	return nil
+}
+
 // VerifyPickup confirms the DE scanned the correct bill QR for their trip.
 // It does not mutate state — the swipe-to-confirm afterward completes the
 // pickup task via UpdateTaskStatus.
@@ -1286,6 +1383,9 @@ func (s *TripService) VerifyPickup(ctx context.Context, tripID, callerDEPhone, s
 	}
 	if err := validatePickupScan(trip, scannedOrderID); err != nil {
 		return op.Outcome("verify_failed", err)
+	}
+	if err := s.requirePacked(ctx, trip.OrderID); err != nil {
+		return op.Outcome("order_not_packed", err)
 	}
 	return nil
 }

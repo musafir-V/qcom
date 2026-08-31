@@ -86,7 +86,7 @@ func TestTripItemsFromOrder_MapsFields(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
 	}
-	if items[0] != (models.TripItem{Name: "Milk", ImageURL: "items/milk.png", Quantity: 2, Sku: "SKU-1"}) {
+	if items[0] != (models.TripItem{Name: "Milk", ImageURL: "items/milk.png", Quantity: 3, Sku: "SKU-1"}) {
 		t.Errorf("item[0] mismatch: got %+v", items[0])
 	}
 	if items[1] != (models.TripItem{Name: "Bread", ImageURL: "items/bread.png", Quantity: 1, Sku: "SKU-2"}) {
@@ -95,6 +95,57 @@ func TestTripItemsFromOrder_MapsFields(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+func TestTripItemsFromOrder_IgnoresFulfilledZeroAtCreate(t *testing.T) {
+	order := JavaOrder{
+		Items: []JavaOrderItem{
+			{ProductName: "Milk", OrderedQuantity: intPtr(3), FulfilledQuantity: intPtr(0), Sku: "SKU-1"},
+		},
+	}
+
+	items := tripItemsFromOrder(order)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Quantity != 3 {
+		t.Errorf("quantity = %d, want 3 (ordered at create, ignore fulfilled)", items[0].Quantity)
+	}
+}
+
+func TestTripItemsFromOrder_LegacyQuantityWhenOrderedAbsent(t *testing.T) {
+	order := JavaOrder{
+		Items: []JavaOrderItem{
+			{ProductName: "Eggs", LegacyQuantity: intPtr(6), Sku: "SKU-EGG"},
+		},
+	}
+
+	items := tripItemsFromOrder(order)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Quantity != 6 {
+		t.Errorf("quantity = %d, want 6 (legacy quantity when ordered absent)", items[0].Quantity)
+	}
+}
+
+func TestTripItemsFromOrder_ZeroWhenOrderedAndLegacyAbsent(t *testing.T) {
+	order := JavaOrder{
+		Items: []JavaOrderItem{
+			{ProductName: "Mystery", Sku: "SKU-M", FulfilledQuantity: intPtr(9)},
+		},
+	}
+
+	items := tripItemsFromOrder(order)
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].Quantity != 0 {
+		t.Errorf("quantity = %d, want 0 (no ordered/legacy; fulfilled ignored at create)", items[0].Quantity)
+	}
+}
 
 func TestTripItemsFromOrder_EmptyIsNil(t *testing.T) {
 	if items := tripItemsFromOrder(JavaOrder{}); items != nil {

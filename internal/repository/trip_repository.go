@@ -758,6 +758,67 @@ func (r *TripRepository) UpdatePayment(ctx context.Context, tripID string, payme
 	return nil
 }
 
+// updateEditByOrderUpdateExpression sets the packed snapshot fields on trip metadata.
+func updateEditByOrderUpdateExpression() string {
+	return "SET #items = :items, payment = :payment, tasks = :tasks, updated_at = :now"
+}
+
+// updateEditByOrderConditionExpression matches UpdatePayment: reject terminal trips.
+func updateEditByOrderConditionExpression() string {
+	return "attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed"
+}
+
+// UpdateEditByOrder overwrites the trip's packed snapshot (items, payment, tasks).
+// It is conditional on the trip NOT being terminal — same guard as UpdatePayment.
+func (r *TripRepository) UpdateEditByOrder(ctx context.Context, tripID string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.UpdateEditByOrder", logrus.Fields{
+		"trip_id": tripID, "item_count": len(items), "task_count": len(tasks),
+	})
+	defer op.End()
+
+	itemsAttr, err := attributevalue.Marshal(items)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to marshal items: %w", err))
+	}
+	paymentAttr, err := attributevalue.Marshal(payment)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to marshal payment: %w", err))
+	}
+	tasksAttr, err := attributevalue.Marshal(tasks)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to marshal tasks: %w", err))
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:         aws.String(updateEditByOrderUpdateExpression()),
+		ConditionExpression:      aws.String(updateEditByOrderConditionExpression()),
+		ExpressionAttributeNames: map[string]string{"#status": "status", "#items": "items"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":items":           itemsAttr,
+			":payment":         paymentAttr,
+			":tasks":           tasksAttr,
+			":now":             &types.AttributeValueMemberS{Value: now},
+			":completed":       &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
+			":cancelled":       &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
+			":distance_failed": &types.AttributeValueMemberS{Value: string(models.TripStatusDistanceFailed)},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return op.Outcome("terminal", ErrTripTerminal)
+		}
+		return op.Fail(fmt.Errorf("failed to update trip edit snapshot: %w", err))
+	}
+	return nil
+}
+
 // Accept transitions a trip from assigned to accepted for the owning DE.
 // Conditional on the trip still being assigned to this DE — if the cron
 // auto-rejected first, the condition fails and the caller gets a conflict.

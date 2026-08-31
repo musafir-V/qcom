@@ -20,8 +20,9 @@ const (
 	cronInterval    = 10 * time.Second
 	cronLockTTLSecs = 30
 
-	// eligibleOrderStatus is the Java order status that makes an order eligible
-	// for rider assignment. Only fully-packed orders should enter the delivery pipeline.
+	// eligibleOrderStatus is the pickup gate: VerifyPickup and pickup-complete
+	// require this Java status. It is not the assignment poll filter (the cron
+	// polls CONFIRMED/PACKING/READY_FOR_DELIVERY via by-statuses separately).
 	eligibleOrderStatus = "READY_FOR_DELIVERY"
 
 	// recipientFallback is used for the drop task when the order has no
@@ -192,10 +193,10 @@ func (c *AssignmentCron) tick(ctx context.Context) {
 }
 
 // processStore runs the order→trip→DE assignment pipeline for a single
-// darkstore: fetch its READY_FOR_DELIVERY orders and eligible DEs, create any
-// missing trips, and assign pooled trips FIFO. Errors are logged with the
-// store id and cause only this store to be skipped; other active stores in
-// the same tick are unaffected.
+// darkstore: fetch its CONFIRMED/PACKING/READY_FOR_DELIVERY orders and eligible
+// DEs, create any missing trips, and assign pooled trips FIFO. Errors are logged
+// with the store id and cause only this store to be skipped; other active stores
+// in the same tick are unaffected.
 func (c *AssignmentCron) processStore(
 	ctx context.Context,
 	store models.Darkstore,
@@ -205,12 +206,12 @@ func (c *AssignmentCron) processStore(
 	now time.Time,
 ) {
 	storeID := store.DarkstoreID
-	// Fetch READY_FOR_DELIVERY orders from Java for this store.
+	// Fetch CONFIRMED/PACKING/READY_FOR_DELIVERY orders from Java for this store.
 	orders, err := c.javaClient.GetReadyForDeliveryOrders(ctx, storeID)
 	if err != nil {
 		metrics.IncCronStoreError(storeID, "fetch_orders")
 		c.logger.WithError(err).WithField("store_id", storeID).
-			Error("assignment cron: failed to fetch READY_FOR_DELIVERY orders — skipping store")
+			Error("assignment cron: failed to fetch CONFIRMED/PACKING/READY_FOR_DELIVERY orders — skipping store")
 		return
 	}
 
@@ -234,7 +235,7 @@ func (c *AssignmentCron) processStore(
 		metrics.SetCronRidersAtPod(storeID, len(onDuty))
 	}
 
-	// For each READY_FOR_DELIVERY order: check trip existence in parallel
+	// For each CONFIRMED/PACKING/READY_FOR_DELIVERY order: check trip existence in parallel
 	type orderResult struct {
 		order       JavaOrder
 		trip        *models.Trip
@@ -613,7 +614,8 @@ func buildTripFromOrder(
 
 // tripItemsFromOrder maps the Java order's items onto trip items. ImageURL is
 // stored as the bare R2 key from Java — callers are responsible for any URL
-// building, so it is passed through untouched.
+// building, so it is passed through untouched. Quantity uses createQuantity so
+// trip create stamps ordered (not fulfilled) counts.
 func tripItemsFromOrder(order JavaOrder) []models.TripItem {
 	if len(order.Items) == 0 {
 		return nil
@@ -623,11 +625,24 @@ func tripItemsFromOrder(order JavaOrder) []models.TripItem {
 		items = append(items, models.TripItem{
 			Name:     it.ProductName,
 			ImageURL: it.ImageURL,
-			Quantity: it.EffectiveQuantity(),
+			Quantity: createQuantity(it),
 			Sku:      it.Sku,
 		})
 	}
 	return items
+}
+
+// createQuantity is the quantity stamped on a trip at create time: ordered
+// snapshot first, then the pre-split legacy field, then 0. Fulfilled counts are
+// intentionally ignored so early assignment can proceed before packing finishes.
+func createQuantity(it JavaOrderItem) int {
+	if it.OrderedQuantity != nil {
+		return *it.OrderedQuantity
+	}
+	if it.LegacyQuantity != nil {
+		return *it.LegacyQuantity
+	}
+	return 0
 }
 
 // paymentMethodCOD is the order-service wire value for cash-on-delivery — the
