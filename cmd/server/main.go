@@ -106,13 +106,13 @@ func main() {
 	distanceService := service.NewDistanceService(cfg.Google.MapsAPIKey, logger)
 	notificationService := service.NewNotificationService(&cfg.Firebase, deviceTokenRepo, logger)
 	tripService := service.NewTripService(tripRepo, deRepo, javaOrderClient, payoutService, notificationService, deStatusEventRepo, tripReachedConfigRepo, dropDeadlineConfigRepo, logger)
-	adminService := service.NewAdminService(tripRepo, deRepo, cashConfigRepo, deStatusEventRepo, notificationService, logger)
+	adminService := service.NewAdminService(tripRepo, deRepo, cashConfigRepo, deStatusEventRepo, notificationService, logger, tripService)
 	appCtx, appCancel := context.WithCancel(context.Background())
 	ruleCache := service.NewRuleCache(ruleRepo, 60*time.Second, logger)
 	ruleCache.Start(appCtx)
 	fareEngine := service.NewFareEngine(ruleCache)
 	rewardCron := service.NewRewardCron(deRepo, tripRepo, ruleRepo, earningsLedgerRepo, cronLockRepo, logger)
-	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, javaOrderClient, distanceService, fareEngine, notificationService, logger)
+	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, javaOrderClient, distanceService, fareEngine, notificationService, logger, tripService)
 
 	if err := service.SeedDefaults(appCtx, ruleRepo); err != nil {
 		logger.WithError(err).Fatal("Failed to seed default rules")

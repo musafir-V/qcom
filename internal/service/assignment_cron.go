@@ -64,6 +64,7 @@ func NewAssignmentCron(
 	fareEngine *FareEngine,
 	notifier NotificationService,
 	logger *logrus.Logger,
+	completer pickupAutoCompleter,
 ) *AssignmentCron {
 	return &AssignmentCron{
 		tripRepo:             tripRepo,
@@ -78,6 +79,7 @@ func NewAssignmentCron(
 		distanceService:      distanceService,
 		fareEngine:           fareEngine,
 		notifier:             notifier,
+		completer:            completer,
 		logger:               logger,
 		stopCh:               make(chan struct{}),
 	}
