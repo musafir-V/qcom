@@ -1064,6 +1064,55 @@ func TestVerifyPickup_BlockedUntilReadyForDelivery(t *testing.T) {
 	}
 }
 
+func TestVerifyPickup_BlockedWhenJavaOFD(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-verify-ofd",
+			OrderID: "ORD-VERIFY-OFD",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
+
+	err := svc.VerifyPickup(context.Background(), "t-verify-ofd", "+260971000001", "ORD-VERIFY-OFD")
+	if !errors.Is(err, ErrOrderNotPacked) {
+		t.Fatalf("VerifyPickup error = %v, want ErrOrderNotPacked when Java is OFD", err)
+	}
+}
+
+func TestUpdateTaskStatus_PickupComplete_BlockedWhenJavaOFD(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-pickup-ofd",
+			OrderID: "ORD-PICKUP-OFD",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
+
+	_, err := svc.UpdateTaskStatus(context.Background(), "t-pickup-ofd", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "", nil, nil)
+	if !errors.Is(err, ErrOrderNotPacked) {
+		t.Fatalf("PickupComplete error = %v, want ErrOrderNotPacked when Java is OFD", err)
+	}
+	if repo.updateTasksCalled || repo.updateStatusCalled {
+		t.Fatal("must not complete pickup on rider path when Java is OFD")
+	}
+}
+
 func TestVerifyPickup_AllowedWhenRFD(t *testing.T) {
 	repo := &stubTripRepo{
 		trip: &models.Trip{
