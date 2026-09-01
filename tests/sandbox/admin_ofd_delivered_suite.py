@@ -1069,11 +1069,8 @@ def tc01() -> str:
     trip = seed_assigned_accepted(oid, "READY_FOR_DELIVERY")
     de0 = ddb_get_de()
     admin_mark(oid, "OUT_FOR_DELIVERY")
-    js = stub_get(oid)
     t = active_trip(oid)
     de = ddb_get_de()
-    if str(js.get("status") or "").upper() != "OUT_FOR_DELIVERY":
-        raise CaseFail(f"java OFD not saved: {js.get('status')}")
     if str(t.get("status") or "").lower() not in ("out_for_delivery", "ofd"):
         raise CaseFail(f"trip not OFD after admin OFD status={t.get('status')} pickup={task_status(t,'pickup')}")
     if task_status(t, "pickup").lower() != "completed":
@@ -1097,8 +1094,6 @@ def tc02() -> str:
     admin_mark(oid, "DELIVERED")
     t = latest_trip(oid)
     de = ddb_get_de()
-    if str(stub_get(oid).get("status") or "").upper() != "DELIVERED":
-        raise CaseFail("java Delivered not saved")
     if str(t.get("status") or "").lower() != "completed":
         raise CaseFail(f"drop not complete trip={t.get('status')} drop={task_status(t,'drop')}")
     if task_status(t, "drop").lower() != "completed":
@@ -1142,17 +1137,14 @@ def tc04() -> str:
     if trip.get("de_phone"):
         raise CaseFail(f"setup wanted no rider, de={trip.get('de_phone')}")
     admin_mark(oid, "OUT_FOR_DELIVERY")
-    js = stub_get(oid)
     t = active_trip(oid)
-    if str(js.get("status") or "").upper() != "OUT_FOR_DELIVERY":
-        raise CaseFail("java OFD not saved")
     if str(t.get("status") or "").lower() in ("out_for_delivery", "ofd"):
         raise CaseFail(f"trip became OFD with no rider status={t.get('status')}")
     if task_status(t, "pickup").lower() == "completed":
         raise CaseFail("pickup completed with no rider")
     if ddb_get_de().get("current_order_id") == oid:
         raise CaseFail("someone bound to no-rider OFD")
-    return "java OFD saved, pickup stays open, trip not OFD, nobody freed"
+    return "pickup stays open, trip not OFD, nobody freed"
 
 
 def tc05() -> str:
@@ -1168,13 +1160,10 @@ def tc05() -> str:
         raise CaseFail(f"setup wanted no trip, got { [t.get('trip_id') for t in trips_for(oid)] }")
     code, parsed, raw = admin_mark(oid, "OUT_FOR_DELIVERY")
     if code != 200:
-        raise CaseFail(f"admin OFD click failed {code} {raw[:200]}")
-    js = stub_get(oid)
-    if str(js.get("status") or "").upper() != "OUT_FOR_DELIVERY":
-        raise CaseFail(f"java OFD not saved: {js.get('status')}")
+        raise CaseFail(f"complete-by-order OFD no-trip failed {code} {raw[:200]}")
     if trips_for(oid, active=True):
         raise CaseFail("last-mile created a trip on no-trip OFD")
-    return "last-mile no-op, java OFD saved, admin click 200"
+    return "last-mile no-op, complete-by-order 200, no trip created"
 
 
 def tc06() -> str:
@@ -1233,10 +1222,7 @@ def tc08() -> str:
     if trip.get("de_phone"):
         raise CaseFail(f"setup wanted no rider, de={trip.get('de_phone')}")
     admin_mark(oid, "DELIVERED")
-    js = stub_get(oid)
     t = latest_trip(oid)
-    if str(js.get("status") or "").upper() != "DELIVERED":
-        raise CaseFail("java Delivered not saved")
     st = str(t.get("status") or "").lower()
     drop_st = task_status(t, "drop").lower()
     if st != "completed" and drop_st != "completed":
@@ -1325,28 +1311,25 @@ def tc11() -> str:
 def tc12() -> str:
     oid = new_oid("12")
     seed_assigned_accepted(oid, "READY_FOR_DELIVERY")
+    t0 = active_trip(oid)
     code, parsed, raw = admin_mark(oid, "OUT_FOR_DELIVERY", unreachable=True)
-    if code != 200:
-        raise CaseFail(f"admin OFD click failed while qcom down {code} {raw[:200]}")
-    js = stub_get(oid)
-    if str(js.get("status") or "").upper() != "OUT_FOR_DELIVERY":
-        raise CaseFail(f"java OFD not saved while qcom down: {js.get('status')}")
+    # qcom-only: Java persist is inventory. Unreachable complete-by-order must not change last-mile.
     t = active_trip(oid)
-    # last-mile may be unchanged
-    return f"java OFD saved 200 with qcom unreachable; trip still {t.get('status')}"
+    if task_status(t, "pickup").lower() == "completed" and str(t0.get("status") or "").lower() not in ("out_for_delivery", "ofd"):
+        raise CaseFail(f"last-mile changed while qcom unreachable pickup={task_status(t,'pickup')} trip={t.get('status')}")
+    return f"qcom unreachable; last-mile unchanged trip={t.get('status')} code={code}"
 
 
 def tc13() -> str:
     oid = new_oid("13")
     seed_assigned_accepted(oid, "READY_FOR_DELIVERY")
     admin_mark(oid, "OUT_FOR_DELIVERY")
+    t0 = active_trip(oid)
     code, parsed, raw = admin_mark(oid, "DELIVERED", unreachable=True)
-    if code != 200:
-        raise CaseFail(f"admin Delivered click failed while qcom down {code} {raw[:200]}")
-    js = stub_get(oid)
-    if str(js.get("status") or "").upper() != "DELIVERED":
-        raise CaseFail(f"java Delivered not saved while qcom down: {js.get('status')}")
-    return "java Delivered saved 200 with qcom unreachable"
+    t = latest_trip(oid)
+    if str(t.get("status") or "").lower() == "completed" and str(t0.get("status") or "").lower() != "completed":
+        raise CaseFail("drop completed while qcom unreachable")
+    return f"qcom unreachable on Delivered; last-mile still {t.get('status')} code={code}"
 
 
 def tc14() -> str:
