@@ -33,6 +33,49 @@ func TestAutoCompletePickupIfJavaOFD_CompletesPickup(t *testing.T) {
 	}
 }
 
+func TestAutoCompletePickup_PriorOFDInboundNoRider_CompletesOnAssign(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID:  "T-AC-PRIOR",
+		OrderID: "ORD-AC-PRIOR",
+		Status:  models.TripStatusCreated,
+		Tasks: []models.Task{
+			{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "d", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+
+	res, err := svc.CompleteByOrder(context.Background(), CompleteByOrderInput{
+		OrderID: "ORD-AC-PRIOR", Status: "OUT_FOR_DELIVERY",
+	})
+	if err != nil {
+		t.Fatalf("OFD inbound: %v", err)
+	}
+	if res.Updated || res.Reason != "no_rider" {
+		t.Fatalf("expected no_rider, got %+v", res)
+	}
+	if !repo.trip.AdminOFDInbound {
+		t.Fatal("no-rider OFD inbound must persist AdminOFDInbound")
+	}
+	if repo.trip.PickupTask().Status != models.TaskStatusCreated {
+		t.Fatal("must not complete pickup before a rider is assigned")
+	}
+
+	repo.trip.DEID = "de-1"
+	repo.trip.DEPhone = "+260971000001"
+	repo.trip.Status = models.TripStatusAccepted
+
+	if err := svc.AutoCompletePickupIfJavaOFD(context.Background(), "ORD-AC-PRIOR"); err != nil {
+		t.Fatalf("auto-complete after assign: %v", err)
+	}
+	pickup := repo.trip.PickupTask()
+	if pickup == nil || pickup.Status != models.TaskStatusCompleted {
+		t.Fatalf("prior admin OFD inbound must complete pickup on assign even when Java is RFD, got %+v", pickup)
+	}
+}
+
 func TestAutoCompletePickupIfJavaOFD_RFD_NoOp(t *testing.T) {
 	repo := &stubTripRepo{trip: &models.Trip{
 		TripID:  "T-AC-2",
@@ -49,6 +92,9 @@ func TestAutoCompletePickupIfJavaOFD_RFD_NoOp(t *testing.T) {
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
 
+	if repo.trip.AdminOFDInbound {
+		t.Fatal("fixture must leave AdminOFDInbound false")
+	}
 	if err := svc.AutoCompletePickupIfJavaOFD(context.Background(), "ORD-AC-2"); err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}

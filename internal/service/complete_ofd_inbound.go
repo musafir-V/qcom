@@ -10,8 +10,22 @@ import (
 // completeOFDInbound completes pickup when admin marks Java OUT_FOR_DELIVERY.
 // No requirePacked (admin already moved Java). Does not call AdminCompleteTask.
 // skipJava=true so Java is never written from this inbound.
+func (s *TripService) markAdminOFDInbound(ctx context.Context, trip *models.Trip) error {
+	if trip.AdminOFDInbound {
+		return nil
+	}
+	if err := s.tripRepo.MarkAdminOFDInbound(ctx, trip.TripID); err != nil {
+		return err
+	}
+	trip.AdminOFDInbound = true
+	return nil
+}
+
 func (s *TripService) completeOFDInbound(ctx context.Context, trip *models.Trip) (PaymentUpdateResult, error) {
 	if !riderOnTrip(trip) {
+		if err := s.markAdminOFDInbound(ctx, trip); err != nil {
+			return PaymentUpdateResult{}, err
+		}
 		return PaymentUpdateResult{Updated: false, Reason: "no_rider"}, nil
 	}
 
@@ -41,6 +55,9 @@ func (s *TripService) completeOFDInbound(ctx context.Context, trip *models.Trip)
 		return PaymentUpdateResult{}, err
 	}
 	if err := s.applyTaskCompletion(ctx, trip, pickup, de, models.TaskStatusCompleted, "", "dashboard", true); err != nil {
+		return PaymentUpdateResult{}, err
+	}
+	if err := s.markAdminOFDInbound(ctx, trip); err != nil {
 		return PaymentUpdateResult{}, err
 	}
 	return PaymentUpdateResult{Updated: true}, nil

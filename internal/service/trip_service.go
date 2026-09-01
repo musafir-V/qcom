@@ -82,6 +82,7 @@ type tripRepoI interface {
 	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
 	UpdateEditByOrder(ctx context.Context, tripID string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error
 	AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error
+	MarkAdminOFDInbound(ctx context.Context, tripID string) error
 }
 
 // deRepoI is the subset of DERepository methods used by TripService.

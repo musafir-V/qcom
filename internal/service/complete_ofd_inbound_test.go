@@ -34,6 +34,9 @@ func TestCompleteOFDInbound_NoRider_LeavesPickup(t *testing.T) {
 	if repo.updateTasksCalled {
 		t.Fatal("must not complete pickup when no rider is on the trip")
 	}
+	if !repo.adminOFDInboundCalled || !repo.trip.AdminOFDInbound {
+		t.Fatal("no-rider OFD inbound must persist AdminOFDInbound")
+	}
 	pickup := repo.trip.PickupTask()
 	if pickup == nil || pickup.Status != models.TaskStatusCreated {
 		t.Fatalf("pickup must stay created, got %+v", pickup)

@@ -33,6 +33,16 @@ func TestReassign_SamePhone_RejectedBeforeTransaction(t *testing.T) {
 	}
 }
 
+func TestMarkAdminOFDInboundUpdateExpression_SetsFlagOnTripMetadata(t *testing.T) {
+	expr := markAdminOFDInboundUpdateExpression()
+	if !strings.Contains(expr, "admin_ofd_inbound = :t") {
+		t.Fatalf("expression = %q, want SET admin_ofd_inbound = :t on TRIP METADATA", expr)
+	}
+	if !strings.Contains(expr, "updated_at = :now") {
+		t.Fatalf("expression = %q, want updated_at", expr)
+	}
+}
+
 func TestMarkOutForDeliveryUpdateExpression_PreservesFirstDeadline(t *testing.T) {
 	expr := markOutForDeliveryUpdateExpression()
 	if !strings.Contains(expr, "if_not_exists(drop_deadline, :dd)") {

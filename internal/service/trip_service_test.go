@@ -629,6 +629,7 @@ type stubTripRepo struct {
 	dropDeadline            int64
 	adminAssignCalled       bool
 	adminAssignErr          error
+	adminOFDInboundCalled   bool
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -715,6 +716,14 @@ func (s *stubTripRepo) AdminAssign(_ context.Context, _, _, deID, dePhone, _ str
 		s.trip.Status = models.TripStatusAccepted
 		s.trip.DEID = deID
 		s.trip.DEPhone = dePhone
+	}
+	return nil
+}
+
+func (s *stubTripRepo) MarkAdminOFDInbound(_ context.Context, _ string) error {
+	s.adminOFDInboundCalled = true
+	if s.trip != nil {
+		s.trip.AdminOFDInbound = true
 	}
 	return nil
 }
