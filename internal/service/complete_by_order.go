@@ -49,14 +49,10 @@ func (s *TripService) CompleteByOrder(ctx context.Context, in CompleteByOrderInp
 		return PaymentUpdateResult{Updated: false, Reason: "trip_terminal"}, nil
 	}
 
-	switch in.Status {
-	case "OUT_FOR_DELIVERY":
+	if in.Status == "OUT_FOR_DELIVERY" {
 		return s.completeOFDInbound(ctx, trip)
-	case "DELIVERED":
-		return s.completeDeliveredInbound(ctx, trip)
-	default:
-		return PaymentUpdateResult{}, op.Outcome("invalid_status", fmt.Errorf("%w: %s", ErrInvalidStatus, in.Status))
 	}
+	return s.completeDeliveredInbound(ctx, trip)
 }
 
 // pickupAutoCompleter is the assign-time hook so cron and admin assign can
@@ -69,4 +65,3 @@ type pickupAutoCompleter interface {
 func riderOnTrip(trip *models.Trip) bool {
 	return trip != nil && trip.DEID != ""
 }
-

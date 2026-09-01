@@ -24,6 +24,37 @@ func TestCompleteByOrder_NoTrip_NoOp(t *testing.T) {
 	}
 }
 
+func TestCompleteByOrder_LookupError(t *testing.T) {
+	want := errors.New("dynamo down")
+	repo := &stubTripRepo{getByOrderErr: want}
+	svc := newTestTripService(repo, &stubNotifier{})
+
+	_, err := svc.CompleteByOrder(context.Background(), CompleteByOrderInput{
+		OrderID: "ORD-1", Status: "OUT_FOR_DELIVERY",
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("expected lookup error, got %v", err)
+	}
+}
+
+func TestCompleteByOrder_TerminalTrip(t *testing.T) {
+	for _, status := range []models.TripStatus{
+		models.TripStatusCompleted, models.TripStatusCancelled, models.TripStatusDistanceFailed,
+	} {
+		repo := &stubTripRepo{trip: &models.Trip{TripID: "T1", OrderID: "ORD-1", Status: status}}
+		svc := newTestTripService(repo, &stubNotifier{})
+		res, err := svc.CompleteByOrder(context.Background(), CompleteByOrderInput{
+			OrderID: "ORD-1", Status: "DELIVERED",
+		})
+		if err != nil {
+			t.Fatalf("status %s: %v", status, err)
+		}
+		if res.Updated || res.Reason != "trip_terminal" {
+			t.Fatalf("status %s: got %+v, want trip_terminal", status, res)
+		}
+	}
+}
+
 func TestCompleteByOrder_InvalidStatus(t *testing.T) {
 	repo := &stubTripRepo{trip: &models.Trip{
 		TripID:  "T1",

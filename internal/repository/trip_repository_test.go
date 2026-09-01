@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -54,6 +55,33 @@ func TestUpdateEditByOrderUpdateExpression_IncludesPackedSnapshotFields(t *testi
 		if !strings.Contains(expr, field) {
 			t.Fatalf("expression = %q, want SET to include %q", expr, field)
 		}
+	}
+}
+
+func TestClassifyCompleteTripOnlyErr(t *testing.T) {
+	if err := classifyCompleteTripOnlyErr(nil); err != nil {
+		t.Fatalf("nil err: %v", err)
+	}
+	canceled := &types.TransactionCanceledException{Message: aws.String("canceled")}
+	err := classifyCompleteTripOnlyErr(canceled)
+	if !errors.Is(err, ErrTripTerminal) {
+		t.Fatalf("canceled: got %v, want ErrTripTerminal", err)
+	}
+	wrapped := classifyCompleteTripOnlyErr(errors.New("network"))
+	if wrapped == nil || !strings.Contains(wrapped.Error(), "failed to complete trip") {
+		t.Fatalf("other err: got %v", wrapped)
+	}
+}
+
+func TestCompleteTripOnly_WithoutClientReturnsError(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.PanicLevel)
+	r := &TripRepository{tableName: "test-table", logger: logger}
+	err := r.CompleteTripOnly(context.Background(), "T1", []models.Task{
+		{TaskID: "p", Type: models.TaskTypePickup},
+	})
+	if err == nil {
+		t.Fatal("expected error when Dynamo client is unset")
 	}
 }
 

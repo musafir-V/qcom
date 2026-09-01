@@ -439,18 +439,32 @@ func (r *TripRepository) CompleteTripOnly(ctx context.Context, tripID string, ta
 	if err != nil {
 		return op.Fail(err)
 	}
+	if r.client == nil {
+		return op.Fail(fmt.Errorf("failed to complete trip: dynamodb client is required"))
+	}
 
 	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 		TransactItems: items,
 	})
 	if err != nil {
-		var txErr *types.TransactionCanceledException
-		if errors.As(err, &txErr) {
-			return op.Outcome("conflict", fmt.Errorf("%w: trip already closed", ErrTripTerminal))
+		classified := classifyCompleteTripOnlyErr(err)
+		if errors.Is(classified, ErrTripTerminal) {
+			return op.Outcome("conflict", classified)
 		}
-		return op.Fail(fmt.Errorf("failed to complete trip: %w", err))
+		return op.Fail(classified)
 	}
 	return nil
+}
+
+func classifyCompleteTripOnlyErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var txErr *types.TransactionCanceledException
+	if errors.As(err, &txErr) {
+		return fmt.Errorf("%w: trip already closed", ErrTripTerminal)
+	}
+	return fmt.Errorf("failed to complete trip: %w", err)
 }
 
 func completeTripOnlyTransactItems(tableName, tripID string, tasks []models.Task, now string) ([]types.TransactWriteItem, error) {

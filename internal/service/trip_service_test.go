@@ -603,6 +603,7 @@ func TestEditTripByOrder_TerminalTrip_Rejected(t *testing.T) {
 // (drop path). updateTasksFn, if set, is called by UpdateTasks (pickup path).
 type stubTripRepo struct {
 	trip                    *models.Trip
+	getByOrderErr           error
 	cancelCalled            bool
 	cancelTripID            string
 	cancelDEPhone           string
@@ -612,6 +613,8 @@ type stubTripRepo struct {
 	completeTripCalled      bool
 	completeAndFreeCalled   bool
 	completeOnlyCalled      bool
+	completeOnlyErr         error
+	acceptErr               error
 	updatePaymentCalled     bool
 	updatePaymentErr        error
 	capturedPayment         *models.Payment
@@ -629,6 +632,9 @@ type stubTripRepo struct {
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
+	if s.getByOrderErr != nil {
+		return nil, s.getByOrderErr
+	}
 	return s.trip, nil
 }
 
@@ -655,7 +661,7 @@ func (s *stubTripRepo) CompleteTripOnly(_ context.Context, _ string, tasks []mod
 	s.completeOnlyCalled = true
 	s.capturedTasks = make([]models.Task, len(tasks))
 	copy(s.capturedTasks, tasks)
-	return nil
+	return s.completeOnlyErr
 }
 
 func (s *stubTripRepo) UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error {
@@ -714,6 +720,9 @@ func (s *stubTripRepo) AdminAssign(_ context.Context, _, _, deID, dePhone, _ str
 }
 
 func (s *stubTripRepo) Accept(_ context.Context, _, _ string) error {
+	if s.acceptErr != nil {
+		return s.acceptErr
+	}
 	if s.trip != nil {
 		s.trip.Status = models.TripStatusAccepted
 	}
@@ -745,9 +754,13 @@ type stubDERepo struct {
 	listed      []*models.DeliveryExecutive
 	statusCalls []string
 	attachCalls int
+	getErr      error
 }
 
 func (s *stubDERepo) GetByPhone(_ context.Context, phone string) (*models.DeliveryExecutive, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
 	if s.byPhone != nil {
 		return s.byPhone[phone], nil
 	}

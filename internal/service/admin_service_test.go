@@ -21,13 +21,13 @@ type fakeReassignTripRepo struct {
 	gotPromote     bool
 	// All seven positional string args are captured: they are same-typed and
 	// adjacent, so a transposition is invisible unless each is asserted.
-	gotTripID      string
-	gotFromDEPhone string
-	gotFromDEID    string
-	gotToDEID      string
-	gotToDEPhone   string
-	gotOrderID     string
-	gotStoreID     string
+	gotTripID         string
+	gotFromDEPhone    string
+	gotFromDEID       string
+	gotToDEID         string
+	gotToDEPhone      string
+	gotOrderID        string
+	gotStoreID        string
 	reassignErr       error
 	adminAssignCalled bool
 }
