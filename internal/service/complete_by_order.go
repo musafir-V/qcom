@@ -59,13 +59,14 @@ func (s *TripService) CompleteByOrder(ctx context.Context, in CompleteByOrderInp
 	}
 }
 
+// pickupAutoCompleter is the assign-time hook so cron and admin assign can
+// complete pickup when Java is already OFD/DELIVERED without importing each other.
+type pickupAutoCompleter interface {
+	AutoCompletePickupIfJavaOFD(ctx context.Context, orderID string) error
+}
+
 // riderOnTrip reports whether a DE is assigned to the trip (DEID nonempty).
 func riderOnTrip(trip *models.Trip) bool {
 	return trip != nil && trip.DEID != ""
-}
-
-// AutoCompletePickupIfJavaOFD is a T1 stub; T5 implements the Java-status check.
-func (s *TripService) AutoCompletePickupIfJavaOFD(ctx context.Context, orderID string) error {
-	return nil
 }
 

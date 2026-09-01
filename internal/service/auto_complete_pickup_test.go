@@ -1,0 +1,80 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/qcom/qcom/internal/models"
+)
+
+func TestAutoCompletePickupIfJavaOFD_CompletesPickup(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID:  "T-AC-1",
+		OrderID: "ORD-AC-1",
+		DEID:    "de-1",
+		DEPhone: "+260971000001",
+		Status:  models.TripStatusAssigned,
+		Tasks: []models.Task{
+			{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "d", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
+
+	if err := svc.AutoCompletePickupIfJavaOFD(context.Background(), "ORD-AC-1"); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	pickup := repo.trip.PickupTask()
+	if pickup == nil || pickup.Status != models.TaskStatusCompleted {
+		t.Fatalf("Java OFD must complete pickup, got %+v", pickup)
+	}
+}
+
+func TestAutoCompletePickupIfJavaOFD_RFD_NoOp(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID:  "T-AC-2",
+		OrderID: "ORD-AC-2",
+		DEID:    "de-1",
+		DEPhone: "+260971000001",
+		Status:  models.TripStatusAssigned,
+		Tasks: []models.Task{
+			{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "d", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+
+	if err := svc.AutoCompletePickupIfJavaOFD(context.Background(), "ORD-AC-2"); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	pickup := repo.trip.PickupTask()
+	if pickup == nil || pickup.Status != models.TaskStatusCreated {
+		t.Fatalf("RFD must not complete pickup, got %+v", pickup)
+	}
+}
+
+func TestAutoCompletePickupIfJavaOFD_JavaDown_DoesNotFailAssign(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID:  "T-AC-3",
+		OrderID: "ORD-AC-3",
+		DEID:    "de-1",
+		Status:  models.TripStatusAssigned,
+		Tasks: []models.Task{
+			{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+		},
+	}}
+	svc := newTripServiceForTest(repo, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{getErr: errors.New("java down")}
+
+	if err := svc.AutoCompletePickupIfJavaOFD(context.Background(), "ORD-AC-3"); err != nil {
+		t.Fatalf("Java down must not fail assign, got %v", err)
+	}
+	if repo.updateTasksCalled {
+		t.Fatal("must not mutate trip when GetOrderStatus fails")
+	}
+}
