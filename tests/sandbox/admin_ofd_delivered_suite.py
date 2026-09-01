@@ -1330,8 +1330,12 @@ def tc12() -> str:
 def tc13() -> str:
     oid = new_oid("13")
     seed_assigned_accepted(oid, "READY_FOR_DELIVERY")
-    admin_mark(oid, "OUT_FOR_DELIVERY")
+    code, parsed, raw = admin_mark(oid, "OUT_FOR_DELIVERY")
+    if code != 200:
+        raise CaseFail(f"setup OFD failed {code} {raw[:200]}")
     t0 = active_trip(oid)
+    if task_status(t0, "pickup").lower() != "completed":
+        raise CaseFail("setup pickup not complete")
     want_status = str(t0.get("status") or "")
     want_drop = task_status(t0, "drop") or task_status(t0, "delivery")
     code, parsed, raw = admin_mark(oid, "DELIVERED", unreachable=True)
