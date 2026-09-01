@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/timezone"
 )
 
@@ -45,6 +47,9 @@ func (s *TripService) completeDeliveredInbound(ctx context.Context, trip *models
 		}
 	}
 	if err := s.tripRepo.CompleteTripOnly(ctx, trip.TripID, trip.Tasks); err != nil {
+		if errors.Is(err, repository.ErrTripTerminal) {
+			return PaymentUpdateResult{Updated: false, Reason: "trip_terminal"}, nil
+		}
 		return PaymentUpdateResult{}, err
 	}
 	return PaymentUpdateResult{Updated: true}, nil

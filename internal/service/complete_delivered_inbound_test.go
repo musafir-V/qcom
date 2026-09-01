@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/qcom/qcom/internal/models"
+	"github.com/qcom/qcom/internal/repository"
 )
 
 func TestCompleteDeliveredInbound_WithRider_ClosesTripAndFrees(t *testing.T) {
@@ -170,6 +171,31 @@ func TestCompleteDeliveredInbound_MissingDrop(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when drop task is missing")
+	}
+}
+
+func TestCompleteDeliveredInbound_CompleteTripOnlyTerminalIsNoOp(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID: "T-DEL-TERM", OrderID: "ORD-DEL-TERM",
+			Status: models.TripStatusCreated,
+			Tasks: []models.Task{
+				{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "d", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+			},
+		},
+		completeOnlyErr: repository.ErrTripTerminal,
+	}
+	svc := newTripServiceForTest(repo, &stubDERepo{}, &stubNotifier{})
+
+	res, err := svc.CompleteByOrder(context.Background(), CompleteByOrderInput{
+		OrderID: "ORD-DEL-TERM", Status: "DELIVERED",
+	})
+	if err != nil {
+		t.Fatalf("trip_terminal must not be a 500, got %v", err)
+	}
+	if res.Updated || res.Reason != "trip_terminal" {
+		t.Fatalf("got %+v, want trip_terminal", res)
 	}
 }
 
