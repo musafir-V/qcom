@@ -324,6 +324,96 @@ func TestCompleteTripByOrder_MissingOrderID(t *testing.T) {
 	}
 }
 
+func TestCompleteTripByOrder_TerminalIs200(t *testing.T) {
+	rec := postCompleteTripByOrder(t, `{"order_id":"ORD-1","status":"DELIVERED"}`,
+		service.PaymentUpdateResult{Updated: false, Reason: "trip_terminal"}, nil)
+	if rec.Code == http.StatusConflict {
+		t.Fatalf("trip_terminal must not 409 (Java would retry), got %d body %s", rec.Code, rec.Body.String())
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Updated bool   `json:"updated"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Updated || got.Reason != "trip_terminal" {
+		t.Fatalf("got %+v, want updated=false reason=trip_terminal", got)
+	}
+}
+
+func TestCompleteTripByOrder_InvalidStatus400(t *testing.T) {
+	rec := postCompleteTripByOrder(t, `{"order_id":"ORD-1","status":"PACKING"}`,
+		service.PaymentUpdateResult{}, service.ErrInvalidStatus)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400, body %s", rec.Code, rec.Body.String())
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "INVALID_STATUS" {
+		t.Fatalf("code: got %q, want INVALID_STATUS", body.Error.Code)
+	}
+}
+
+func TestCompleteTripByOrder_MissingStatus(t *testing.T) {
+	rec := postCompleteTripByOrder(t, `{"order_id":"ORD-1"}`, service.PaymentUpdateResult{Updated: true}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", rec.Code)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "MISSING_FIELD" {
+		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
+	}
+}
+
+func TestCompleteTripByOrder_InvalidJSON(t *testing.T) {
+	rec := postCompleteTripByOrder(t, `{not-json`, service.PaymentUpdateResult{}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", rec.Code)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("code: got %q, want INVALID_REQUEST", body.Error.Code)
+	}
+}
+
+func TestCompleteTripByOrder_ServiceError500(t *testing.T) {
+	rec := postCompleteTripByOrder(t, `{"order_id":"ORD-1","status":"DELIVERED"}`,
+		service.PaymentUpdateResult{}, errors.New("dynamo timeout"))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500, body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCompleteTripByOrder_DeliveredUpdatedTrue(t *testing.T) {
+	rec := postCompleteTripByOrder(t, `{"order_id":"ORD-1","status":"DELIVERED"}`,
+		service.PaymentUpdateResult{Updated: true}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Updated bool   `json:"updated"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Updated {
+		t.Fatalf("got %+v, want updated=true", got)
+	}
+}
+
 func TestCompleteTripByOrder_NoTrip200(t *testing.T) {
 	rec := postCompleteTripByOrder(t, `{"order_id":"ORD-NONE","status":"OUT_FOR_DELIVERY"}`,
 		service.PaymentUpdateResult{Updated: false, Reason: "no_active_trip"}, nil)
