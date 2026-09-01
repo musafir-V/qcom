@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -51,6 +53,43 @@ func TestUpdateEditByOrderUpdateExpression_IncludesPackedSnapshotFields(t *testi
 	for _, field := range []string{"payment", "tasks", "updated_at"} {
 		if !strings.Contains(expr, field) {
 			t.Fatalf("expression = %q, want SET to include %q", expr, field)
+		}
+	}
+}
+
+func TestCompleteTripOnly_NoDEInTransact(t *testing.T) {
+	items, err := completeTripOnlyTransactItems("tbl", "T-99", []models.Task{
+		{TaskID: "p", Type: models.TaskTypePickup},
+	}, "2026-09-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("completeTripOnlyTransactItems: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("want 1 transact item (trip only, no DE), got %d", len(items))
+	}
+	for i, it := range items {
+		if it.Update == nil {
+			t.Fatalf("item %d: expected Update", i)
+		}
+		pkAV, ok := it.Update.Key["PK"].(*types.AttributeValueMemberS)
+		if !ok {
+			t.Fatalf("item %d: PK missing", i)
+		}
+		if strings.HasPrefix(pkAV.Value, "DE!") {
+			t.Fatalf("must not include DE! PK in transact, got %q", pkAV.Value)
+		}
+		if pkAV.Value != "TRIP!T-99" {
+			t.Fatalf("PK = %q, want TRIP!T-99", pkAV.Value)
+		}
+		expr := aws.ToString(it.Update.UpdateExpression)
+		for _, want := range []string{"SET tasks", "#status", "completed_at", "updated_at"} {
+			if !strings.Contains(expr, want) {
+				t.Fatalf("update expr %q missing %q", expr, want)
+			}
+		}
+		cond := aws.ToString(it.Update.ConditionExpression)
+		if !strings.Contains(cond, "#status <> :completed") || !strings.Contains(cond, "#status <> :cancelled") {
+			t.Fatalf("condition = %q, want not completed/cancelled", cond)
 		}
 	}
 }
