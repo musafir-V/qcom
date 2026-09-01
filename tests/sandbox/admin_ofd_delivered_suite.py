@@ -1312,12 +1312,19 @@ def tc12() -> str:
     oid = new_oid("12")
     seed_assigned_accepted(oid, "READY_FOR_DELIVERY")
     t0 = active_trip(oid)
+    want_status = str(t0.get("status") or "")
+    want_pickup = task_status(t0, "pickup")
     code, parsed, raw = admin_mark(oid, "OUT_FOR_DELIVERY", unreachable=True)
     # qcom-only: Java persist is inventory. Unreachable complete-by-order must not change last-mile.
     t = active_trip(oid)
-    if task_status(t, "pickup").lower() == "completed" and str(t0.get("status") or "").lower() not in ("out_for_delivery", "ofd"):
-        raise CaseFail(f"last-mile changed while qcom unreachable pickup={task_status(t,'pickup')} trip={t.get('status')}")
-    return f"qcom unreachable; last-mile unchanged trip={t.get('status')} code={code}"
+    got_status = str(t.get("status") or "")
+    got_pickup = task_status(t, "pickup")
+    if got_status != want_status or got_pickup != want_pickup:
+        raise CaseFail(
+            f"last-mile changed while qcom unreachable "
+            f"trip {want_status}->{got_status} pickup {want_pickup}->{got_pickup}"
+        )
+    return f"qcom unreachable; last-mile unchanged trip={got_status} pickup={got_pickup} code={code}"
 
 
 def tc13() -> str:
@@ -1325,11 +1332,18 @@ def tc13() -> str:
     seed_assigned_accepted(oid, "READY_FOR_DELIVERY")
     admin_mark(oid, "OUT_FOR_DELIVERY")
     t0 = active_trip(oid)
+    want_status = str(t0.get("status") or "")
+    want_drop = task_status(t0, "drop") or task_status(t0, "delivery")
     code, parsed, raw = admin_mark(oid, "DELIVERED", unreachable=True)
     t = latest_trip(oid)
-    if str(t.get("status") or "").lower() == "completed" and str(t0.get("status") or "").lower() != "completed":
-        raise CaseFail("drop completed while qcom unreachable")
-    return f"qcom unreachable on Delivered; last-mile still {t.get('status')} code={code}"
+    got_status = str(t.get("status") or "")
+    got_drop = task_status(t, "drop") or task_status(t, "delivery")
+    if got_status != want_status or got_drop != want_drop:
+        raise CaseFail(
+            f"last-mile changed while qcom unreachable on Delivered "
+            f"trip {want_status}->{got_status} drop {want_drop}->{got_drop}"
+        )
+    return f"qcom unreachable on Delivered; last-mile still {got_status} drop={got_drop} code={code}"
 
 
 def tc14() -> str:

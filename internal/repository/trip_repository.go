@@ -462,7 +462,11 @@ func classifyCompleteTripOnlyErr(err error) error {
 	}
 	var txErr *types.TransactionCanceledException
 	if errors.As(err, &txErr) {
-		return fmt.Errorf("%w: trip already closed", ErrTripTerminal)
+		for _, reason := range txErr.CancellationReasons {
+			if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+				return fmt.Errorf("%w: trip already closed", ErrTripTerminal)
+			}
+		}
 	}
 	return fmt.Errorf("failed to complete trip: %w", err)
 }

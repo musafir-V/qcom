@@ -58,18 +58,53 @@ func TestUpdateEditByOrderUpdateExpression_IncludesPackedSnapshotFields(t *testi
 	}
 }
 
+func txCanceled(codes ...string) *types.TransactionCanceledException {
+	reasons := make([]types.CancellationReason, 0, len(codes))
+	for _, c := range codes {
+		reasons = append(reasons, types.CancellationReason{Code: aws.String(c)})
+	}
+	return &types.TransactionCanceledException{
+		Message:             aws.String("canceled"),
+		CancellationReasons: reasons,
+	}
+}
+
 func TestClassifyCompleteTripOnlyErr(t *testing.T) {
 	if err := classifyCompleteTripOnlyErr(nil); err != nil {
 		t.Fatalf("nil err: %v", err)
 	}
-	canceled := &types.TransactionCanceledException{Message: aws.String("canceled")}
-	err := classifyCompleteTripOnlyErr(canceled)
-	if !errors.Is(err, ErrTripTerminal) {
-		t.Fatalf("canceled: got %v, want ErrTripTerminal", err)
-	}
 	wrapped := classifyCompleteTripOnlyErr(errors.New("network"))
 	if wrapped == nil || !strings.Contains(wrapped.Error(), "failed to complete trip") {
 		t.Fatalf("other err: got %v", wrapped)
+	}
+
+	cond := classifyCompleteTripOnlyErr(txCanceled("ConditionalCheckFailed"))
+	if !errors.Is(cond, ErrTripTerminal) {
+		t.Fatalf("ConditionalCheckFailed: got %v, want ErrTripTerminal", cond)
+	}
+
+	conflict := classifyCompleteTripOnlyErr(txCanceled("TransactionConflict"))
+	if errors.Is(conflict, ErrTripTerminal) {
+		t.Fatal("TransactionConflict must not be ErrTripTerminal")
+	}
+	if conflict == nil || !strings.Contains(conflict.Error(), "failed to complete trip") {
+		t.Fatalf("TransactionConflict: got %v, want failed-to-complete", conflict)
+	}
+
+	throughput := classifyCompleteTripOnlyErr(txCanceled("ProvisionedThroughputExceeded"))
+	if errors.Is(throughput, ErrTripTerminal) {
+		t.Fatal("ProvisionedThroughputExceeded must not be ErrTripTerminal")
+	}
+	if throughput == nil || !strings.Contains(throughput.Error(), "failed to complete trip") {
+		t.Fatalf("ProvisionedThroughputExceeded: got %v, want failed-to-complete", throughput)
+	}
+
+	empty := classifyCompleteTripOnlyErr(txCanceled())
+	if errors.Is(empty, ErrTripTerminal) {
+		t.Fatal("empty CancellationReasons must not be ErrTripTerminal")
+	}
+	if empty == nil || !strings.Contains(empty.Error(), "failed to complete trip") {
+		t.Fatalf("empty reasons: got %v, want failed-to-complete", empty)
 	}
 }
 
