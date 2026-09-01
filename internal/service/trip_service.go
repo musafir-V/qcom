@@ -72,6 +72,7 @@ type tripRepoI interface {
 	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
 	GetByID(ctx context.Context, tripID string) (*models.Trip, error)
 	CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone, storeID string, tasks []models.Task, codAmount float64) error
+	CompleteTripOnly(ctx context.Context, tripID string, tasks []models.Task) error
 	UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error
 	UpdateStatus(ctx context.Context, tripID string, status models.TripStatus) error
 	MarkOutForDelivery(ctx context.Context, tripID string, dropDeadline int64) error

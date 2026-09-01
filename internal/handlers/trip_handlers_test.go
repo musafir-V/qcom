@@ -299,6 +299,63 @@ func TestEditTripByOrder_ValidBodySucceeds(t *testing.T) {
 	assertEditByOrderSucceeded(t, rec, "valid body")
 }
 
+type stubCompleteTripByOrder struct {
+	result service.PaymentUpdateResult
+	err    error
+	got    service.CompleteByOrderInput
+}
+
+func (s *stubCompleteTripByOrder) CompleteByOrder(_ context.Context, in service.CompleteByOrderInput) (service.PaymentUpdateResult, error) {
+	s.got = in
+	return s.result, s.err
+}
+
+func TestCompleteTripByOrder_MissingOrderID(t *testing.T) {
+	rec := postCompleteTripByOrder(t, `{"status":"OUT_FOR_DELIVERY"}`, service.PaymentUpdateResult{Updated: true}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", rec.Code)
+	}
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "MISSING_FIELD" {
+		t.Fatalf("code: got %q, want MISSING_FIELD", body.Error.Code)
+	}
+}
+
+func TestCompleteTripByOrder_NoTrip200(t *testing.T) {
+	rec := postCompleteTripByOrder(t, `{"order_id":"ORD-NONE","status":"OUT_FOR_DELIVERY"}`,
+		service.PaymentUpdateResult{Updated: false, Reason: "no_active_trip"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200, body %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Updated bool   `json:"updated"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Updated || got.Reason != "no_active_trip" {
+		t.Fatalf("got %+v, want updated=false reason=no_active_trip", got)
+	}
+}
+
+func postCompleteTripByOrder(t *testing.T, body string, result service.PaymentUpdateResult, err error) *httptest.ResponseRecorder {
+	t.Helper()
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	h := &TripHandlers{
+		logger:       logger,
+		completeTrip: &stubCompleteTripByOrder{result: result, err: err},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/internal/v1/trips/complete-by-order", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.CompleteTripByOrder(rec, req)
+	return rec
+}
+
 func postEditTripByOrder(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	logger := logrus.New()

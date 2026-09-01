@@ -565,6 +565,7 @@ func setupRouter(
 	internal.HandleFunc("/trips/cancel-by-order", tripHandlers.CancelTripByOrder).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/payment/update", tripHandlers.UpdateTripPaymentByOrder).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/edit-by-order", tripHandlers.EditTripByOrder).Methods("POST", "OPTIONS")
+	internal.HandleFunc("/trips/complete-by-order", tripHandlers.CompleteTripByOrder).Methods("POST", "OPTIONS")
 	// Picker-locked, unauthenticated, service-to-service upload endpoints
 	// (order-service proxies picker uploads; relies on network isolation).
 	internal.HandleFunc("/uploads/url", uploadHandlers.GenerateInternalPickerUploadURL).Methods("POST", "OPTIONS")

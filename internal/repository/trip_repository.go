@@ -426,6 +426,15 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 	return nil
 }
 
+// CompleteTripOnly marks the trip completed without touching the DE item.
+// T1 stub — T2 replaces this with the trip-only transact write.
+func (r *TripRepository) CompleteTripOnly(ctx context.Context, tripID string, tasks []models.Task) error {
+	_ = ctx
+	_ = tripID
+	_ = tasks
+	return fmt.Errorf("CompleteTripOnly not implemented")
+}
+
 // UpdateTasks replaces the entire tasks list on the trip item.
 func (r *TripRepository) UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.UpdateTasks", logrus.Fields{"trip_id": tripID})

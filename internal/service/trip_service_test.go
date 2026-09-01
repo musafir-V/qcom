@@ -610,6 +610,8 @@ type stubTripRepo struct {
 	updateTasksCalled       bool
 	capturedTasks           []models.Task
 	completeTripCalled      bool
+	completeAndFreeCalled   bool
+	completeOnlyCalled      bool
 	updatePaymentCalled     bool
 	updatePaymentErr        error
 	capturedPayment         *models.Payment
@@ -643,6 +645,14 @@ func (s *stubTripRepo) GetByID(_ context.Context, _ string) (*models.Trip, error
 
 func (s *stubTripRepo) CompleteTripAndFreeDE(_ context.Context, _, _, _ string, tasks []models.Task, _ float64) error {
 	s.completeTripCalled = true
+	s.completeAndFreeCalled = true
+	s.capturedTasks = make([]models.Task, len(tasks))
+	copy(s.capturedTasks, tasks)
+	return nil
+}
+
+func (s *stubTripRepo) CompleteTripOnly(_ context.Context, _ string, tasks []models.Task) error {
+	s.completeOnlyCalled = true
 	s.capturedTasks = make([]models.Task, len(tasks))
 	copy(s.capturedTasks, tasks)
 	return nil
