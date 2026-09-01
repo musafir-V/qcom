@@ -69,8 +69,3 @@ func (s *TripService) AutoCompletePickupIfJavaOFD(ctx context.Context, orderID s
 	return nil
 }
 
-func (s *TripService) completeDeliveredInbound(ctx context.Context, trip *models.Trip) (PaymentUpdateResult, error) {
-	_ = ctx
-	_ = trip
-	return PaymentUpdateResult{}, nil
-}
