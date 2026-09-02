@@ -2458,17 +2458,77 @@ func TestAdminCompletePickupByOrder_Assigned_AcceptsThenPickup(t *testing.T) {
 		},
 	}}
 	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000102", Status: models.DEStatusEligible}
+	deRepo := &stubDERepo{de: de}
 	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
-	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 	svc.javaClient = java
 	if err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-ASN", "ops"); err != nil {
 		t.Fatal(err)
 	}
-	if repo.trip.Status != models.TripStatusAccepted && repo.updateStatusStatus != models.TripStatusOutForDelivery {
-		t.Fatalf("expected accept then OFD mirror, trip.status=%s update=%s", repo.trip.Status, repo.updateStatusStatus)
+	var pickup *models.Task
+	for i := range repo.trip.Tasks {
+		if repo.trip.Tasks[i].Type == models.TaskTypePickup {
+			pickup = &repo.trip.Tasks[i]
+		}
+	}
+	if pickup == nil || pickup.Status != models.TaskStatusCompleted {
+		t.Fatalf("expected pickup completed, tasks=%+v", repo.trip.Tasks)
+	}
+	if !repo.updateStatusCalled || repo.updateStatusStatus != models.TripStatusOutForDelivery {
+		t.Fatalf("expected trip mirrored to out_for_delivery, called=%v status=%q", repo.updateStatusCalled, repo.updateStatusStatus)
+	}
+	if repo.trip.Status != models.TripStatusAccepted {
+		t.Fatalf("expected trip accepted after Accept, status=%s", repo.trip.Status)
+	}
+	if deRepo.attachCalls == 0 {
+		t.Fatal("expected attach when DE starts eligible")
 	}
 	if len(java.updates) != 1 || java.updates[0] != "OUT_FOR_DELIVERY" {
 		t.Fatalf("java updates=%v", java.updates)
+	}
+}
+
+func TestAdminCompletePickupByOrder_AssignedOrAccepted_JavaAlreadyOFD_AlreadyDone(t *testing.T) {
+	cases := []struct {
+		name       string
+		tripStatus models.TripStatus
+		javaStatus string
+	}{
+		{name: "assigned_ofd", tripStatus: models.TripStatusAssigned, javaStatus: "OUT_FOR_DELIVERY"},
+		{name: "accepted_delivered", tripStatus: models.TripStatusAccepted, javaStatus: "DELIVERED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			trip := &models.Trip{
+				TripID: "t-asn-done", OrderID: "ORD-P-ASN-DONE", StoreID: "221",
+				DEID: "de-1", DEPhone: "+260971000103",
+				Status: tc.tripStatus,
+				Tasks: []models.Task{
+					{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+					{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+				},
+			}
+			repo := &stubTripRepo{trip: trip}
+			java := &stubJavaOrder{status: tc.javaStatus}
+			svc := newTripServiceForTest(repo, &stubDERepo{de: &models.DeliveryExecutive{
+				DEID: "de-1", PhoneNumber: "+260971000103", Status: models.DEStatusEligible,
+			}}, &stubNotifier{})
+			svc.javaClient = java
+
+			err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-ASN-DONE", "ops")
+			if !errors.Is(err, ErrAlreadyOutForDelivery) {
+				t.Fatalf("got %v", err)
+			}
+			if repo.updateTasksCalled {
+				t.Fatal("must not rewrite tasks when Java already past pickup")
+			}
+			if trip.Status != tc.tripStatus {
+				t.Fatalf("trip status mutated: got %s want %s", trip.Status, tc.tripStatus)
+			}
+			if len(java.updates) != 0 {
+				t.Fatalf("java updates=%v", java.updates)
+			}
+		})
 	}
 }
 
