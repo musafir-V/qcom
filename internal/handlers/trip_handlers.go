@@ -129,6 +129,8 @@ func classifyTaskUpdateError(err error) (status int, code string) {
 		return http.StatusConflict, "RIDER_BUSY_ELSEWHERE"
 	case errors.Is(err, service.ErrAlreadyDelivered):
 		return http.StatusConflict, "ALREADY_DELIVERED"
+	case errors.Is(err, service.ErrAlreadyOutForDelivery):
+		return http.StatusConflict, "ALREADY_OUT_FOR_DELIVERY"
 	case errors.Is(err, service.ErrDENotFound):
 		return http.StatusNotFound, "DRIVER_NOT_FOUND"
 	case errors.Is(err, service.ErrForceAssignConflict):

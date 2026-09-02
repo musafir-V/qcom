@@ -121,6 +121,12 @@ func TestClassifyTaskUpdateError(t *testing.T) {
 			wantCode:   "ALREADY_DELIVERED",
 		},
 		{
+			name:       "already out for delivery",
+			err:        fmt.Errorf("%w", service.ErrAlreadyOutForDelivery),
+			wantStatus: http.StatusConflict,
+			wantCode:   "ALREADY_OUT_FOR_DELIVERY",
+		},
+		{
 			name:       "driver not found",
 			err:        fmt.Errorf("%w: +260770000000", service.ErrDENotFound),
 			wantStatus: http.StatusNotFound,

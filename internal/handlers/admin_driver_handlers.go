@@ -279,6 +279,30 @@ func (h *AdminDriverHandlers) AdminCompleteDropByOrder(w http.ResponseWriter, r 
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
+// POST /api/v1/admin/orders/{orderId}/pickup/complete
+// Order-scoped counterpart to AdminCompletePickup, for order-detail
+// "Advance to OUT FOR DELIVERY". Body ignored.
+func (h *AdminDriverHandlers) AdminCompletePickupByOrder(w http.ResponseWriter, r *http.Request) {
+	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
+	if orderID == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "orderId is required")
+		return
+	}
+	adminUsername, _ := r.Context().Value("entity_id").(string)
+	err := h.tripService.AdminCompletePickupByOrder(r.Context(), orderID, adminUsername)
+	if err != nil {
+		status, code := classifyTaskUpdateError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("admin: failed to complete order pickup")
+			h.respondWithError(w, status, code, "Failed to complete order pickup")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+}
+
 // GET /api/v1/admin/orders/{orderId}/drop/preview
 func (h *AdminDriverHandlers) PreviewAdminDrop(w http.ResponseWriter, r *http.Request) {
 	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
