@@ -40,6 +40,7 @@ var (
 	ErrRiderRequired          = errors.New("rider required")
 	ErrRiderBusyElsewhere     = errors.New("rider busy on another trip")
 	ErrAlreadyDelivered       = errors.New("already delivered")
+	ErrAlreadyOutForDelivery  = errors.New("already out for delivery")
 	ErrForceAssignConflict    = errors.New("force-assign conflict: refresh and retry")
 )
 
@@ -637,6 +638,128 @@ func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adm
 	}
 }
 
+type adminPickupMode string
+
+const (
+	adminPickupJavaOnly      adminPickupMode = "java_only"
+	adminPickupForceProgress adminPickupMode = "force_progress"
+	adminPickupAlreadyDone   adminPickupMode = "already_done"
+	adminPickupBlocked       adminPickupMode = "blocked"
+)
+
+type adminPickupClass struct {
+	Mode       adminPickupMode
+	Reason     string
+	JavaStatus string
+}
+
+func (s *TripService) classifyAdminPickupByOrder(ctx context.Context, orderID string) (*adminPickupClass, error) {
+	javaStatus := ""
+	if s.javaClient != nil {
+		status, err := s.javaClient.GetOrderStatus(ctx, orderID)
+		if err != nil {
+			return nil, err
+		}
+		if status != "NOT_FOUND" {
+			javaStatus = status
+		}
+	}
+
+	if javaStatus == "CANCELLED" {
+		return &adminPickupClass{Mode: adminPickupBlocked, Reason: "java_cancelled", JavaStatus: javaStatus}, nil
+	}
+
+	trip, err := s.tripRepo.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+
+	if trip == nil || !pickupTripConsideredOpen(trip) || trip.Status == models.TripStatusCreated || trip.DEPhone == "" {
+		return missingOrNoDriverPickup(javaStatus), nil
+	}
+	if trip.Status == models.TripStatusOutForDelivery {
+		return missingOrNoDriverPickup(javaStatus), nil
+	}
+
+	if javaStatus == "OUT_FOR_DELIVERY" || javaStatus == "DELIVERED" {
+		return &adminPickupClass{Mode: adminPickupAlreadyDone, JavaStatus: javaStatus}, nil
+	}
+
+	de, err := s.deRepo.GetByPhone(ctx, trip.DEPhone)
+	if err != nil {
+		return nil, err
+	}
+	if de != nil && de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
+		return &adminPickupClass{Mode: adminPickupBlocked, Reason: "rider_busy_elsewhere", JavaStatus: javaStatus}, nil
+	}
+
+	return &adminPickupClass{Mode: adminPickupForceProgress, JavaStatus: javaStatus}, nil
+}
+
+func pickupTripConsideredOpen(trip *models.Trip) bool {
+	switch trip.Status {
+	case models.TripStatusAssigned, models.TripStatusAccepted, models.TripStatusOutForDelivery:
+		return true
+	default:
+		return false
+	}
+}
+
+func missingOrNoDriverPickup(javaStatus string) *adminPickupClass {
+	switch javaStatus {
+	case "OUT_FOR_DELIVERY", "DELIVERED":
+		return &adminPickupClass{Mode: adminPickupAlreadyDone, JavaStatus: javaStatus}
+	case "READY_FOR_DELIVERY":
+		return &adminPickupClass{Mode: adminPickupJavaOnly, JavaStatus: javaStatus}
+	default:
+		return &adminPickupClass{Mode: adminPickupBlocked, Reason: "java_not_ready", JavaStatus: javaStatus}
+	}
+}
+
+// AdminCompletePickupByOrder advances an order to OUT_FOR_DELIVERY for admin
+// "Advance to OUT FOR DELIVERY". Mode comes from classifyAdminPickupByOrder:
+// java-only status write, force-progress the existing trip's pickup, already
+// done, or blocked. There is no pick-rider path and no preview GET.
+func (s *TripService) AdminCompletePickupByOrder(ctx context.Context, orderID, adminUsername string) error {
+	op := logging.Start(ctx, s.logger, "TripService.AdminCompletePickupByOrder", logrus.Fields{
+		"order_id": orderID, "admin": adminUsername,
+	})
+	defer op.End()
+
+	class, err := s.classifyAdminPickupByOrder(ctx, orderID)
+	if err != nil {
+		return op.Fail(err)
+	}
+
+	switch class.Mode {
+	case adminPickupBlocked:
+		switch class.Reason {
+		case "java_cancelled":
+			return op.Outcome("java_cancelled", ErrJavaOrderCancelled)
+		case "java_not_ready":
+			return op.Outcome("java_not_ready", ErrOrderNotDeliverable)
+		case "rider_busy_elsewhere":
+			return op.Outcome("rider_busy_elsewhere", ErrRiderBusyElsewhere)
+		default:
+			return op.Outcome("blocked", ErrOrderNotDeliverable)
+		}
+	case adminPickupAlreadyDone:
+		return op.Outcome("already_ofd", ErrAlreadyOutForDelivery)
+	case adminPickupJavaOnly:
+		if err := s.forceJavaOutForDelivery(ctx, orderID, adminUsername); err != nil {
+			return op.Fail(err)
+		}
+		return nil
+	case adminPickupForceProgress:
+		if err := s.forceProgressPickup(ctx, orderID, adminUsername, class.JavaStatus); err != nil {
+			return op.Fail(err)
+		}
+		return nil
+	default:
+		return op.Outcome("unknown_mode", ErrOrderNotDeliverable)
+	}
+}
+
 type AdminDropMode string
 
 const (
@@ -810,6 +933,24 @@ func (s *TripService) forceJavaDeliver(ctx context.Context, orderID, adminUserna
 	}
 }
 
+func (s *TripService) forceJavaOutForDelivery(ctx context.Context, orderID, adminUsername string) error {
+	if s.javaClient == nil {
+		return ErrOrderNotDeliverable
+	}
+	st, _ := s.javaClient.GetOrderStatus(ctx, orderID)
+	actor := "ADMIN:" + adminUsername
+	switch st {
+	case "READY_FOR_DELIVERY":
+		return s.javaClient.UpdateOrderStatus(ctx, orderID, "OUT_FOR_DELIVERY", actor)
+	case "OUT_FOR_DELIVERY", "DELIVERED":
+		return nil
+	case "CANCELLED":
+		return ErrJavaOrderCancelled
+	default:
+		return ErrOrderNotDeliverable
+	}
+}
+
 func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, adminUsername, driverPhone string, skipJava bool) (err error) {
 	de, err := s.deRepo.GetByPhone(ctx, driverPhone)
 	if err != nil {
@@ -916,6 +1057,53 @@ func (s *TripService) forceProgressExisting(ctx context.Context, orderID, adminU
 		}
 	}
 	return nil
+}
+
+func (s *TripService) forceProgressPickup(ctx context.Context, orderID, adminUsername, javaStatus string) error {
+	trip, err := s.tripRepo.GetByOrderID(ctx, orderID)
+	if err != nil {
+		return err
+	}
+	if trip == nil {
+		return fmt.Errorf("%w: no trip for order %s", ErrTripNotFound, orderID)
+	}
+	de, err := s.deRepo.GetByPhone(ctx, trip.DEPhone)
+	if err != nil {
+		return err
+	}
+	if de == nil {
+		return fmt.Errorf("%w: %s", ErrDENotFound, trip.DEPhone)
+	}
+	if de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
+		return ErrRiderBusyElsewhere
+	}
+
+	if de.CurrentOrderID != trip.OrderID || de.Status != models.DEStatusBusy {
+		if err := s.deRepo.AttachToTrip(ctx, de.PhoneNumber, trip.OrderID, trip.TripID, trip.StoreID); err != nil {
+			return err
+		}
+	}
+	if trip.Status == models.TripStatusAssigned {
+		if err := s.tripRepo.Accept(ctx, trip.TripID, de.DEID); err != nil {
+			return err
+		}
+		trip.Status = models.TripStatusAccepted
+	}
+
+	pickup := trip.PickupTask()
+	if pickup != nil && pickup.Status != models.TaskStatusCompleted {
+		if err := validateTaskTransition(*pickup, models.TaskStatusCompleted, false); err != nil {
+			return err
+		}
+		if err := s.applyTaskCompletion(ctx, trip, pickup, de, models.TaskStatusCompleted, "", adminUsername, true); err != nil {
+			return err
+		}
+	}
+
+	if javaStatus == "OUT_FOR_DELIVERY" || javaStatus == "DELIVERED" {
+		return nil
+	}
+	return s.forceJavaOutForDelivery(ctx, orderID, adminUsername)
 }
 
 // completePickupThenDrop force-completes the pickup (if needed) then the drop

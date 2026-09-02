@@ -774,6 +774,7 @@ type stubJavaOrder struct {
 	getErr    error
 	updates   []string
 	updateErr error
+	lastActor string
 }
 
 func (s *stubJavaOrder) GetOrderStatus(_ context.Context, _ string) (string, error) {
@@ -783,11 +784,12 @@ func (s *stubJavaOrder) GetOrderStatus(_ context.Context, _ string) (string, err
 	return s.status, nil
 }
 
-func (s *stubJavaOrder) UpdateOrderStatus(_ context.Context, _, status, _ string) error {
+func (s *stubJavaOrder) UpdateOrderStatus(_ context.Context, _, status, actorID string) error {
 	if s.updateErr != nil {
 		return s.updateErr
 	}
 	s.updates = append(s.updates, status)
+	s.lastActor = actorID
 	return nil
 }
 
@@ -2393,5 +2395,212 @@ func TestPreviewAdminDropByOrder_AlreadyDone(t *testing.T) {
 	}
 	if p.Mode != AdminDropModeAlreadyDone {
 		t.Fatalf("mode=%s", p.Mode)
+	}
+}
+
+func TestAdminCompletePickupByOrder_Accepted_CompletesPickupAndJavaOFD(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t-p1", OrderID: "ORD-P-ACC", StoreID: "221",
+		DEID: "de-1", DEPhone: "+260971000101",
+		CustomerUserID: "US-P-ACC",
+		Status:         models.TripStatusAccepted,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000101", Name: "Chanda", Status: models.DEStatusBusy, CurrentOrderID: "ORD-P-ACC"}
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	notifier := &stubNotifier{}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, notifier)
+	svc.javaClient = java
+
+	if err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-ACC", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	var pickup *models.Task
+	for i := range repo.trip.Tasks {
+		if repo.trip.Tasks[i].Type == models.TaskTypePickup {
+			pickup = &repo.trip.Tasks[i]
+		}
+	}
+	if pickup == nil || pickup.Status != models.TaskStatusCompleted {
+		t.Fatalf("expected pickup completed, tasks=%+v", repo.trip.Tasks)
+	}
+	if !repo.updateStatusCalled || repo.updateStatusStatus != models.TripStatusOutForDelivery {
+		t.Fatalf("expected trip mirrored to out_for_delivery, called=%v status=%q", repo.updateStatusCalled, repo.updateStatusStatus)
+	}
+	if repo.completeTripCalled {
+		t.Fatal("must not complete the drop / free the DE")
+	}
+	if len(java.updates) != 1 || java.updates[0] != "OUT_FOR_DELIVERY" {
+		t.Fatalf("java updates=%v", java.updates)
+	}
+	if de.Status != models.DEStatusBusy {
+		t.Fatalf("rider must stay busy after pickup, got %s", de.Status)
+	}
+	if !waitForSend(notifier) {
+		t.Fatal("expected customer OFD push")
+	}
+	if notifier.lastReq.EventType != "ORDER_OUT_FOR_DELIVERY" {
+		t.Fatalf("event=%q", notifier.lastReq.EventType)
+	}
+}
+
+func TestAdminCompletePickupByOrder_Assigned_AcceptsThenPickup(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t-p2", OrderID: "ORD-P-ASN", StoreID: "221",
+		DEID: "de-1", DEPhone: "+260971000102",
+		Status: models.TripStatusAssigned,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000102", Status: models.DEStatusEligible}
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = java
+	if err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-ASN", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.trip.Status != models.TripStatusAccepted && repo.updateStatusStatus != models.TripStatusOutForDelivery {
+		t.Fatalf("expected accept then OFD mirror, trip.status=%s update=%s", repo.trip.Status, repo.updateStatusStatus)
+	}
+	if len(java.updates) != 1 || java.updates[0] != "OUT_FOR_DELIVERY" {
+		t.Fatalf("java updates=%v", java.updates)
+	}
+}
+
+func TestAdminCompletePickupByOrder_NoTrip_JavaOnly(t *testing.T) {
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = java
+	if err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-NONE", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if len(java.updates) != 1 || java.updates[0] != "OUT_FOR_DELIVERY" {
+		t.Fatalf("updates=%v", java.updates)
+	}
+}
+
+func TestAdminCompletePickupByOrder_CreatedTrip_JavaOnly(t *testing.T) {
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t-cr", OrderID: "ORD-P-CR", StoreID: "221", Status: models.TripStatusCreated,
+	}}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = java
+	if err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-CR", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if len(java.updates) != 1 || java.updates[0] != "OUT_FOR_DELIVERY" {
+		t.Fatalf("updates=%v", java.updates)
+	}
+}
+
+func TestAdminCompletePickupByOrder_TripAlreadyOFD_JavaOnly(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t-ofd", OrderID: "ORD-P-OFD", DEPhone: "+2609", DEID: "de-1",
+		Status: models.TripStatusOutForDelivery,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCompleted},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+2609"}}, &stubNotifier{})
+	svc.javaClient = java
+	if err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-OFD", "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if repo.updateTasksCalled {
+		t.Fatal("must not rewrite tasks when pickup already done")
+	}
+	if len(java.updates) != 1 || java.updates[0] != "OUT_FOR_DELIVERY" {
+		t.Fatalf("updates=%v", java.updates)
+	}
+}
+
+func TestAdminCompletePickupByOrder_JavaAlreadyOFD_AlreadyDone(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
+	err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-DONE", "ops")
+	if !errors.Is(err, ErrAlreadyOutForDelivery) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAdminCompletePickupByOrder_JavaDelivered_AlreadyDone(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "DELIVERED"}
+	err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-DEL", "ops")
+	if !errors.Is(err, ErrAlreadyOutForDelivery) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAdminCompletePickupByOrder_JavaCancelled_Blocked(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t-c", OrderID: "ORD-P-CAN", DEPhone: "+2609", DEID: "de-1", Status: models.TripStatusAccepted,
+		Tasks: []models.Task{{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated}},
+	}}, &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+2609"}}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "CANCELLED"}
+	err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-CAN", "ops")
+	if !errors.Is(err, ErrJavaOrderCancelled) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAdminCompletePickupByOrder_NoTrip_JavaPacking_Blocked(t *testing.T) {
+	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "PACKING"}
+	err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-PK", "ops")
+	if !errors.Is(err, ErrOrderNotDeliverable) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAdminCompletePickupByOrder_BusyElsewhere(t *testing.T) {
+	de := &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+2609", Status: models.DEStatusBusy, CurrentOrderID: "ORD-OTHER"}
+	svc := newTripServiceForTest(&stubTripRepo{trip: &models.Trip{
+		TripID: "t-b", OrderID: "ORD-P-B", DEPhone: "+2609", DEID: "de-1", Status: models.TripStatusAssigned,
+		Tasks: []models.Task{{TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated}},
+	}}, &stubDERepo{de: de}, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-B", "ops")
+	if !errors.Is(err, ErrRiderBusyElsewhere) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAdminCompletePickupByOrder_JavaRefusalFailsPOST(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "t-ref", OrderID: "ORD-P-REF", StoreID: "221",
+		DEID: "de-1", DEPhone: "+260971000199",
+		Status: models.TripStatusAccepted,
+		Tasks: []models.Task{
+			{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+			{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated},
+		},
+	}}
+	javaErr := errors.New("java refused transition")
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY", updateErr: javaErr}
+	svc := newTripServiceForTest(repo, &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000199"}}, &stubNotifier{})
+	svc.javaClient = java
+	err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-REF", "ops")
+	if !errors.Is(err, javaErr) {
+		t.Fatalf("expected Java refusal to fail the POST, got %v", err)
+	}
+}
+
+func TestAdminCompletePickupByOrder_JavaActorIsAdmin(t *testing.T) {
+	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
+	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = java
+	if err := svc.AdminCompletePickupByOrder(context.Background(), "ORD-P-ACT", "ops-user"); err != nil {
+		t.Fatal(err)
+	}
+	if java.lastActor != "ADMIN:ops-user" {
+		t.Fatalf("actor=%q", java.lastActor)
 	}
 }
