@@ -43,6 +43,7 @@ type AssignmentCron struct {
 	distanceService      *DistanceService
 	fareEngine           *FareEngine
 	notifier             NotificationService
+	completer            pickupAutoCompleter
 	logger               *logrus.Logger
 
 	wg     sync.WaitGroup
@@ -63,6 +64,7 @@ func NewAssignmentCron(
 	fareEngine *FareEngine,
 	notifier NotificationService,
 	logger *logrus.Logger,
+	completer pickupAutoCompleter,
 ) *AssignmentCron {
 	return &AssignmentCron{
 		tripRepo:             tripRepo,
@@ -77,6 +79,7 @@ func NewAssignmentCron(
 		distanceService:      distanceService,
 		fareEngine:           fareEngine,
 		notifier:             notifier,
+		completer:            completer,
 		logger:               logger,
 		stopCh:               make(chan struct{}),
 	}
@@ -382,6 +385,7 @@ func (c *AssignmentCron) processStore(
 			c.logger.WithFields(logrus.Fields{
 				"trip_id": trip.TripID, "de_id": de.DEID,
 			}).Info("assignment cron: trip assigned")
+			c.autoCompletePickupAfterAssign(ctx, trip.OrderID)
 			// Presence: assignment pauses the scan clock (eligible -> busy).
 			c.appendStatusEvent(ctx, &models.DEStatusEvent{
 				Phone:     de.PhoneNumber,
@@ -425,6 +429,18 @@ func (c *AssignmentCron) processStore(
 	}
 
 	metrics.RecordCronStore(storeID, len(orders), len(eligibleDEs), leftOut, len(newTrips), assignedCount, distanceFailedCount)
+}
+
+// autoCompletePickupAfterAssign runs the Java-OFD pickup hook after a
+// successful Assign. nil completer or completer error never fails the tick.
+func (c *AssignmentCron) autoCompletePickupAfterAssign(ctx context.Context, orderID string) {
+	if c.completer == nil {
+		return
+	}
+	if err := c.completer.AutoCompletePickupIfJavaOFD(ctx, orderID); err != nil {
+		c.logger.WithError(err).WithField("order_id", orderID).
+			Warn("assignment cron: auto-complete pickup after assign failed")
+	}
 }
 
 // appendStatusEvent writes a status-event best-effort; never fails the tick.

@@ -53,6 +53,7 @@ type AdminService struct {
 	statusEventRepo statusEventAppender
 	notifier        NotificationService
 	logger          *logrus.Logger
+	completer       pickupAutoCompleter
 }
 
 func NewAdminService(
@@ -62,6 +63,7 @@ func NewAdminService(
 	statusEventRepo *repository.DEStatusEventRepository,
 	notifier NotificationService,
 	logger *logrus.Logger,
+	completer pickupAutoCompleter,
 ) *AdminService {
 	return &AdminService{
 		tripRepo:        tripRepo,
@@ -70,6 +72,7 @@ func NewAdminService(
 		statusEventRepo: statusEventRepo,
 		notifier:        notifier,
 		logger:          logger,
+		completer:       completer,
 	}
 }
 
@@ -106,6 +109,12 @@ func (s *AdminService) AssignOrder(ctx context.Context, orderID, driverPhone str
 
 	if err := s.tripRepo.AdminAssign(ctx, trip.TripID, trip.OrderID, de.DEID, de.PhoneNumber, trip.StoreID); err != nil {
 		return op.Fail(err)
+	}
+	if s.completer != nil {
+		if cerr := s.completer.AutoCompletePickupIfJavaOFD(ctx, orderID); cerr != nil {
+			s.logger.WithError(cerr).WithField("order_id", orderID).
+				Warn("AssignOrder: auto-complete pickup failed")
+		}
 	}
 	return nil
 }

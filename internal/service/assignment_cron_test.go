@@ -1,13 +1,56 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/qcom/qcom/internal/models"
+	"github.com/sirupsen/logrus"
 )
+
+type stubPickupCompleter struct {
+	calls []string
+	err   error
+}
+
+func (s *stubPickupCompleter) AutoCompletePickupIfJavaOFD(_ context.Context, orderID string) error {
+	s.calls = append(s.calls, orderID)
+	return s.err
+}
+
+func TestAssignmentCron_AutoCompleteAfterAssign_NilSafe(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	c := &AssignmentCron{logger: logger}
+	c.autoCompletePickupAfterAssign(context.Background(), "ORD-1")
+}
+
+func TestAssignmentCron_AutoCompleteAfterAssign_CallsCompleter(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	stub := &stubPickupCompleter{}
+	c := &AssignmentCron{logger: logger, completer: stub}
+	c.autoCompletePickupAfterAssign(context.Background(), "ORD-AC")
+	if len(stub.calls) != 1 || stub.calls[0] != "ORD-AC" {
+		t.Fatalf("completer calls = %v, want [ORD-AC]", stub.calls)
+	}
+}
+
+func TestAssignmentCron_AutoCompleteAfterAssign_ErrorDoesNotFail(t *testing.T) {
+	logger := logrus.New()
+	logger.SetOutput(io.Discard)
+	stub := &stubPickupCompleter{err: errors.New("boom")}
+	c := &AssignmentCron{logger: logger, completer: stub}
+	c.autoCompletePickupAfterAssign(context.Background(), "ORD-ERR")
+	if len(stub.calls) != 1 {
+		t.Fatalf("expected completer to be called once, got %v", stub.calls)
+	}
+}
 
 func TestSortTripsByCreatedAt_OldestFirst(t *testing.T) {
 	trips := []*models.Trip{

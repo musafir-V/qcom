@@ -309,6 +309,37 @@ func (r *TripRepository) UpdateStatus(ctx context.Context, tripID string, status
 	return nil
 }
 
+func markAdminOFDInboundUpdateExpression() string {
+	return "SET admin_ofd_inbound = :t, updated_at = :now"
+}
+
+// MarkAdminOFDInbound records that complete-by-order received OUT_FOR_DELIVERY
+// on this trip, including the no-rider path, so a later assign can complete pickup.
+func (r *TripRepository) MarkAdminOFDInbound(ctx context.Context, tripID string) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.MarkAdminOFDInbound", logrus.Fields{
+		"trip_id": tripID,
+	})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String(markAdminOFDInboundUpdateExpression()),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":t":   &types.AttributeValueMemberBOOL{Value: true},
+			":now": &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to mark admin OFD inbound: %w", err))
+	}
+	return nil
+}
+
 // markOutForDeliveryUpdateExpression freezes drop_deadline once.
 // if_not_exists keeps the first persisted epoch if pickup-complete races.
 func markOutForDeliveryUpdateExpression() string {
@@ -424,6 +455,80 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 		return op.Fail(fmt.Errorf("failed to complete trip and free DE: %w", err))
 	}
 	return nil
+}
+
+// CompleteTripOnly marks the trip completed (final tasks) without freeing a DE.
+// Same trip Update as CompleteTripAndFreeDE's first transact item; no DE write.
+func (r *TripRepository) CompleteTripOnly(ctx context.Context, tripID string, tasks []models.Task) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.CompleteTripOnly", logrus.Fields{
+		"trip_id": tripID,
+	})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	items, err := completeTripOnlyTransactItems(r.tableName, tripID, tasks, now)
+	if err != nil {
+		return op.Fail(err)
+	}
+	if r.client == nil {
+		return op.Fail(fmt.Errorf("failed to complete trip: dynamodb client is required"))
+	}
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: items,
+	})
+	if err != nil {
+		classified := classifyCompleteTripOnlyErr(err)
+		if errors.Is(classified, ErrTripTerminal) {
+			return op.Outcome("conflict", classified)
+		}
+		return op.Fail(classified)
+	}
+	return nil
+}
+
+func classifyCompleteTripOnlyErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var txErr *types.TransactionCanceledException
+	if errors.As(err, &txErr) {
+		for _, reason := range txErr.CancellationReasons {
+			if reason.Code != nil && *reason.Code == "ConditionalCheckFailed" {
+				return fmt.Errorf("%w: trip already closed", ErrTripTerminal)
+			}
+		}
+	}
+	return fmt.Errorf("failed to complete trip: %w", err)
+}
+
+func completeTripOnlyTransactItems(tableName, tripID string, tasks []models.Task, now string) ([]types.TransactWriteItem, error) {
+	tasksAttr, err := attributevalue.Marshal(tasks)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal tasks: %w", err)
+	}
+	return []types.TransactWriteItem{
+		{
+			Update: &types.Update{
+				TableName: aws.String(tableName),
+				Key: map[string]types.AttributeValue{
+					"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+					"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+				},
+				UpdateExpression: aws.String("SET tasks = :tasks, #status = :completed, completed_at = :now, updated_at = :now"),
+				ConditionExpression: aws.String(
+					"#status <> :completed AND #status <> :cancelled",
+				),
+				ExpressionAttributeNames: map[string]string{"#status": "status"},
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":tasks":     tasksAttr,
+					":completed": &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
+					":cancelled": &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
+					":now":       &types.AttributeValueMemberS{Value: now},
+				},
+			},
+		},
+	}, nil
 }
 
 // UpdateTasks replaces the entire tasks list on the trip item.

@@ -63,18 +63,18 @@ type Task struct {
 }
 
 type Trip struct {
-	TripID  string     `json:"trip_id" dynamodbav:"trip_id"`
-	OrderID string     `json:"order_id" dynamodbav:"order_id"`
+	TripID  string `json:"trip_id" dynamodbav:"trip_id"`
+	OrderID string `json:"order_id" dynamodbav:"order_id"`
 	// TripOrderID is the sparse OrderIndex GSI hash key; equals OrderID.
 	// Only trip items set this attribute so VOICECTX and other types never pollute the index.
 	TripOrderID string     `json:"-" dynamodbav:"trip_order_id,omitempty"`
 	StoreID     string     `json:"store_id" dynamodbav:"store_id"`
-	DEID    string     `json:"de_id,omitempty" dynamodbav:"de_id,omitempty"`
-	DEPhone string     `json:"de_phone,omitempty" dynamodbav:"de_phone,omitempty"`
-	Status  TripStatus `json:"status" dynamodbav:"status"`
-	Tasks   []Task     `json:"tasks" dynamodbav:"tasks"`
-	Items   []TripItem `json:"items,omitempty" dynamodbav:"items,omitempty"`
-	Payment *Payment   `json:"payment,omitempty" dynamodbav:"payment,omitempty"`
+	DEID        string     `json:"de_id,omitempty" dynamodbav:"de_id,omitempty"`
+	DEPhone     string     `json:"de_phone,omitempty" dynamodbav:"de_phone,omitempty"`
+	Status      TripStatus `json:"status" dynamodbav:"status"`
+	Tasks       []Task     `json:"tasks" dynamodbav:"tasks"`
+	Items       []TripItem `json:"items,omitempty" dynamodbav:"items,omitempty"`
+	Payment     *Payment   `json:"payment,omitempty" dynamodbav:"payment,omitempty"`
 
 	// Payout — set at creation (base) and completion (bonus+total)
 	DistanceKM        float64 `json:"distance_km" dynamodbav:"distance_km"`
@@ -91,8 +91,8 @@ type Trip struct {
 
 	CustomerUserID string `json:"customer_user_id,omitempty" dynamodbav:"customer_user_id,omitempty"`
 
-	CreatedAt   string `json:"created_at" dynamodbav:"created_at"`
-	UpdatedAt   string `json:"updated_at" dynamodbav:"updated_at"`
+	CreatedAt      string   `json:"created_at" dynamodbav:"created_at"`
+	UpdatedAt      string   `json:"updated_at" dynamodbav:"updated_at"`
 	AssignedAt     string   `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
 	AcceptDeadline string   `json:"accept_deadline,omitempty" dynamodbav:"accept_deadline,omitempty"`
 	DropDeadline   *int64   `json:"drop_deadline,omitempty" dynamodbav:"drop_deadline,omitempty"`
@@ -101,8 +101,12 @@ type Trip struct {
 	// GetCurrentTrip returns *models.Trip straight to the driver app, and this
 	// array carries the ops admin's username and a reason code about the rider.
 	Reassignments []TripReassignment `json:"-" dynamodbav:"reassignments,omitempty"`
-	CompletedAt    string   `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
-	CancelledAt    string   `json:"cancelled_at,omitempty" dynamodbav:"cancelled_at,omitempty"`
+	CompletedAt   string             `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
+	CancelledAt   string             `json:"cancelled_at,omitempty" dynamodbav:"cancelled_at,omitempty"`
+	// AdminOFDInbound is set when complete-by-order received OUT_FOR_DELIVERY
+	// (including the no-rider path) so a later assign can complete pickup
+	// even if Java GetOrderStatus still looks like READY_FOR_DELIVERY.
+	AdminOFDInbound bool `json:"admin_ofd_inbound,omitempty" dynamodbav:"admin_ofd_inbound,omitempty"`
 }
 
 // TripReassignment is one admin-driven rider→rider handover of a trip.

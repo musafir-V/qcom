@@ -21,14 +21,15 @@ type fakeReassignTripRepo struct {
 	gotPromote     bool
 	// All seven positional string args are captured: they are same-typed and
 	// adjacent, so a transposition is invisible unless each is asserted.
-	gotTripID      string
-	gotFromDEPhone string
-	gotFromDEID    string
-	gotToDEID      string
-	gotToDEPhone   string
-	gotOrderID     string
-	gotStoreID     string
-	reassignErr    error
+	gotTripID         string
+	gotFromDEPhone    string
+	gotFromDEID       string
+	gotToDEID         string
+	gotToDEPhone      string
+	gotOrderID        string
+	gotStoreID        string
+	reassignErr       error
+	adminAssignCalled bool
 }
 
 // fakeStatusEventAppender captures presence events written after a reassignment.
@@ -48,6 +49,7 @@ func (f *fakeReassignTripRepo) GetByOrderID(ctx context.Context, orderID string)
 	return f.trip, nil
 }
 func (f *fakeReassignTripRepo) AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error {
+	f.adminAssignCalled = true
 	return nil
 }
 func (f *fakeReassignTripRepo) Reassign(
@@ -454,5 +456,64 @@ func TestReassignCandidates_RejectsNonReassignableStatus(t *testing.T) {
 		if got != nil {
 			t.Fatalf("status %s: expected nil candidates, got %+v", status, got)
 		}
+	}
+}
+
+func pooledTripForAssign() *models.Trip {
+	return &models.Trip{
+		TripID: "T-ASSIGN", OrderID: "ORD-ASSIGN", StoreID: "221",
+		Status: models.TripStatusCreated,
+	}
+}
+
+func eligibleAssignRider() *models.DeliveryExecutive {
+	return &models.DeliveryExecutive{
+		DEID: "DE-E", PhoneNumber: "+260E", Name: "Eligible",
+		Status: models.DEStatusEligible, CurrentStoreID: "221",
+	}
+}
+
+func TestAdminAssignOrder_CallsCompleterAfterSuccess(t *testing.T) {
+	tr := &fakeReassignTripRepo{trip: pooledTripForAssign()}
+	de := &fakeReassignDERepo{byPhone: map[string]*models.DeliveryExecutive{
+		"+260E": eligibleAssignRider(),
+	}}
+	stub := &stubPickupCompleter{}
+	svc := newTestAdminService(tr, de)
+	svc.completer = stub
+
+	if err := svc.AssignOrder(context.Background(), "ORD-ASSIGN", "+260E"); err != nil {
+		t.Fatalf("AssignOrder: %v", err)
+	}
+	if !tr.adminAssignCalled {
+		t.Fatal("expected AdminAssign")
+	}
+	if len(stub.calls) != 1 || stub.calls[0] != "ORD-ASSIGN" {
+		t.Fatalf("completer calls = %v, want [ORD-ASSIGN]", stub.calls)
+	}
+}
+
+func TestAdminAssignOrder_NilCompleter(t *testing.T) {
+	tr := &fakeReassignTripRepo{trip: pooledTripForAssign()}
+	de := &fakeReassignDERepo{byPhone: map[string]*models.DeliveryExecutive{
+		"+260E": eligibleAssignRider(),
+	}}
+	svc := newTestAdminService(tr, de)
+
+	if err := svc.AssignOrder(context.Background(), "ORD-ASSIGN", "+260E"); err != nil {
+		t.Fatalf("nil completer must not fail assign: %v", err)
+	}
+}
+
+func TestAdminAssignOrder_CompleterErrorDoesNotFail(t *testing.T) {
+	tr := &fakeReassignTripRepo{trip: pooledTripForAssign()}
+	de := &fakeReassignDERepo{byPhone: map[string]*models.DeliveryExecutive{
+		"+260E": eligibleAssignRider(),
+	}}
+	svc := newTestAdminService(tr, de)
+	svc.completer = &stubPickupCompleter{err: errors.New("boom")}
+
+	if err := svc.AssignOrder(context.Background(), "ORD-ASSIGN", "+260E"); err != nil {
+		t.Fatalf("completer error must not fail assign: %v", err)
 	}
 }

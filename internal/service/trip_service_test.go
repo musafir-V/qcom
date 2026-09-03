@@ -603,6 +603,7 @@ func TestEditTripByOrder_TerminalTrip_Rejected(t *testing.T) {
 // (drop path). updateTasksFn, if set, is called by UpdateTasks (pickup path).
 type stubTripRepo struct {
 	trip                    *models.Trip
+	getByOrderErr           error
 	cancelCalled            bool
 	cancelTripID            string
 	cancelDEPhone           string
@@ -610,6 +611,10 @@ type stubTripRepo struct {
 	updateTasksCalled       bool
 	capturedTasks           []models.Task
 	completeTripCalled      bool
+	completeAndFreeCalled   bool
+	completeOnlyCalled      bool
+	completeOnlyErr         error
+	acceptErr               error
 	updatePaymentCalled     bool
 	updatePaymentErr        error
 	capturedPayment         *models.Payment
@@ -624,9 +629,13 @@ type stubTripRepo struct {
 	dropDeadline            int64
 	adminAssignCalled       bool
 	adminAssignErr          error
+	adminOFDInboundCalled   bool
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
+	if s.getByOrderErr != nil {
+		return nil, s.getByOrderErr
+	}
 	return s.trip, nil
 }
 
@@ -643,9 +652,17 @@ func (s *stubTripRepo) GetByID(_ context.Context, _ string) (*models.Trip, error
 
 func (s *stubTripRepo) CompleteTripAndFreeDE(_ context.Context, _, _, _ string, tasks []models.Task, _ float64) error {
 	s.completeTripCalled = true
+	s.completeAndFreeCalled = true
 	s.capturedTasks = make([]models.Task, len(tasks))
 	copy(s.capturedTasks, tasks)
 	return nil
+}
+
+func (s *stubTripRepo) CompleteTripOnly(_ context.Context, _ string, tasks []models.Task) error {
+	s.completeOnlyCalled = true
+	s.capturedTasks = make([]models.Task, len(tasks))
+	copy(s.capturedTasks, tasks)
+	return s.completeOnlyErr
 }
 
 func (s *stubTripRepo) UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error {
@@ -703,7 +720,18 @@ func (s *stubTripRepo) AdminAssign(_ context.Context, _, _, deID, dePhone, _ str
 	return nil
 }
 
+func (s *stubTripRepo) MarkAdminOFDInbound(_ context.Context, _ string) error {
+	s.adminOFDInboundCalled = true
+	if s.trip != nil {
+		s.trip.AdminOFDInbound = true
+	}
+	return nil
+}
+
 func (s *stubTripRepo) Accept(_ context.Context, _, _ string) error {
+	if s.acceptErr != nil {
+		return s.acceptErr
+	}
 	if s.trip != nil {
 		s.trip.Status = models.TripStatusAccepted
 	}
@@ -735,9 +763,13 @@ type stubDERepo struct {
 	listed      []*models.DeliveryExecutive
 	statusCalls []string
 	attachCalls int
+	getErr      error
 }
 
 func (s *stubDERepo) GetByPhone(_ context.Context, phone string) (*models.DeliveryExecutive, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
 	if s.byPhone != nil {
 		return s.byPhone[phone], nil
 	}
@@ -1053,6 +1085,55 @@ func TestVerifyPickup_BlockedUntilReadyForDelivery(t *testing.T) {
 	err := svc.VerifyPickup(context.Background(), "t-verify-pack", "+260971000001", "ORD-VERIFY-PACK")
 	if !errors.Is(err, ErrOrderNotPacked) {
 		t.Fatalf("VerifyPickup error = %v, want ErrOrderNotPacked", err)
+	}
+}
+
+func TestVerifyPickup_BlockedWhenJavaOFD(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-verify-ofd",
+			OrderID: "ORD-VERIFY-OFD",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
+
+	err := svc.VerifyPickup(context.Background(), "t-verify-ofd", "+260971000001", "ORD-VERIFY-OFD")
+	if !errors.Is(err, ErrOrderNotPacked) {
+		t.Fatalf("VerifyPickup error = %v, want ErrOrderNotPacked when Java is OFD", err)
+	}
+}
+
+func TestUpdateTaskStatus_PickupComplete_BlockedWhenJavaOFD(t *testing.T) {
+	repo := &stubTripRepo{
+		trip: &models.Trip{
+			TripID:  "t-pickup-ofd",
+			OrderID: "ORD-PICKUP-OFD",
+			DEID:    "de-1",
+			Status:  models.TripStatusAccepted,
+			Tasks: []models.Task{
+				{TaskID: "task-pickup", Type: models.TaskTypePickup, Status: models.TaskStatusCreated},
+				{TaskID: "task-drop", Type: models.TaskTypeDrop, Status: models.TaskStatusCreated, OTP: "1234"},
+			},
+		},
+	}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{DEID: "de-1", PhoneNumber: "+260971000001"}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
+
+	_, err := svc.UpdateTaskStatus(context.Background(), "t-pickup-ofd", "task-pickup", "+260971000001", models.TaskStatusCompleted, "", "", nil, nil)
+	if !errors.Is(err, ErrOrderNotPacked) {
+		t.Fatalf("PickupComplete error = %v, want ErrOrderNotPacked when Java is OFD", err)
+	}
+	if repo.updateTasksCalled || repo.updateStatusCalled {
+		t.Fatal("must not complete pickup on rider path when Java is OFD")
 	}
 }
 

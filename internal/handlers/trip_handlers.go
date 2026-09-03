@@ -19,9 +19,16 @@ type editTripByOrderService interface {
 	EditTripByOrder(ctx context.Context, in service.EditTripByOrderInput) (service.PaymentUpdateResult, error)
 }
 
+// completeTripByOrderService is the CompleteByOrder surface so handler tests
+// can inject a stub. Production NewTripHandlers leaves this nil and uses tripService.
+type completeTripByOrderService interface {
+	CompleteByOrder(ctx context.Context, in service.CompleteByOrderInput) (service.PaymentUpdateResult, error)
+}
+
 type TripHandlers struct {
 	tripService   *service.TripService
 	editTrip      editTripByOrderService
+	completeTrip  completeTripByOrderService
 	uploadService *service.UploadService
 	logger        *logrus.Logger
 }
@@ -459,6 +466,57 @@ func (h *TripHandlers) EditTripByOrder(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusConflict
 	}
 	h.respondWithJSON(w, status, map[string]interface{}{
+		"updated": result.Updated,
+		"reason":  result.Reason,
+	})
+}
+
+// POST /internal/v1/trips/complete-by-order
+// Body: { "order_id": "ORD…", "status": "OUT_FOR_DELIVERY"|"DELIVERED" }
+// Called by Java order-service when admin marks OFD or DELIVERED. Completes
+// pickup (OFD) or pickup+drop (DELIVERED) on the qcom trip. Never 409s:
+// trip_terminal is 200 so Java will not retry.
+//
+//	200 {"updated": true}
+//	200 {"updated": false, "reason": "no_active_trip"|"no_rider"|"already_done"|"trip_terminal"}
+//	400 MISSING_FIELD | INVALID_STATUS | INVALID_REQUEST
+func (h *TripHandlers) CompleteTripByOrder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		OrderID string `json:"order_id"`
+		Status  string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.OrderID) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "order_id is required")
+		return
+	}
+	if strings.TrimSpace(req.Status) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "status is required")
+		return
+	}
+
+	completer := h.completeTrip
+	if completer == nil {
+		completer = h.tripService
+	}
+	result, err := completer.CompleteByOrder(r.Context(), service.CompleteByOrderInput{
+		OrderID: req.OrderID,
+		Status:  req.Status,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidStatus) {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_STATUS", err.Error())
+			return
+		}
+		h.logger.WithError(err).WithField("order_id", req.OrderID).Error("CompleteByOrder failed")
+		h.respondWithError(w, http.StatusInternalServerError, "COMPLETE_FAILED", "Failed to complete trip by order")
+		return
+	}
+
+	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"updated": result.Updated,
 		"reason":  result.Reason,
 	})
