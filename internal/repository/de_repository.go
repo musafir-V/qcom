@@ -232,6 +232,59 @@ func (r *DERepository) UpdateAssignedStore(ctx context.Context, phone, assignedS
 	return nil
 }
 
+// buildSetArchivedUpdate builds the UpdateItem expression for SetArchived.
+// archived=true SETs archived, archived_at, and updated_at.
+// archived=false SETs archived and updated_at and REMOVEs archived_at.
+func buildSetArchivedUpdate(archived bool, now string) (string, map[string]types.AttributeValue) {
+	values := map[string]types.AttributeValue{
+		":now": &types.AttributeValueMemberS{Value: now},
+	}
+	if archived {
+		values[":t"] = &types.AttributeValueMemberBOOL{Value: true}
+		return "SET archived=:t, archived_at=:now, updated_at=:now", values
+	}
+	values[":f"] = &types.AttributeValueMemberBOOL{Value: false}
+	return "SET archived=:f, updated_at=:now REMOVE archived_at", values
+}
+
+// SetArchived flips the DE soft-archive flag and returns the updated record.
+// archived=true stamps archived_at; archived=false REMOVEs it. Returns
+// (nil, ErrDENotFound) if the DE does not exist.
+func (r *DERepository) SetArchived(ctx context.Context, phone string, archived bool) (*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, r.logger, "SetArchived", logrus.Fields{"phone": phone, "archived": archived})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	expr, values := buildSetArchivedUpdate(archived, now)
+
+	result, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:          aws.String(expr),
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ExpressionAttributeValues: values,
+		ReturnValues:              types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return nil, op.Outcome("not_found", ErrDENotFound)
+		}
+		return nil, op.Fail(fmt.Errorf("failed to set DE archived state: %w", err))
+	}
+
+	var updated models.DeliveryExecutive
+	if err := attributevalue.UnmarshalMap(result.Attributes, &updated); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal DE: %w", err))
+	}
+	updated.PhoneNumber = phone
+	op.With("found", true)
+	return &updated, nil
+}
+
 // ListByAssignedStore returns a page of DEs whose permanent home darkstore is
 // indexKey (a store ID, or models.UnassignedStoreSentinel), ordered by name
 // via the AssignedStoreIndex GSI. namePrefix (already lowercased by the caller)
