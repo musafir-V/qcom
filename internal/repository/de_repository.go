@@ -285,15 +285,28 @@ func (r *DERepository) SetArchived(ctx context.Context, phone string, archived b
 	return &updated, nil
 }
 
+// buildArchivedListFilter returns a FilterExpression that drops archived DEs
+// when includeArchived is false. Old items missing the attribute count as
+// not-archived. When includeArchived is true there is no filter.
+func buildArchivedListFilter(includeArchived bool) (string, map[string]types.AttributeValue) {
+	if includeArchived {
+		return "", nil
+	}
+	return "(attribute_not_exists(archived) OR archived = :f)", map[string]types.AttributeValue{
+		":f": &types.AttributeValueMemberBOOL{Value: false},
+	}
+}
+
 // ListByAssignedStore returns a page of DEs whose permanent home darkstore is
 // indexKey (a store ID, or models.UnassignedStoreSentinel), ordered by name
 // via the AssignedStoreIndex GSI. namePrefix (already lowercased by the caller)
 // applies a begins_with on the name_lower sort key. cursor is an opaque token
-// from a previous call; pass "" for the first page. Returns the page and the
-// next cursor ("" when exhausted).
-func (r *DERepository) ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error) {
+// from a previous call; pass "" for the first page. When includeArchived is
+// false, archived DEs are omitted (missing archived attribute = not archived).
+// Returns the page and the next cursor ("" when exhausted).
+func (r *DERepository) ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32, includeArchived bool) ([]*models.DeliveryExecutive, string, error) {
 	op := logging.Start(ctx, r.logger, "ListByAssignedStore", logrus.Fields{
-		"index_key": indexKey, "name_prefix": namePrefix,
+		"index_key": indexKey, "name_prefix": namePrefix, "include_archived": includeArchived,
 	})
 	defer op.End()
 
@@ -318,6 +331,12 @@ func (r *DERepository) ListByAssignedStore(ctx context.Context, indexKey, namePr
 		ExpressionAttributeValues: values,
 		ScanIndexForward:          aws.Bool(true),
 		ExclusiveStartKey:         startKey,
+	}
+	if filter, filterVals := buildArchivedListFilter(includeArchived); filter != "" {
+		input.FilterExpression = aws.String(filter)
+		for k, v := range filterVals {
+			values[k] = v
+		}
 	}
 	if limit > 0 {
 		input.Limit = aws.Int32(limit)

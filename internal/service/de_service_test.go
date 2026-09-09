@@ -76,7 +76,7 @@ func (s *archiveDERepo) GetByPhone(context.Context, string) (*models.DeliveryExe
 func (s *archiveDERepo) UpdateAssignedStore(context.Context, string, string) error {
 	return nil
 }
-func (s *archiveDERepo) ListByAssignedStore(context.Context, string, string, string, int32) ([]*models.DeliveryExecutive, string, error) {
+func (s *archiveDERepo) ListByAssignedStore(context.Context, string, string, string, int32, bool) ([]*models.DeliveryExecutive, string, error) {
 	return nil, "", nil
 }
 func (s *archiveDERepo) MarkEligibleFromScan(context.Context, string, string, float64, float64, string) error {

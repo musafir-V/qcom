@@ -23,7 +23,7 @@ type deRepository interface {
 	Create(ctx context.Context, de *models.DeliveryExecutive) error
 	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
 	UpdateAssignedStore(ctx context.Context, phone, assignedStoreID string) error
-	ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error)
+	ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32, includeArchived bool) ([]*models.DeliveryExecutive, string, error)
 	MarkEligibleFromScan(ctx context.Context, phone, storeID string, lat, lng float64, scanAt string) error
 	UpdateStatus(ctx context.Context, phone string, status models.DEStatus, storeID, orderID string) error
 	SetArchived(ctx context.Context, phone string, archived bool) (*models.DeliveryExecutive, error)
@@ -151,12 +151,12 @@ func (s *DEService) ReassignStore(ctx context.Context, phone, storeID string) er
 // ListDriversByStore returns a page of DEs assigned to a store, ordered by name.
 // storeID may be empty to list unassigned drivers. namePrefix is an optional
 // case-insensitive name prefix filter. cursor/limit drive pagination.
-func (s *DEService) ListDriversByStore(ctx context.Context, storeID, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error) {
-	op := logging.Start(ctx, s.logger, "ListDriversByStore", logrus.Fields{"store_id": storeID})
+func (s *DEService) ListDriversByStore(ctx context.Context, storeID, namePrefix, cursor string, limit int32, includeArchived bool) ([]*models.DeliveryExecutive, string, error) {
+	op := logging.Start(ctx, s.logger, "ListDriversByStore", logrus.Fields{"store_id": storeID, "include_archived": includeArchived})
 	defer op.End()
 
 	indexKey := models.AssignedStoreIndexKeyFor(storeID)
-	des, next, err := s.deRepo.ListByAssignedStore(ctx, indexKey, models.NameLower(namePrefix), cursor, limit)
+	des, next, err := s.deRepo.ListByAssignedStore(ctx, indexKey, models.NameLower(namePrefix), cursor, limit, includeArchived)
 	if err != nil {
 		return nil, "", op.Fail(err)
 	}
