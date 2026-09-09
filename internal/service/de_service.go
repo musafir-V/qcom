@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,18 +13,34 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ErrDEBusyArchive is returned when ArchiveDriver is called while the DE is
+// on an active delivery (status=busy).
+var ErrDEBusyArchive = errors.New("cannot archive driver while on an active delivery")
+
+// deRepository is the subset of *repository.DERepository used by DEService.
+// Narrowing to an interface lets unit tests inject stubs without DynamoDB.
+type deRepository interface {
+	Create(ctx context.Context, de *models.DeliveryExecutive) error
+	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
+	UpdateAssignedStore(ctx context.Context, phone, assignedStoreID string) error
+	ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error)
+	MarkEligibleFromScan(ctx context.Context, phone, storeID string, lat, lng float64, scanAt string) error
+	UpdateStatus(ctx context.Context, phone string, status models.DEStatus, storeID, orderID string) error
+	SetArchived(ctx context.Context, phone string, archived bool) (*models.DeliveryExecutive, error)
+}
+
 // maxScanAccuracyMeters rejects a presence scan whose GPS accuracy circle is
 // wider than this — the fix is too coarse to trust against the tight geofence.
 const maxScanAccuracyMeters = 150.0
 
 type DEService struct {
-	deRepo             *repository.DERepository
+	deRepo             deRepository
 	qrService          *QRService
 	referralService    *ReferralService
 	earningsLedgerRepo deEarningsLedgerReader
 	cashConfigRepo     *repository.CashConfigRepository
 	darkstoreRepo      *repository.DarkstoreRepository
-	statusEventRepo    *repository.DEStatusEventRepository
+	statusEventRepo    statusEventAppender
 	logger             *logrus.Logger
 }
 
@@ -333,4 +350,71 @@ func (s *DEService) EndDuty(ctx context.Context, dePhone string) error {
 		TS:        timezone.Now().UTC().Format(time.RFC3339),
 	})
 	return nil
+}
+
+// ArchiveDriver soft-archives a DE. Idempotent if already archived. Busy DEs
+// are rejected. Eligible/free DEs are taken offline (UpdateStatus + best-effort
+// EndDuty-style status event) then archived. Offline DEs are archived in place
+// without EndDuty.
+func (s *DEService) ArchiveDriver(ctx context.Context, phone string) (*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, s.logger, "ArchiveDriver", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	de, err := s.deRepo.GetByPhone(ctx, phone)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to fetch DE: %w", err))
+	}
+	if de == nil {
+		return nil, op.Outcome("not_found", repository.ErrDENotFound)
+	}
+	if de.Archived {
+		return de, nil
+	}
+	if de.Status == models.DEStatusBusy {
+		return nil, op.Outcome("busy", ErrDEBusyArchive)
+	}
+	if de.Status == models.DEStatusEligible || de.Status == models.DEStatusFree {
+		fromState := de.Status
+		if err := s.deRepo.UpdateStatus(ctx, phone, models.DEStatusOffline, "", ""); err != nil {
+			return nil, op.Fail(fmt.Errorf("failed to update DE status: %w", err))
+		}
+		s.appendStatusEvent(ctx, &models.DEStatusEvent{
+			Phone:     phone,
+			FromState: fromState,
+			ToState:   models.DEStatusOffline,
+			Reason:    models.ReasonEndedDuty,
+			StoreID:   de.CurrentStoreID,
+			TS:        timezone.Now().UTC().Format(time.RFC3339),
+		})
+	}
+
+	updated, err := s.deRepo.SetArchived(ctx, phone, true)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+	return updated, nil
+}
+
+// RestoreDriver clears the soft-archive flag. Idempotent if not archived.
+// Status is left offline.
+func (s *DEService) RestoreDriver(ctx context.Context, phone string) (*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, s.logger, "RestoreDriver", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	de, err := s.deRepo.GetByPhone(ctx, phone)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to fetch DE: %w", err))
+	}
+	if de == nil {
+		return nil, op.Outcome("not_found", repository.ErrDENotFound)
+	}
+	if !de.Archived {
+		return de, nil
+	}
+
+	updated, err := s.deRepo.SetArchived(ctx, phone, false)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+	return updated, nil
 }
