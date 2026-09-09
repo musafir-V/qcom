@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,12 +15,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// deAuthLookup is the subset of *repository.DERepository used for DE OTP.
+type deAuthLookup interface {
+	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
+}
+
 type AuthHandlers struct {
 	otpService          *service.OTPService
 	jwtService          *service.JWTService
 	refreshTokenService *service.RefreshTokenService
 	userRepo            *repository.UserRepository
-	deRepo              *repository.DERepository
+	deRepo              deAuthLookup
 	logger              *logrus.Logger
 }
 
@@ -122,16 +128,20 @@ func (h *AuthHandlers) InitiateOTP(w http.ResponseWriter, r *http.Request) {
 		phoneNumber = "+" + phoneNumber
 	}
 
-	// For DE login, the DE must be registered first
+	// For DE login, the DE must be registered first and not soft-archived.
 	if appType(r) == "de" {
-		exists, err := h.deRepo.Exists(r.Context(), phoneNumber)
+		de, err := h.deRepo.GetByPhone(r.Context(), phoneNumber)
 		if err != nil {
 			h.logger.WithError(err).Error("Failed to check DE existence")
 			h.respondWithError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process request")
 			return
 		}
-		if !exists {
+		if de == nil {
 			h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "No delivery executive registered with this number")
+			return
+		}
+		if de.Archived {
+			h.respondWithError(w, http.StatusForbidden, "DE_ARCHIVED", "Delivery executive is archived")
 			return
 		}
 	}
@@ -188,6 +198,10 @@ func (h *AuthHandlers) verifyOTPForDE(w http.ResponseWriter, r *http.Request, ph
 	de, err := h.deRepo.GetByPhone(r.Context(), phoneNumber)
 	if err != nil || de == nil {
 		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Delivery executive not found")
+		return
+	}
+	if de.Archived {
+		h.respondWithError(w, http.StatusForbidden, "DE_ARCHIVED", "Delivery executive is archived")
 		return
 	}
 
