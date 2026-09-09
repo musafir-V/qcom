@@ -94,8 +94,12 @@ type DeliveryExecutive struct {
 	InHandCashZMW       float64 `json:"in_hand_cash_zmw" dynamodbav:"in_hand_cash_zmw"`
 	LastDisbursedAt     string  `json:"last_disbursed_at,omitempty" dynamodbav:"last_disbursed_at,omitempty"`
 	ReferralCode        string  `json:"referral_code,omitempty" dynamodbav:"referral_code,omitempty"`
-	CreatedAt           string  `json:"created_at" dynamodbav:"created_at"`
-	UpdatedAt           string  `json:"updated_at" dynamodbav:"updated_at"`
+	// Archived is a soft-delete flag. Old items missing the attribute unmarshal
+	// as false. Not a duty status — archived DEs stay offline.
+	Archived   bool   `json:"archived" dynamodbav:"archived"`
+	ArchivedAt string `json:"archived_at,omitempty" dynamodbav:"archived_at,omitempty"`
+	CreatedAt  string `json:"created_at" dynamodbav:"created_at"`
+	UpdatedAt  string `json:"updated_at" dynamodbav:"updated_at"`
 }
 
 func (de *DeliveryExecutive) GetPK() string {

@@ -179,6 +179,10 @@ func (r *DERepository) Exists(ctx context.Context, phone string) (bool, error) {
 // ErrDENotFound is returned when an update targets a DE that does not exist.
 var ErrDENotFound = errors.New("delivery executive not found")
 
+// ErrDEArchiveConflict is returned when ArchiveActive's condition fails
+// (DE is busy, already archived, or otherwise not eligible/free).
+var ErrDEArchiveConflict = errors.New("delivery executive archive condition failed")
+
 // UpdateAssignedStore sets (or clears) the DE's permanent home darkstore and
 // keeps the AssignedStoreIndex hash key in sync. Pass an empty assignedStoreID
 // to unassign (the index key falls back to the UNASSIGNED sentinel). This does
@@ -232,15 +236,137 @@ func (r *DERepository) UpdateAssignedStore(ctx context.Context, phone, assignedS
 	return nil
 }
 
+// buildSetArchivedUpdate builds the UpdateItem expression for SetArchived.
+// archived=true SETs archived, archived_at, and updated_at.
+// archived=false SETs archived and updated_at and REMOVEs archived_at.
+func buildSetArchivedUpdate(archived bool, now string) (string, map[string]types.AttributeValue) {
+	values := map[string]types.AttributeValue{
+		":now": &types.AttributeValueMemberS{Value: now},
+	}
+	if archived {
+		values[":t"] = &types.AttributeValueMemberBOOL{Value: true}
+		return "SET archived=:t, archived_at=:now, updated_at=:now", values
+	}
+	values[":f"] = &types.AttributeValueMemberBOOL{Value: false}
+	return "SET archived=:f, updated_at=:now REMOVE archived_at", values
+}
+
+// buildArchiveActiveUpdate builds the single UpdateItem that takes an
+// eligible/free DE offline and archives it atomically.
+func buildArchiveActiveUpdate(now string) (expr string, names map[string]string, values map[string]types.AttributeValue, cond string) {
+	names = map[string]string{"#status": "status"}
+	values = map[string]types.AttributeValue{
+		":offline":  &types.AttributeValueMemberS{Value: string(models.DEStatusOffline)},
+		":eligible": &types.AttributeValueMemberS{Value: string(models.DEStatusEligible)},
+		":free":     &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
+		":t":        &types.AttributeValueMemberBOOL{Value: true},
+		":f":        &types.AttributeValueMemberBOOL{Value: false},
+		":now":      &types.AttributeValueMemberS{Value: now},
+	}
+	expr = "SET #status = :offline, archived = :t, archived_at = :now, updated_at = :now REMOVE current_store_id, current_order_id, duty_index_key, scan_deadline_at"
+	cond = "attribute_exists(PK) AND (#status = :eligible OR #status = :free) AND (attribute_not_exists(archived) OR archived = :f)"
+	return expr, names, values, cond
+}
+
+// ArchiveActive atomically sets status=offline and archived=true for an
+// eligible or free DE. One UpdateItem — no window for a concurrent scan to
+// write eligible between the two former writes. Returns ErrDEArchiveConflict
+// when the condition fails.
+func (r *DERepository) ArchiveActive(ctx context.Context, phone string) (*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, r.logger, "ArchiveActive", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	expr, names, values, cond := buildArchiveActiveUpdate(now)
+
+	result, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:          aws.String(expr),
+		ConditionExpression:       aws.String(cond),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+		ReturnValues:              types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return nil, op.Outcome("conflict", ErrDEArchiveConflict)
+		}
+		return nil, op.Fail(fmt.Errorf("failed to archive active DE: %w", err))
+	}
+
+	var updated models.DeliveryExecutive
+	if err := attributevalue.UnmarshalMap(result.Attributes, &updated); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal DE: %w", err))
+	}
+	updated.PhoneNumber = phone
+	return &updated, nil
+}
+
+// SetArchived flips the DE soft-archive flag and returns the updated record.
+// archived=true stamps archived_at; archived=false REMOVEs it. Returns
+// (nil, ErrDENotFound) if the DE does not exist.
+func (r *DERepository) SetArchived(ctx context.Context, phone string, archived bool) (*models.DeliveryExecutive, error) {
+	op := logging.Start(ctx, r.logger, "SetArchived", logrus.Fields{"phone": phone, "archived": archived})
+	defer op.End()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	expr, values := buildSetArchivedUpdate(archived, now)
+
+	result, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:          aws.String(expr),
+		ConditionExpression:       aws.String("attribute_exists(PK)"),
+		ExpressionAttributeValues: values,
+		ReturnValues:              types.ReturnValueAllNew,
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			return nil, op.Outcome("not_found", ErrDENotFound)
+		}
+		return nil, op.Fail(fmt.Errorf("failed to set DE archived state: %w", err))
+	}
+
+	var updated models.DeliveryExecutive
+	if err := attributevalue.UnmarshalMap(result.Attributes, &updated); err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to unmarshal DE: %w", err))
+	}
+	updated.PhoneNumber = phone
+	op.With("found", true)
+	return &updated, nil
+}
+
+// buildArchivedListFilter returns a FilterExpression that drops archived DEs
+// when includeArchived is false. Old items missing the attribute count as
+// not-archived. When includeArchived is true there is no filter.
+func buildArchivedListFilter(includeArchived bool) (string, map[string]types.AttributeValue) {
+	if includeArchived {
+		return "", nil
+	}
+	return "(attribute_not_exists(archived) OR archived = :f)", map[string]types.AttributeValue{
+		":f": &types.AttributeValueMemberBOOL{Value: false},
+	}
+}
+
 // ListByAssignedStore returns a page of DEs whose permanent home darkstore is
 // indexKey (a store ID, or models.UnassignedStoreSentinel), ordered by name
 // via the AssignedStoreIndex GSI. namePrefix (already lowercased by the caller)
 // applies a begins_with on the name_lower sort key. cursor is an opaque token
-// from a previous call; pass "" for the first page. Returns the page and the
-// next cursor ("" when exhausted).
-func (r *DERepository) ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error) {
+// from a previous call; pass "" for the first page. When includeArchived is
+// false, archived DEs are omitted (missing archived attribute = not archived).
+// Returns the page and the next cursor ("" when exhausted).
+func (r *DERepository) ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32, includeArchived bool) ([]*models.DeliveryExecutive, string, error) {
 	op := logging.Start(ctx, r.logger, "ListByAssignedStore", logrus.Fields{
-		"index_key": indexKey, "name_prefix": namePrefix,
+		"index_key": indexKey, "name_prefix": namePrefix, "include_archived": includeArchived,
 	})
 	defer op.End()
 
@@ -265,6 +391,12 @@ func (r *DERepository) ListByAssignedStore(ctx context.Context, indexKey, namePr
 		ExpressionAttributeValues: values,
 		ScanIndexForward:          aws.Bool(true),
 		ExclusiveStartKey:         startKey,
+	}
+	if filter, filterVals := buildArchivedListFilter(includeArchived); filter != "" {
+		input.FilterExpression = aws.String(filter)
+		for k, v := range filterVals {
+			values[k] = v
+		}
 	}
 	if limit > 0 {
 		input.Limit = aws.Int32(limit)

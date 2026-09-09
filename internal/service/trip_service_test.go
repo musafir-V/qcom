@@ -765,7 +765,7 @@ func (s *stubDERepo) AttachToTrip(_ context.Context, phone, orderID, tripID, _ s
 	return nil
 }
 
-func (s *stubDERepo) ListByAssignedStore(_ context.Context, _, _, _ string, _ int32) ([]*models.DeliveryExecutive, string, error) {
+func (s *stubDERepo) ListByAssignedStore(_ context.Context, _, _, _ string, _ int32, _ bool) ([]*models.DeliveryExecutive, string, error) {
 	return s.listed, "", nil
 }
 

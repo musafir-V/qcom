@@ -90,7 +90,7 @@ type deRepoI interface {
 	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
 	UpdateStatus(ctx context.Context, phone string, status models.DEStatus, storeID, orderID string) error
 	AttachToTrip(ctx context.Context, phone, orderID, tripID, storeID string) error
-	ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32) ([]*models.DeliveryExecutive, string, error)
+	ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32, includeArchived bool) ([]*models.DeliveryExecutive, string, error)
 }
 
 // javaOrderAPI is the subset of JavaOrderClient used by TripService so tests
@@ -886,7 +886,7 @@ func (s *TripService) listAdminDropCandidates(ctx context.Context, storeID strin
 	var out []AdminDropCandidate
 	cursor := ""
 	for {
-		des, next, err := s.deRepo.ListByAssignedStore(ctx, indexKey, "", cursor, 100)
+		des, next, err := s.deRepo.ListByAssignedStore(ctx, indexKey, "", cursor, 100, false)
 		if err != nil {
 			return nil, err
 		}

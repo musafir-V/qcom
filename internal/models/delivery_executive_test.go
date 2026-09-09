@@ -1,6 +1,11 @@
 package models
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+)
 
 func TestTripsToday(t *testing.T) {
 	de := &DeliveryExecutive{DailyTripCount: 5, DailyCountDate: "2026-06-09"}
@@ -38,5 +43,24 @@ func TestCashExceeds(t *testing.T) {
 				t.Fatalf("CashExceeds(%v) with in-hand %v = %v, want %v", c.limit, c.inHand, got, c.want)
 			}
 		})
+	}
+}
+
+func TestDeliveryExecutive_MissingArchivedUnmarshalsFalse(t *testing.T) {
+	item := map[string]types.AttributeValue{
+		"phone_number": &types.AttributeValueMemberS{Value: "+260971000001"},
+		"name":         &types.AttributeValueMemberS{Value: "Ada"},
+		"status":       &types.AttributeValueMemberS{Value: "offline"},
+	}
+
+	var de DeliveryExecutive
+	if err := attributevalue.UnmarshalMap(item, &de); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if de.Archived {
+		t.Fatal("old items missing archived must unmarshal as false")
+	}
+	if de.ArchivedAt != "" {
+		t.Fatalf("archived_at = %q, want empty", de.ArchivedAt)
 	}
 }
