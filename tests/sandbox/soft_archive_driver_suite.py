@@ -550,6 +550,8 @@ def otp_blocked(phone: str) -> None:
         if c2 == 200 and isinstance(p2, dict) and p2.get("access_token"):
             raise CaseFail(f"OTP not blocked (verify succeeded) while archived: {r2[:180]}")
         return
+    if c1 == 0:
+        raise CaseBlock(f"OTP initiate transport {r1[:200]}")
     # non-2xx / error code on initiate = blocked ✓
     if c1 >= 400 or err_code(p1):
         return
@@ -716,7 +718,7 @@ def tc06() -> str:
         de = ddb_get_de(phone)
         if str(de.get("status") or "").lower() != "busy":
             raise CaseFail(f"expected still busy, got {de.get('status')}")
-        if de.get("current_trip_id") != tid and de.get("current_order_id") != oid:
+        if de.get("current_trip_id") != tid or de.get("current_order_id") != oid:
             raise CaseFail(f"lost trip binding trip={de.get('current_trip_id')} order={de.get('current_order_id')}")
         assert_on_default(phone)
         return f"busy archive refused {phone} code={code} {err_code(parsed)}"

@@ -27,6 +27,7 @@ type deRepository interface {
 	MarkEligibleFromScan(ctx context.Context, phone, storeID string, lat, lng float64, scanAt string) error
 	UpdateStatus(ctx context.Context, phone string, status models.DEStatus, storeID, orderID string) error
 	SetArchived(ctx context.Context, phone string, archived bool) (*models.DeliveryExecutive, error)
+	ArchiveActive(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
 }
 
 // maxScanAccuracyMeters rejects a presence scan whose GPS accuracy circle is
@@ -353,9 +354,9 @@ func (s *DEService) EndDuty(ctx context.Context, dePhone string) error {
 }
 
 // ArchiveDriver soft-archives a DE. Idempotent if already archived. Busy DEs
-// are rejected. Eligible/free DEs are taken offline (UpdateStatus + best-effort
-// EndDuty-style status event) then archived. Offline DEs are archived in place
-// without EndDuty.
+// are rejected. Eligible/free DEs are taken offline and archived in one
+// conditional UpdateItem (no window for a concurrent eligibility write).
+// Offline DEs are archived in place without EndDuty.
 func (s *DEService) ArchiveDriver(ctx context.Context, phone string) (*models.DeliveryExecutive, error) {
 	op := logging.Start(ctx, s.logger, "ArchiveDriver", logrus.Fields{"phone": phone})
 	defer op.End()
@@ -375,17 +376,23 @@ func (s *DEService) ArchiveDriver(ctx context.Context, phone string) (*models.De
 	}
 	if de.Status == models.DEStatusEligible || de.Status == models.DEStatusFree {
 		fromState := de.Status
-		if err := s.deRepo.UpdateStatus(ctx, phone, models.DEStatusOffline, "", ""); err != nil {
-			return nil, op.Fail(fmt.Errorf("failed to update DE status: %w", err))
+		storeID := de.CurrentStoreID
+		updated, err := s.deRepo.ArchiveActive(ctx, phone)
+		if err != nil {
+			if errors.Is(err, repository.ErrDEArchiveConflict) {
+				return s.archiveActiveConflict(ctx, op, phone)
+			}
+			return nil, op.Fail(fmt.Errorf("failed to archive active DE: %w", err))
 		}
 		s.appendStatusEvent(ctx, &models.DEStatusEvent{
 			Phone:     phone,
 			FromState: fromState,
 			ToState:   models.DEStatusOffline,
 			Reason:    models.ReasonEndedDuty,
-			StoreID:   de.CurrentStoreID,
+			StoreID:   storeID,
 			TS:        timezone.Now().UTC().Format(time.RFC3339),
 		})
+		return updated, nil
 	}
 
 	updated, err := s.deRepo.SetArchived(ctx, phone, true)
@@ -393,6 +400,23 @@ func (s *DEService) ArchiveDriver(ctx context.Context, phone string) (*models.De
 		return nil, op.Fail(err)
 	}
 	return updated, nil
+}
+
+func (s *DEService) archiveActiveConflict(ctx context.Context, op *logging.Op, phone string) (*models.DeliveryExecutive, error) {
+	de, err := s.deRepo.GetByPhone(ctx, phone)
+	if err != nil {
+		return nil, op.Fail(fmt.Errorf("failed to fetch DE: %w", err))
+	}
+	if de == nil {
+		return nil, op.Outcome("not_found", repository.ErrDENotFound)
+	}
+	if de.Archived {
+		return de, nil
+	}
+	if de.Status == models.DEStatusBusy {
+		return nil, op.Outcome("busy", ErrDEBusyArchive)
+	}
+	return nil, op.Fail(repository.ErrDEArchiveConflict)
 }
 
 // RestoreDriver clears the soft-archive flag. Idempotent if not archived.

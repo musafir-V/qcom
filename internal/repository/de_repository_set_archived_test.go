@@ -100,6 +100,80 @@ func TestSetArchived_UpdateError(t *testing.T) {
 	}
 }
 
+func TestBuildArchiveActiveUpdate_AtomicOfflineAndArchived(t *testing.T) {
+	expr, names, values, cond := buildArchiveActiveUpdate("2026-09-09T12:00:00Z")
+	if !strings.Contains(expr, "#status = :offline") || !strings.Contains(expr, "archived = :t") || !strings.Contains(expr, "archived_at = :now") {
+		t.Fatalf("expr missing atomic status+archived set: %q", expr)
+	}
+	if !strings.Contains(expr, "REMOVE") || !strings.Contains(expr, "duty_index_key") {
+		t.Fatalf("expr must clear duty fields: %q", expr)
+	}
+	if names["#status"] != "status" {
+		t.Fatalf("names = %v", names)
+	}
+	if s, ok := values[":offline"].(*types.AttributeValueMemberS); !ok || s.Value != "offline" {
+		t.Fatalf(":offline = %v", values[":offline"])
+	}
+	if b, ok := values[":t"].(*types.AttributeValueMemberBOOL); !ok || !b.Value {
+		t.Fatalf(":t = %v", values[":t"])
+	}
+	if !strings.Contains(cond, "#status = :eligible") || !strings.Contains(cond, "#status = :free") {
+		t.Fatalf("cond must require eligible or free: %q", cond)
+	}
+	if !strings.Contains(cond, "attribute_not_exists(archived)") || !strings.Contains(cond, "archived = :f") {
+		t.Fatalf("cond must reject already-archived: %q", cond)
+	}
+}
+
+func TestArchiveActive_OneUpdateItem(t *testing.T) {
+	var body string
+	repo := testDERepo(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+		_, _ = w.Write([]byte(`{"Attributes":{"phone_number":{"S":"+260971000001"},"archived":{"BOOL":true},"status":{"S":"offline"}}}`))
+	})
+	got, err := repo.ArchiveActive(context.Background(), "+260971000001")
+	if err != nil {
+		t.Fatalf("ArchiveActive: %v", err)
+	}
+	if got == nil || !got.Archived || string(got.Status) != "offline" {
+		t.Fatalf("got %#v", got)
+	}
+	if !strings.Contains(body, "offline") || !strings.Contains(body, "archived") {
+		t.Fatalf("single UpdateItem must set both: %s", body)
+	}
+	if !strings.Contains(body, "ConditionExpression") {
+		t.Fatalf("missing condition: %s", body)
+	}
+}
+
+func TestArchiveActive_UpdateError(t *testing.T) {
+	repo := testDERepo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+		w.Header().Set("X-Amzn-Errortype", "InternalServerError")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"__type":"com.amazonaws.dynamodb.v20120810#InternalServerError","message":"boom"}`))
+	})
+	_, err := repo.ArchiveActive(context.Background(), "+260971000001")
+	if err == nil || errors.Is(err, ErrDEArchiveConflict) {
+		t.Fatalf("err = %v, want generic update error", err)
+	}
+}
+
+func TestArchiveActive_ConditionFailed(t *testing.T) {
+	repo := testDERepo(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-amz-json-1.0")
+		w.Header().Set("X-Amzn-Errortype", "ConditionalCheckFailedException")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"__type":"com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException","message":"The conditional request failed"}`))
+	})
+	_, err := repo.ArchiveActive(context.Background(), "+260971000001")
+	if !errors.Is(err, ErrDEArchiveConflict) {
+		t.Fatalf("err = %v, want ErrDEArchiveConflict", err)
+	}
+}
+
 func TestBuildSetArchivedUpdate_Archive(t *testing.T) {
 	expr, values := buildSetArchivedUpdate(true, "2026-09-09T12:00:00Z")
 	if expr != "SET archived=:t, archived_at=:now, updated_at=:now" {

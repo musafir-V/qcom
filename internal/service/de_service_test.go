@@ -59,18 +59,27 @@ func TestGetTodayEarnings_SumsPositiveCashOnly(t *testing.T) {
 }
 
 type archiveDERepo struct {
-	de          *models.DeliveryExecutive
-	getErr      error
-	updateErr   error
-	statusCalls []string
-	archiveOps  []bool
-	setErr      error
+	de                 *models.DeliveryExecutive
+	gets               []*models.DeliveryExecutive
+	getN               int
+	getErr             error
+	updateErr          error
+	archiveActiveErr   error
+	statusCalls        []string
+	archiveOps         []bool
+	archiveActiveCalls int
+	setErr             error
 }
 
 func (s *archiveDERepo) Create(context.Context, *models.DeliveryExecutive) error {
 	return nil
 }
 func (s *archiveDERepo) GetByPhone(context.Context, string) (*models.DeliveryExecutive, error) {
+	if s.getN < len(s.gets) {
+		de := s.gets[s.getN]
+		s.getN++
+		return de, nil
+	}
 	return s.de, s.getErr
 }
 func (s *archiveDERepo) UpdateAssignedStore(context.Context, string, string) error {
@@ -91,6 +100,18 @@ func (s *archiveDERepo) UpdateStatus(_ context.Context, phone string, status mod
 		s.de.Status = status
 	}
 	return nil
+}
+func (s *archiveDERepo) ArchiveActive(_ context.Context, _ string) (*models.DeliveryExecutive, error) {
+	s.archiveActiveCalls++
+	if s.archiveActiveErr != nil {
+		return nil, s.archiveActiveErr
+	}
+	if s.de != nil {
+		s.de.Status = models.DEStatusOffline
+		s.de.Archived = true
+		s.de.ArchivedAt = "2026-09-09T12:00:00Z"
+	}
+	return s.de, nil
 }
 func (s *archiveDERepo) SetArchived(_ context.Context, _ string, archived bool) (*models.DeliveryExecutive, error) {
 	s.archiveOps = append(s.archiveOps, archived)
@@ -159,11 +180,11 @@ func TestArchiveDriver_Eligible(t *testing.T) {
 	if got.Status != models.DEStatusOffline {
 		t.Fatalf("status = %q, want offline", got.Status)
 	}
-	if len(repo.statusCalls) != 1 || repo.statusCalls[0] != "+260971000001:offline" {
-		t.Fatalf("statusCalls = %v", repo.statusCalls)
+	if repo.archiveActiveCalls != 1 {
+		t.Fatalf("ArchiveActive calls = %d, want 1 atomic write", repo.archiveActiveCalls)
 	}
-	if len(repo.archiveOps) != 1 || !repo.archiveOps[0] {
-		t.Fatalf("archiveOps = %v", repo.archiveOps)
+	if len(repo.statusCalls) != 0 || len(repo.archiveOps) != 0 {
+		t.Fatalf("eligible archive must not split UpdateStatus+SetArchived, status=%v archive=%v", repo.statusCalls, repo.archiveOps)
 	}
 	if len(events.events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events.events))
@@ -267,6 +288,12 @@ func TestArchiveDriver_Free(t *testing.T) {
 	if got == nil || !got.Archived || got.Status != models.DEStatusOffline {
 		t.Fatalf("got %#v", got)
 	}
+	if repo.archiveActiveCalls != 1 {
+		t.Fatalf("ArchiveActive calls = %d, want 1", repo.archiveActiveCalls)
+	}
+	if len(repo.statusCalls) != 0 || len(repo.archiveOps) != 0 {
+		t.Fatalf("free archive must be one atomic write, status=%v archive=%v", repo.statusCalls, repo.archiveOps)
+	}
 	if len(events.events) != 1 || events.events[0].FromState != models.DEStatusFree {
 		t.Fatalf("events = %#v", events.events)
 	}
@@ -289,18 +316,98 @@ func TestArchiveDriver_GetError(t *testing.T) {
 	}
 }
 
-func TestArchiveDriver_UpdateStatusError(t *testing.T) {
+func TestArchiveDriver_ArchiveActiveError(t *testing.T) {
+	want := errors.New("atomic archive failed")
 	repo := &archiveDERepo{
-		de: &models.DeliveryExecutive{PhoneNumber: "+260971000001", Status: models.DEStatusEligible},
+		de:               &models.DeliveryExecutive{PhoneNumber: "+260971000001", Status: models.DEStatusEligible},
+		archiveActiveErr: want,
 	}
-	repo.updateErr = errors.New("status write failed")
 	svc := &DEService{deRepo: repo, logger: testArchiveLogger()}
 	_, err := svc.ArchiveDriver(context.Background(), "+260971000001")
-	if !errors.Is(err, repo.updateErr) {
+	if !errors.Is(err, want) {
 		t.Fatalf("err = %v", err)
 	}
 	if len(repo.archiveOps) != 0 {
-		t.Fatal("must not archive after status update failure")
+		t.Fatal("must not call SetArchived after ArchiveActive failure")
+	}
+}
+
+func TestArchiveDriver_ArchiveActiveConflictAlreadyArchived(t *testing.T) {
+	repo := &archiveDERepo{
+		gets: []*models.DeliveryExecutive{
+			{PhoneNumber: "+260971000001", Status: models.DEStatusEligible},
+			{PhoneNumber: "+260971000001", Status: models.DEStatusOffline, Archived: true, ArchivedAt: "2026-09-09T12:00:00Z"},
+		},
+		archiveActiveErr: repository.ErrDEArchiveConflict,
+	}
+	svc := &DEService{deRepo: repo, logger: testArchiveLogger()}
+	got, err := svc.ArchiveDriver(context.Background(), "+260971000001")
+	if err != nil {
+		t.Fatalf("ArchiveDriver: %v", err)
+	}
+	if got == nil || !got.Archived {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestArchiveDriver_ArchiveActiveConflictNotFound(t *testing.T) {
+	repo := &archiveDERepo{
+		gets: []*models.DeliveryExecutive{
+			{PhoneNumber: "+260971000001", Status: models.DEStatusEligible},
+			nil,
+		},
+		archiveActiveErr: repository.ErrDEArchiveConflict,
+	}
+	svc := &DEService{deRepo: repo, logger: testArchiveLogger()}
+	_, err := svc.ArchiveDriver(context.Background(), "+260971000001")
+	if !errors.Is(err, repository.ErrDENotFound) {
+		t.Fatalf("err = %v, want ErrDENotFound", err)
+	}
+}
+
+func TestArchiveDriver_ArchiveActiveConflictGetError(t *testing.T) {
+	want := errors.New("reread failed")
+	repo := &archiveDERepo{
+		gets: []*models.DeliveryExecutive{
+			{PhoneNumber: "+260971000001", Status: models.DEStatusEligible},
+		},
+		getErr:           want,
+		archiveActiveErr: repository.ErrDEArchiveConflict,
+	}
+	svc := &DEService{deRepo: repo, logger: testArchiveLogger()}
+	_, err := svc.ArchiveDriver(context.Background(), "+260971000001")
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %v, want %v", err, want)
+	}
+}
+
+func TestArchiveDriver_ArchiveActiveConflictUnresolved(t *testing.T) {
+	repo := &archiveDERepo{
+		gets: []*models.DeliveryExecutive{
+			{PhoneNumber: "+260971000001", Status: models.DEStatusEligible},
+			{PhoneNumber: "+260971000001", Status: models.DEStatusEligible},
+		},
+		archiveActiveErr: repository.ErrDEArchiveConflict,
+	}
+	svc := &DEService{deRepo: repo, logger: testArchiveLogger()}
+	_, err := svc.ArchiveDriver(context.Background(), "+260971000001")
+	if !errors.Is(err, repository.ErrDEArchiveConflict) {
+		t.Fatalf("err = %v, want ErrDEArchiveConflict", err)
+	}
+}
+
+func TestArchiveDriver_ArchiveActiveConflictBecameBusy(t *testing.T) {
+	repo := &archiveDERepo{
+		gets: []*models.DeliveryExecutive{
+			{PhoneNumber: "+260971000001", Status: models.DEStatusEligible},
+			{PhoneNumber: "+260971000001", Status: models.DEStatusBusy},
+		},
+		archiveActiveErr: repository.ErrDEArchiveConflict,
+	}
+	svc := &DEService{deRepo: repo, logger: testArchiveLogger()}
+	_, err := svc.ArchiveDriver(context.Background(), "+260971000001")
+	if !errors.Is(err, ErrDEBusyArchive) {
+		t.Fatalf("err = %v, want ErrDEBusyArchive", err)
 	}
 }
 
