@@ -40,6 +40,8 @@ type adminDriverService interface {
 	GetTodayEarnings(ctx context.Context, deID string) (float64, error)
 	Register(ctx context.Context, req service.RegisterDERequest) (*models.DeliveryExecutive, error)
 	ReassignStore(ctx context.Context, phone, storeID string) error
+	ArchiveDriver(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
+	RestoreDriver(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
 }
 
 type AdminDriverHandlers struct {
@@ -117,30 +119,30 @@ func parseIncludeArchived(raw string) bool {
 // handler after this base map.
 func driverDetail(de *models.DeliveryExecutive, todayEarnings float64) map[string]interface{} {
 	return map[string]interface{}{
-		"de_id":               de.DEID,
-		"phone_number":        de.PhoneNumber,
-		"name":                de.Name,
-		"status":              de.Status,
-		"profile_url":         de.ProfileURL,
-		"nrc_url":             de.NRCURL,
-		"driver_license_url":  de.DriverLicenseURL,
-		"nrc_number":          de.NRCNumber,
-		"airtel_money_number": de.AirtelMoneyNumber,
-		"bike_number":         de.BikeNumber,
-		"bike_brand":          de.BikeBrand,
-		"referral_code":       de.ReferralCode,
-		"assigned_store_id":   de.AssignedStoreID,
-		"current_store_id":    de.CurrentStoreID,
-		"current_order_id":    de.CurrentOrderID,
-		"current_trip_id":     de.CurrentTripID,
+		"de_id":                 de.DEID,
+		"phone_number":          de.PhoneNumber,
+		"name":                  de.Name,
+		"status":                de.Status,
+		"profile_url":           de.ProfileURL,
+		"nrc_url":               de.NRCURL,
+		"driver_license_url":    de.DriverLicenseURL,
+		"nrc_number":            de.NRCNumber,
+		"airtel_money_number":   de.AirtelMoneyNumber,
+		"bike_number":           de.BikeNumber,
+		"bike_brand":            de.BikeBrand,
+		"referral_code":         de.ReferralCode,
+		"assigned_store_id":     de.AssignedStoreID,
+		"current_store_id":      de.CurrentStoreID,
+		"current_order_id":      de.CurrentOrderID,
+		"current_trip_id":       de.CurrentTripID,
 		"total_trips_completed": de.TotalTripsCompleted,
-		"in_hand_cash_zmw":    de.InHandCashZMW,
-		"today_earnings_zmw":  todayEarnings,
-		"last_disbursed_at":   de.LastDisbursedAt,
-		"archived":            de.Archived,
-		"archived_at":         de.ArchivedAt,
-		"created_at":          de.CreatedAt,
-		"updated_at":          de.UpdatedAt,
+		"in_hand_cash_zmw":      de.InHandCashZMW,
+		"today_earnings_zmw":    todayEarnings,
+		"last_disbursed_at":     de.LastDisbursedAt,
+		"archived":              de.Archived,
+		"archived_at":           de.ArchivedAt,
+		"created_at":            de.CreatedAt,
+		"updated_at":            de.UpdatedAt,
 	}
 }
 
@@ -165,10 +167,62 @@ func (h *AdminDriverHandlers) GetDriver(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	todayEarnings, err := h.deService.GetTodayEarnings(r.Context(), de.DEID)
+	h.writeDriverDetail(w, r, de)
+}
+
+// POST /api/v1/admin/drivers/{phone}/archive
+func (h *AdminDriverHandlers) ArchiveDriver(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	de, err := h.deService.ArchiveDriver(r.Context(), phone)
 	if err != nil {
-		h.logger.WithError(err).Warn("admin: failed to compute today's earnings; defaulting to 0")
-		todayEarnings = 0
+		h.writeArchiveError(w, err, "admin: failed to archive driver", "ARCHIVE_FAILED", "Failed to archive driver")
+		return
+	}
+	h.writeDriverDetail(w, r, de)
+}
+
+// POST /api/v1/admin/drivers/{phone}/restore
+func (h *AdminDriverHandlers) RestoreDriver(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+
+	de, err := h.deService.RestoreDriver(r.Context(), phone)
+	if err != nil {
+		h.writeArchiveError(w, err, "admin: failed to restore driver", "RESTORE_FAILED", "Failed to restore driver")
+		return
+	}
+	h.writeDriverDetail(w, r, de)
+}
+
+func (h *AdminDriverHandlers) writeArchiveError(w http.ResponseWriter, err error, logMsg, fallbackCode, fallbackMsg string) {
+	switch {
+	case errors.Is(err, service.ErrDEBusyArchive):
+		h.respondWithError(w, http.StatusConflict, "DE_BUSY", err.Error())
+	case errors.Is(err, repository.ErrDENotFound) || strings.Contains(err.Error(), "delivery executive not found"):
+		h.respondWithError(w, http.StatusNotFound, "DE_NOT_FOUND", "Driver not found")
+	default:
+		h.logger.WithError(err).Error(logMsg)
+		h.respondWithError(w, http.StatusInternalServerError, fallbackCode, fallbackMsg)
+	}
+}
+
+func (h *AdminDriverHandlers) writeDriverDetail(w http.ResponseWriter, r *http.Request, de *models.DeliveryExecutive) {
+	todayEarnings := 0.0
+	if h.deService != nil {
+		var err error
+		todayEarnings, err = h.deService.GetTodayEarnings(r.Context(), de.DEID)
+		if err != nil {
+			h.logger.WithError(err).Warn("admin: failed to compute today's earnings; defaulting to 0")
+			todayEarnings = 0
+		}
 	}
 
 	tripsToday := de.TripsToday(timezone.DateString())
@@ -179,16 +233,22 @@ func (h *AdminDriverHandlers) GetDriver(w http.ResponseWriter, r *http.Request) 
 	resp["driver_license_view_url"] = h.docViewURL(r.Context(), de.DriverLicenseURL)
 	resp["trips_today"] = tripsToday
 
-	if payoutCfg, err := h.payoutConfigRepo.Get(r.Context()); err != nil {
-		h.logger.WithError(err).Warn("admin: failed to fetch payout config; omitting daily_milestone")
-	} else {
-		resp["daily_milestone"] = service.ComputeDailyMilestone(tripsToday, payoutCfg)
+	if h.payoutConfigRepo != nil {
+		if payoutCfg, err := h.payoutConfigRepo.Get(r.Context()); err != nil {
+			h.logger.WithError(err).Warn("admin: failed to fetch payout config; omitting daily_milestone")
+		} else {
+			resp["daily_milestone"] = service.ComputeDailyMilestone(tripsToday, payoutCfg)
+		}
 	}
 
-	cashCfg, err := h.cashConfigRepo.Get(r.Context())
-	if err != nil {
-		h.logger.WithError(err).Warn("admin: failed to fetch cash config; defaulting limit")
-		cashCfg = &models.CashConfig{}
+	cashCfg := &models.CashConfig{}
+	if h.cashConfigRepo != nil {
+		var err error
+		cashCfg, err = h.cashConfigRepo.Get(r.Context())
+		if err != nil {
+			h.logger.WithError(err).Warn("admin: failed to fetch cash config; defaulting limit")
+			cashCfg = &models.CashConfig{}
+		}
 	}
 	resp["cash_limit_zmw"] = cashCfg.EffectiveLimitZMW()
 	resp["cash_blocked"] = de.CashExceeds(cashCfg.EffectiveLimitZMW())
@@ -206,6 +266,9 @@ func (h *AdminDriverHandlers) docViewURL(ctx context.Context, stored string) str
 	}
 	if strings.HasPrefix(stored, "http://") || strings.HasPrefix(stored, "https://") {
 		return stored
+	}
+	if h.uploadService == nil {
+		return ""
 	}
 	url, err := h.uploadService.PresignGetURL(ctx, h.bucket, stored)
 	if err != nil {

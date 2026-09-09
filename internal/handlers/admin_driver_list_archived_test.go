@@ -40,6 +40,12 @@ func (f *fakeListDEService) Register(context.Context, service.RegisterDERequest)
 	return nil, nil
 }
 func (f *fakeListDEService) ReassignStore(context.Context, string, string) error { return nil }
+func (f *fakeListDEService) ArchiveDriver(context.Context, string) (*models.DeliveryExecutive, error) {
+	return nil, nil
+}
+func (f *fakeListDEService) RestoreDriver(context.Context, string) (*models.DeliveryExecutive, error) {
+	return nil, nil
+}
 
 func listDriversSample() []*models.DeliveryExecutive {
 	return []*models.DeliveryExecutive{

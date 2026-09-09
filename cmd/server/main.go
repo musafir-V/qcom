@@ -475,6 +475,8 @@ func setupRouter(
 	admin.HandleFunc("/orders/{orderId}/drop/preview", adminDriverHandlers.PreviewAdminDrop).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/orders/{orderId}/drop/complete", adminDriverHandlers.AdminCompleteDropByOrder).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/assigned-store", adminDriverHandlers.UpdateAssignedStore).Methods("PATCH", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/archive", adminDriverHandlers.ArchiveDriver).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/restore", adminDriverHandlers.RestoreDriver).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}", adminDriverHandlers.GetDriver).Methods("GET", "OPTIONS")
 
 	// Ops cash-deposit + disbursement recording (now gated under /admin).
