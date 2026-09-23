@@ -213,9 +213,10 @@ func main() {
 	adminTripReachedHandlers := handlers.NewAdminTripReachedHandlers(tripReachedConfigRepo, logger)
 	adminDropDeadlineHandlers := handlers.NewAdminDropDeadlineHandlers(dropDeadlineConfigRepo, logger)
 	adminTripsByOrdersHandlers := handlers.NewAdminTripsByOrdersHandlers(tripRepo, logger)
+	distanceHandlers := handlers.NewDistanceHandlers(distanceService, logger)
 
 	authMiddleware := middleware.NewAuthMiddleware(jwtService, logger)
-	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, adminTripReachedHandlers, adminDropDeadlineHandlers, adminTripsByOrdersHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, authMiddleware, logger)
+	router := setupRouter(authHandlers, homeHandlers, uploadHandlers, addressHandlers, serviceabilityHandlers, geocodeHandlers, deHandlers, referralHandlers, configHandlers, tripHandlers, adminHandlers, adminRulesHandlers, adminAuthHandlers, adminDriverHandlers, adminStoreHandlers, adminSMSOTPRoutingHandlers, adminTripReachedHandlers, adminDropDeadlineHandlers, adminTripsByOrdersHandlers, trackHandlers, earningsHandlers, disbursementHandlers, cashDepositHandlers, notificationHandlers, webhookHandlers, disputeHandlers, adminDisputeHandlers, voiceHandlers, qrHandlers, distanceHandlers, authMiddleware, logger)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
@@ -361,6 +362,7 @@ func setupRouter(
 	adminDisputeHandlers *handlers.AdminDisputeHandlers,
 	voiceHandlers *handlers.VoiceHandlers,
 	qrHandlers *handlers.QRHandlers,
+	distanceHandlers *handlers.DistanceHandlers,
 	authMiddleware *middleware.AuthMiddleware,
 	logger *logrus.Logger,
 ) *mux.Router {
@@ -568,6 +570,7 @@ func setupRouter(
 	internal.HandleFunc("/trips/cancel-by-order", tripHandlers.CancelTripByOrder).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/payment/update", tripHandlers.UpdateTripPaymentByOrder).Methods("POST", "OPTIONS")
 	internal.HandleFunc("/trips/edit-by-order", tripHandlers.EditTripByOrder).Methods("POST", "OPTIONS")
+	internal.HandleFunc("/distance", distanceHandlers.ComputeDistance).Methods("POST", "OPTIONS")
 	// Picker-locked, unauthenticated, service-to-service upload endpoints
 	// (order-service proxies picker uploads; relies on network isolation).
 	internal.HandleFunc("/uploads/url", uploadHandlers.GenerateInternalPickerUploadURL).Methods("POST", "OPTIONS")

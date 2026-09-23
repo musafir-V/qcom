@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/qcom/qcom/internal/logging"
 	"github.com/qcom/qcom/internal/metrics"
+	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,6 +23,19 @@ import (
 // so callers MUST treat it as terminal (do not retry) — see errors.Is checks in
 // the assignment cron.
 var ErrNoRoute = errors.New("distance: no drivable route between points")
+
+// ErrInvalidDistanceMethod is returned when Compute is asked for a method other
+// than haversine, google, or both.
+var ErrInvalidDistanceMethod = errors.New("distance: invalid method")
+
+const (
+	DistanceMethodHaversine = "haversine"
+	DistanceMethodGoogle    = "google"
+	DistanceMethodBoth      = "both"
+
+	GoogleErrorNoRoute  = "NO_ROUTE"
+	GoogleErrorUpstream = "UPSTREAM"
+)
 
 // distanceMatrixBaseURL is the Google Maps Distance Matrix JSON endpoint.
 const distanceMatrixBaseURL = "https://maps.googleapis.com/maps/api/distancematrix/json"
@@ -40,8 +56,8 @@ func NewDistanceService(apiKey string, logger *logrus.Logger) *DistanceService {
 	}
 }
 
-// DistanceKM returns the road distance in kilometres between two lat/lng points
-// using the Google Maps Distance Matrix API.
+// DistanceKM returns the 4-wheeler (mode=driving) road distance in kilometres
+// between two lat/lng points using the Google Maps Distance Matrix API.
 // Returns an error if the API call fails; callers should skip trip creation and retry next tick.
 func (s *DistanceService) DistanceKM(ctx context.Context, originLat, originLng, destLat, destLng float64) (float64, error) {
 	op := logging.Start(ctx, s.logger, "DistanceService.DistanceKM", logrus.Fields{
@@ -54,12 +70,13 @@ func (s *DistanceService) DistanceKM(ctx context.Context, originLat, originLng, 
 	if base == "" {
 		base = distanceMatrixBaseURL
 	}
-	url := fmt.Sprintf(
-		"%s?origins=%.6f%%2C%.6f&destinations=%.6f%%2C%.6f&key=%s",
-		base, originLat, originLng, destLat, destLng, s.apiKey,
-	)
+	q := url.Values{}
+	q.Set("origins", fmt.Sprintf("%.6f,%.6f", originLat, originLng))
+	q.Set("destinations", fmt.Sprintf("%.6f,%.6f", destLat, destLng))
+	q.Set("mode", "driving")
+	q.Set("key", s.apiKey)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"?"+q.Encode(), nil)
 	if err != nil {
 		return 0, op.Fail(fmt.Errorf("failed to build distance request: %w", err))
 	}
@@ -115,4 +132,60 @@ func (s *DistanceService) DistanceKM(ctx context.Context, originLat, originLng, 
 // UNKNOWN_ERROR, etc.) is transient and remains a retryable error.
 func isNoRouteStatus(status string) bool {
 	return status == "ZERO_RESULTS" || status == "NOT_FOUND"
+}
+
+// ComputeDistanceResult is the payload for POST /internal/v1/distance.
+// Unused or failed fields are null (pointers).
+type ComputeDistanceResult struct {
+	HaversineKM *float64 `json:"haversine_km"`
+	GoogleKM    *float64 `json:"google_km"`
+	Method      string   `json:"method"`
+	GoogleError *string  `json:"google_error,omitempty"`
+}
+
+// NormalizeDistanceMethod maps empty / mixed-case input to haversine, google,
+// or both (default both).
+func NormalizeDistanceMethod(method string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "", DistanceMethodBoth:
+		return DistanceMethodBoth, nil
+	case DistanceMethodHaversine:
+		return DistanceMethodHaversine, nil
+	case DistanceMethodGoogle:
+		return DistanceMethodGoogle, nil
+	default:
+		return "", ErrInvalidDistanceMethod
+	}
+}
+
+// Compute returns crow-flies and/or Google driving km for one origin/dest pair.
+// method=google surfaces DistanceKM errors to the caller (NO_ROUTE vs upstream).
+// method=both never fails on Google: google_km is null and google_error is set.
+func (s *DistanceService) Compute(ctx context.Context, originLat, originLng, destLat, destLng float64, method string) (*ComputeDistanceResult, error) {
+	normalized, err := NormalizeDistanceMethod(method)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &ComputeDistanceResult{Method: normalized}
+	if normalized == DistanceMethodHaversine || normalized == DistanceMethodBoth {
+		km := models.HaversineDistance(originLat, originLng, destLat, destLng) / 1000.0
+		out.HaversineKM = &km
+	}
+	if normalized == DistanceMethodGoogle || normalized == DistanceMethodBoth {
+		km, err := s.DistanceKM(ctx, originLat, originLng, destLat, destLng)
+		if err != nil {
+			if normalized == DistanceMethodGoogle {
+				return nil, err
+			}
+			code := GoogleErrorUpstream
+			if errors.Is(err, ErrNoRoute) {
+				code = GoogleErrorNoRoute
+			}
+			out.GoogleError = &code
+			return out, nil
+		}
+		out.GoogleKM = &km
+	}
+	return out, nil
 }

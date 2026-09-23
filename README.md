@@ -233,6 +233,7 @@ Under `/api/v1/admin/`:
 | `POST` | `/internal/v1/notifications/send` |
 | `POST` | `/internal/v1/trips/cancel-by-order` |
 | `POST` | `/internal/v1/trips/payment/update` |
+| `POST` | `/internal/v1/distance` |
 | `POST` | `/internal/v1/uploads/url` |
 | `GET` | `/internal/v1/uploads/view-url` |
 
