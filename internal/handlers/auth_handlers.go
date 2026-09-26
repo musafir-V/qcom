@@ -313,9 +313,17 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := h.jwtService.VerifyToken(req.RefreshToken)
 	if err != nil {
-		fields := service.ProbeRefreshToken(req.RefreshToken, err).LogFields()
-		fields["code"] = "INVALID_TOKEN"
+		probe := service.ProbeRefreshToken(req.RefreshToken, err)
+		fields := probe.LogFields()
 		fields["app_type"] = appType(r)
+		if probe.VerifyClass == "expired" || probe.Expired {
+			// Client keeps phone number and local cart for SESSION_EXPIRED; clears them for TOKEN_REVOKED.
+			fields["code"] = "SESSION_EXPIRED"
+			h.logger.WithFields(fields).Warn("refresh token rejected")
+			h.respondWithError(w, http.StatusUnauthorized, "SESSION_EXPIRED", "Session expired")
+			return
+		}
+		fields["code"] = "INVALID_TOKEN"
 		h.logger.WithFields(fields).Warn("refresh token rejected")
 		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid refresh token")
 		return
@@ -369,6 +377,15 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 			fields["app_type"] = appType(r)
 			h.logger.WithFields(fields).Warn("refresh token rejected")
 			h.respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
+			return
+		}
+		if errors.Is(err, service.ErrSessionAbsoluteExpired) {
+			fields := service.ProbeRefreshToken(req.RefreshToken, nil).LogFields()
+			fields["code"] = "SESSION_EXPIRED"
+			fields["jti"] = jtiPrefix(claims.JTI)
+			fields["app_type"] = appType(r)
+			h.logger.WithFields(fields).Warn("refresh token rejected")
+			h.respondWithError(w, http.StatusUnauthorized, "SESSION_EXPIRED", "Session expired")
 			return
 		}
 		h.logger.WithError(err).Error("Failed to rotate refresh token")

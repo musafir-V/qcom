@@ -147,7 +147,8 @@ export DYNAMODB_TABLE_NAME="QComTable"
 # JWT (required)
 export JWT_SECRET_KEY="your-32-char-secret-key-here-12345"
 export JWT_ACCESS_EXPIRY="15m"
-export JWT_REFRESH_EXPIRY="168h"
+export JWT_REFRESH_EXPIRY="1440h"
+export JWT_REFRESH_ABSOLUTE_EXPIRY="8760h"
 
 # OTP (optional)
 export OTP_LENGTH="6"

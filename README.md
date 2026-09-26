@@ -99,7 +99,8 @@ Loaded by `config.Load()` in `internal/config/config.go`, plus three bootstrap v
 | `DYNAMODB_REGION` | `us-east-1` | |
 | `DYNAMODB_TABLE_NAME` | `QComTable` | Single-table. |
 | `JWT_ACCESS_EXPIRY` | `15m` | Go duration. |
-| `JWT_REFRESH_EXPIRY` | `168h` | 7 days. |
+| `JWT_REFRESH_EXPIRY` | `1440h` | 60 days idle. Slides on each successful refresh. |
+| `JWT_REFRESH_ABSOLUTE_EXPIRY` | `8760h` | 365 days from first login. Does not slide. |
 | `OTP_LENGTH` | `6` | |
 | `OTP_EXPIRY` | `10m` | |
 | `OTP_MAX_ATTEMPTS` | `5` | |
