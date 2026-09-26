@@ -12,9 +12,10 @@ import (
 func testJWTService(t *testing.T) *JWTService {
 	t.Helper()
 	s, err := NewJWTService(&config.JWTConfig{
-		SecretKey:     strings.Repeat("s", 32),
-		AccessExpiry:  15 * time.Minute,
-		RefreshExpiry: 7 * 24 * time.Hour,
+		SecretKey:      strings.Repeat("s", 32),
+		AccessExpiry:   15 * time.Minute,
+		RefreshExpiry:  7 * 24 * time.Hour,
+		AbsoluteExpiry: 365 * 24 * time.Hour,
 	}, logrus.New())
 	if err != nil {
 		t.Fatalf("NewJWTService: %v", err)

@@ -16,10 +16,11 @@ import (
 )
 
 type JWTService struct {
-	secretKey     []byte
-	accessExpiry  time.Duration
-	refreshExpiry time.Duration
-	logger        *logrus.Logger
+	secretKey      []byte
+	accessExpiry   time.Duration
+	refreshExpiry  time.Duration
+	absoluteExpiry time.Duration
+	logger         *logrus.Logger
 }
 
 func NewJWTService(cfg *config.JWTConfig, logger *logrus.Logger) (*JWTService, error) {
@@ -29,10 +30,11 @@ func NewJWTService(cfg *config.JWTConfig, logger *logrus.Logger) (*JWTService, e
 	}
 
 	return &JWTService{
-		secretKey:     secretKey,
-		accessExpiry:  cfg.AccessExpiry,
-		refreshExpiry: cfg.RefreshExpiry,
-		logger:        logger,
+		secretKey:      secretKey,
+		accessExpiry:   cfg.AccessExpiry,
+		refreshExpiry:  cfg.RefreshExpiry,
+		absoluteExpiry: cfg.AbsoluteExpiry,
+		logger:         logger,
 	}, nil
 }
 
@@ -42,63 +44,12 @@ type Claims struct {
 	EntityType string `json:"entity_type"` // "customer" | "de"
 	Type       string `json:"type"`
 	JTI        string `json:"jti"`
+	AbsExp     int64  `json:"abs_exp,omitempty"`
 	jwt.RegisteredClaims
 }
 
 func (s *JWTService) GenerateAccessToken(phoneNumber, entityID, entityType string) (*models.TokenPair, string, error) {
-	now := time.Now()
-	accessJTI := uuid.New().String()
-	refreshJTI := uuid.New().String()
-	familyID := uuid.New().String()
-
-	accessClaims := &Claims{
-		Phone:      phoneNumber,
-		EntityID:   entityID,
-		EntityType: entityType,
-		Type:       "access",
-		JTI:        accessJTI,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   entityID,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(s.accessExpiry)),
-			ID:        accessJTI,
-		},
-	}
-
-	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	accessTokenString, err := accessToken.SignedString(s.secretKey)
-	if err != nil {
-		s.logger.WithError(err).Error("Failed to sign access token")
-		return nil, "", fmt.Errorf("failed to sign access token: %w", err)
-	}
-
-	refreshClaims := &Claims{
-		Phone:      phoneNumber,
-		EntityID:   entityID,
-		EntityType: entityType,
-		Type:       "refresh",
-		JTI:        refreshJTI,
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   entityID,
-			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(s.refreshExpiry)),
-			ID:        refreshJTI,
-		},
-	}
-
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshTokenString, err := refreshToken.SignedString(s.secretKey)
-	if err != nil {
-		s.logger.WithError(err).Error("Failed to sign refresh token")
-		return nil, "", fmt.Errorf("failed to sign refresh token: %w", err)
-	}
-
-	return &models.TokenPair{
-		AccessToken:  accessTokenString,
-		RefreshToken: refreshTokenString,
-		TokenType:    "Bearer",
-		ExpiresIn:    int64(s.accessExpiry.Seconds()),
-	}, familyID, nil
+	return s.GenerateAccessTokenWithFamily(phoneNumber, entityID, entityType, "", time.Time{})
 }
 
 func (s *JWTService) VerifyToken(tokenString string) (*Claims, error) {
@@ -244,16 +195,36 @@ func (s *JWTService) RefreshTokens(refreshTokenString string, familyID string) (
 		return nil, "", fmt.Errorf("token is not a refresh token")
 	}
 
-	return s.GenerateAccessTokenWithFamily(claims.Phone, claims.EntityID, claims.EntityType, familyID)
+	now := time.Now()
+	var absolute time.Time
+	if claims.AbsExp == 0 {
+		absolute = now.Add(s.absoluteExpiry)
+	} else {
+		absolute = time.Unix(claims.AbsExp, 0)
+	}
+
+	if _, ok := (SessionWindow{Idle: s.refreshExpiry, Absolute: absolute}).RefreshExpiresAt(now); !ok {
+		return nil, "", ErrSessionAbsoluteExpired
+	}
+
+	return s.GenerateAccessTokenWithFamily(claims.Phone, claims.EntityID, claims.EntityType, familyID, absolute)
 }
 
-func (s *JWTService) GenerateAccessTokenWithFamily(phoneNumber, entityID, entityType, familyID string) (*models.TokenPair, string, error) {
+func (s *JWTService) GenerateAccessTokenWithFamily(phoneNumber, entityID, entityType, familyID string, absolute time.Time) (*models.TokenPair, string, error) {
 	now := time.Now()
 	accessJTI := uuid.New().String()
 	refreshJTI := uuid.New().String()
 
 	if familyID == "" {
 		familyID = uuid.New().String()
+	}
+	if absolute.IsZero() {
+		absolute = now.Add(s.absoluteExpiry)
+	}
+
+	refreshExp, ok := (SessionWindow{Idle: s.refreshExpiry, Absolute: absolute}).RefreshExpiresAt(now)
+	if !ok {
+		return nil, "", ErrSessionAbsoluteExpired
 	}
 
 	accessClaims := &Claims{
@@ -283,10 +254,11 @@ func (s *JWTService) GenerateAccessTokenWithFamily(phoneNumber, entityID, entity
 		EntityType: entityType,
 		Type:       "refresh",
 		JTI:        refreshJTI,
+		AbsExp:     absolute.Unix(),
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   entityID,
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(s.refreshExpiry)),
+			ExpiresAt: jwt.NewNumericDate(refreshExp),
 			ID:        refreshJTI,
 		},
 	}

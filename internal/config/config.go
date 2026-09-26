@@ -42,9 +42,10 @@ type DynamoDBConfig struct {
 }
 
 type JWTConfig struct {
-	SecretKey     string
-	AccessExpiry  time.Duration
-	RefreshExpiry time.Duration
+	SecretKey      string
+	AccessExpiry   time.Duration
+	RefreshExpiry  time.Duration
+	AbsoluteExpiry time.Duration
 }
 
 type OTPConfig struct {
@@ -136,9 +137,10 @@ func Load() (*Config, error) {
 			TableName: getEnv("DYNAMODB_TABLE_NAME", "QComTable"),
 		},
 		JWT: JWTConfig{
-			SecretKey:     getEnv("JWT_SECRET_KEY", ""),
-			AccessExpiry:  getEnvAsDuration("JWT_ACCESS_EXPIRY", 15*time.Minute),
-			RefreshExpiry: getEnvAsDuration("JWT_REFRESH_EXPIRY", 7*24*time.Hour),
+			SecretKey:      getEnv("JWT_SECRET_KEY", ""),
+			AccessExpiry:   getEnvAsDuration("JWT_ACCESS_EXPIRY", 15*time.Minute),
+			RefreshExpiry:  getEnvAsDuration("JWT_REFRESH_EXPIRY", 60*24*time.Hour),
+			AbsoluteExpiry: getEnvAsDuration("JWT_REFRESH_ABSOLUTE_EXPIRY", 365*24*time.Hour),
 		},
 		OTP: OTPConfig{
 			Length:      getEnvAsInt("OTP_LENGTH", 6),
