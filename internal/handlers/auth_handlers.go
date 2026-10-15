@@ -20,10 +20,27 @@ type deAuthLookup interface {
 	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
 }
 
+// jwtTokens is implemented by *service.JWTService.
+type jwtTokens interface {
+	GenerateAccessToken(phoneNumber, entityID, entityType string) (*models.TokenPair, string, error)
+	VerifyToken(tokenString string) (*service.Claims, error)
+	RefreshTokens(refreshTokenString, familyID string) (*models.TokenPair, string, error)
+}
+
+// refreshTokens is implemented by *service.RefreshTokenService.
+type refreshTokens interface {
+	Store(ctx context.Context, jti, entityID, entityType, phone, familyID string, expiresAt time.Time) error
+	Get(ctx context.Context, jti string) (*models.RefreshTokenData, error)
+	Revoke(ctx context.Context, jti string) error
+	RevokeFamily(ctx context.Context, familyID string) error
+	RevokeAllForEntity(ctx context.Context, entityID string) error
+	Rotate(ctx context.Context, oldJTI, entityID, entityType, phone string, tokenExpiresAt time.Time, mint service.MintFunc) (*models.TokenPair, error)
+}
+
 type AuthHandlers struct {
 	otpService          *service.OTPService
-	jwtService          *service.JWTService
-	refreshTokenService *service.RefreshTokenService
+	jwtService          jwtTokens
+	refreshTokenService refreshTokens
 	userRepo            *repository.UserRepository
 	deRepo              deAuthLookup
 	logger              *logrus.Logger
@@ -313,29 +330,17 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := h.jwtService.VerifyToken(req.RefreshToken)
 	if err != nil {
-		probe := service.ProbeRefreshToken(req.RefreshToken, err)
-		fields := probe.LogFields()
-		fields["app_type"] = appType(r)
-		if probe.VerifyClass == "expired" || probe.Expired {
-			// Client keeps phone number and local cart for SESSION_EXPIRED; clears them for TOKEN_REVOKED.
-			fields["code"] = "SESSION_EXPIRED"
-			h.logger.WithFields(fields).Warn("refresh token rejected")
-			h.respondWithError(w, http.StatusUnauthorized, "SESSION_EXPIRED", "Session expired")
-			return
-		}
-		fields["code"] = "INVALID_TOKEN"
-		h.logger.WithFields(fields).Warn("refresh token rejected")
-		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid refresh token")
+		// Expired and invalid JWTs both log the client out. Probe fields still
+		// record verify_class so logs can tell the two apart.
+		fields := service.ProbeRefreshToken(req.RefreshToken, err).LogFields()
+		h.respondRefreshRevoked(w, r, fields)
 		return
 	}
 
 	if claims.Type != "refresh" {
 		fields := service.ProbeRefreshToken(req.RefreshToken, nil).LogFields()
-		fields["code"] = "INVALID_TOKEN_TYPE"
 		fields["jti"] = jtiPrefix(claims.JTI)
-		fields["app_type"] = appType(r)
-		h.logger.WithFields(fields).Warn("refresh token rejected")
-		h.respondWithError(w, http.StatusUnauthorized, "INVALID_TOKEN_TYPE", "Token is not a refresh token")
+		h.respondRefreshRevoked(w, r, fields)
 		return
 	}
 
@@ -370,22 +375,11 @@ func (h *AuthHandlers) RefreshToken(w http.ResponseWriter, r *http.Request) {
 		mint,
 	)
 	if err != nil {
-		if errors.Is(err, service.ErrRefreshTokenRevoked) {
+		// Missing metadata, reuse, logout, and absolute session end all log the app out.
+		if errors.Is(err, service.ErrRefreshTokenRevoked) || errors.Is(err, service.ErrSessionAbsoluteExpired) {
 			fields := service.ProbeRefreshToken(req.RefreshToken, nil).LogFields()
-			fields["code"] = "TOKEN_REVOKED"
 			fields["jti"] = jtiPrefix(claims.JTI)
-			fields["app_type"] = appType(r)
-			h.logger.WithFields(fields).Warn("refresh token rejected")
-			h.respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
-			return
-		}
-		if errors.Is(err, service.ErrSessionAbsoluteExpired) {
-			fields := service.ProbeRefreshToken(req.RefreshToken, nil).LogFields()
-			fields["code"] = "SESSION_EXPIRED"
-			fields["jti"] = jtiPrefix(claims.JTI)
-			fields["app_type"] = appType(r)
-			h.logger.WithFields(fields).Warn("refresh token rejected")
-			h.respondWithError(w, http.StatusUnauthorized, "SESSION_EXPIRED", "Session expired")
+			h.respondRefreshRevoked(w, r, fields)
 			return
 		}
 		h.logger.WithError(err).Error("Failed to rotate refresh token")
@@ -492,6 +486,13 @@ func (h *AuthHandlers) respondWithJSON(w http.ResponseWriter, status int, payloa
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(payload)
+}
+
+func (h *AuthHandlers) respondRefreshRevoked(w http.ResponseWriter, r *http.Request, fields logrus.Fields) {
+	fields["code"] = "TOKEN_REVOKED"
+	fields["app_type"] = appType(r)
+	h.logger.WithFields(fields).Warn("refresh token rejected")
+	h.respondWithError(w, http.StatusUnauthorized, "TOKEN_REVOKED", "Refresh token has been revoked")
 }
 
 func (h *AuthHandlers) respondWithError(w http.ResponseWriter, status int, code, message string) {
