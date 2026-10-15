@@ -162,7 +162,8 @@ func (s *RefreshTokenService) RevokeAllForEntity(ctx context.Context, entityID s
 
 // Rotate idempotently rotates a refresh token. Concurrent callers with the same
 // oldJTI within refreshReuseGrace receive the same TokenPair. Reuse after the
-// grace window (or after hard Revoke/logout) returns ErrRefreshTokenRevoked.
+// grace window, hard Revoke/logout, or a claimed rotation whose
+// REFRESH_TOKEN#<jti> METADATA is missing returns ErrRefreshTokenRevoked.
 func (s *RefreshTokenService) Rotate(
 	ctx context.Context,
 	oldJTI, entityID, entityType, phone string,
@@ -216,12 +217,13 @@ func (s *RefreshTokenService) Rotate(
 	}
 
 	if claimed {
-		// 3. Winner path.
-		familyID := knownFamilyID
+		// 3. Winner path. A cryptographically valid JWT with no
+		// REFRESH_TOKEN#<jti> METADATA must not mint a replacement session.
 		oldData, getErr := s.tokenRepo.Get(ctx, oldJTI)
-		if getErr == nil && oldData != nil {
-			familyID = oldData.FamilyID
+		if getErr != nil || oldData == nil {
+			return nil, op.Outcome("revoked", ErrRefreshTokenRevoked)
 		}
+		familyID := oldData.FamilyID
 
 		pair, newFamilyID, newJTI, newExpiresAt, err := mint(familyID)
 		if err != nil {
@@ -241,11 +243,8 @@ func (s *RefreshTokenService) Rotate(
 			return nil, op.Fail(err)
 		}
 
-		// Optionally mark old REFRESH_TOKEN metadata revoked if Get succeeded.
-		if getErr == nil && oldData != nil {
-			oldData.Revoked = true
-			_ = s.tokenRepo.Store(ctx, *oldData)
-		}
+		oldData.Revoked = true
+		_ = s.tokenRepo.Store(ctx, *oldData)
 
 		replacement := models.RefreshReplacement{
 			OldJTI:       oldJTI,
