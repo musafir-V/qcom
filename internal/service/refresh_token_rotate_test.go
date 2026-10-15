@@ -328,3 +328,37 @@ func TestRotate_AfterLogoutOfSuccessor_OldJTIDenied(t *testing.T) {
 		t.Fatalf("expected mint not called, got %d", *calls2)
 	}
 }
+
+// A cryptographically valid refresh JWT whose REFRESH_TOKEN#<jti> METADATA row
+// is missing must fail closed. Claiming the revoked marker is not enough to mint.
+func TestRotate_MissingMetadata_ReturnsRevokedWithoutMint(t *testing.T) {
+	store := newFakeRefreshStore()
+	svc := newTestRotateService(store)
+	ctx := context.Background()
+
+	oldJTI := "old-jti-missing-metadata"
+	// Do not seedOldToken: Get must miss.
+
+	mint, calls := countingMint("access-orphan", "refresh-orphan")
+	pair, err := svc.Rotate(ctx, oldJTI, "user-1", "customer", "+260900000001", time.Now().Add(time.Hour), mint)
+	if !errors.Is(err, ErrRefreshTokenRevoked) {
+		t.Fatalf("expected ErrRefreshTokenRevoked for missing metadata, got %v", err)
+	}
+	if pair != nil {
+		t.Fatalf("expected nil pair, got %+v", pair)
+	}
+	if *calls != 0 {
+		t.Fatalf("expected mint not called when metadata is missing, got %d", *calls)
+	}
+
+	rep, repErr := store.GetReplacement(ctx, oldJTI)
+	if repErr != nil {
+		t.Fatalf("GetReplacement: %v", repErr)
+	}
+	if rep != nil {
+		t.Fatalf("expected no replacement stored, got %+v", rep)
+	}
+	if len(store.tokens) != 0 {
+		t.Fatalf("expected no new token in store, got %+v", store.tokens)
+	}
+}
