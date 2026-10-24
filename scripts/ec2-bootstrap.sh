@@ -2,9 +2,9 @@
 # -----------------------------------------------------------------------------
 # EC2 User Data bootstrap script — runs automatically as root on first boot
 # whenever the ASG (qcom-asg) launches a new instance from the Launch Template
-# (qcom-lt). It installs all dependencies, clones the repo, compiles the
-# binary, loads secrets, and starts the systemd service. You never run this
-# manually — AWS runs it for you.
+# (qcom-lt). It installs all dependencies, clones the repo, pulls the
+# prebuilt binary from S3, loads secrets, and starts the systemd service.
+# You never run this manually — AWS runs it for you.
 # -----------------------------------------------------------------------------
 
 # Exit immediately if any command fails (-e), treat unset variables as errors
@@ -25,9 +25,6 @@ REGION=$(curl -s -H "X-aws-ec2-metadata-token: ${TOKEN}" http://169.254.169.254/
 export IMDS_TOKEN="${TOKEN}"
 export AWS_REGION="${REGION}"
 export AWS_DEFAULT_REGION="${REGION}"
-
-# Pin the Go version so all instances always build with the same toolchain.
-GO_VERSION="1.25.8"
 
 # Public GitHub URL — no SSH key or deploy key needed since the repo is public.
 REPO_URL="https://github.com/musafir-V/qcom.git"
@@ -51,12 +48,13 @@ echo "=== qcom bootstrap started at $(date) ==="
 apt-get update -y
 
 # Install the tools the rest of this script needs:
-#   git   — to clone the repo
-#   make  — to run `make build`
-#   gcc   — required by some Go packages that use CGo
-#   curl  — to download Go and the AWS CLI installer
+#   git   — to clone the repo (unit files, Alloy, CloudWatch config)
+#   curl  — to download the AWS CLI installer
 #   unzip — to extract the AWS CLI zip
-apt-get install -y git make gcc curl unzip
+# Go / gcc / make are not installed: the binary is published by GitHub
+# Actions on main (see .github/workflows/publish-binary.yml) and pulled
+# from S3 below.
+apt-get install -y git curl unzip
 
 # --- AWS CLI v2 ---------------------------------------------------------------
 # Ubuntu 24.04 does not ship with the AWS CLI. We install v2 from the official
@@ -86,40 +84,22 @@ mkdir -p /app
 # compiled binary, and other build artifacts without needing sudo.
 chown qcom:qcom /app
 
-# --- Go installation ----------------------------------------------------------
-# Only install Go if it isn't already present (makes the script re-runnable
-# without reinstalling from scratch).
-if ! command -v go &>/dev/null; then
-  # Download the official Go tarball for Linux amd64.
-  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
-
-  # Extract into /usr/local — this creates /usr/local/go with the full toolchain.
-  tar -C /usr/local -xzf /tmp/go.tar.gz
-
-  # Add Go to PATH for all future login shells by dropping a file in profile.d.
-  echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/go.sh
-
-  # Also export it into the current shell session so the rest of this script
-  # can call `go` without opening a new login shell.
-  export PATH=$PATH:/usr/local/go/bin
-fi
-
 # --- Clone the repo -----------------------------------------------------------
 # Clone as the `qcom` user (not root) so all repo files are owned by qcom
 # from the start. Uses HTTPS so no SSH key or GitHub deploy key is needed.
+# The clone is for systemd/unit/config files only — the server binary comes
+# from S3 (built on GitHub Actions), not from compiling on this instance.
 sudo -u qcom git clone "${REPO_URL}" "${APP_DIR}"
-
-# --- Build the binary ---------------------------------------------------------
 cd "${APP_DIR}"
 
-# Run `make build` as the qcom user with:
-#   HOME=/app      — Go uses $HOME to locate the module cache; /app is qcom's home
-#   PATH=...       — include /usr/local/go/bin so the make process can find `go`
-#   GOPATH=/app/go — store downloaded module dependencies under /app/go so the
-#                    qcom user has write access (avoids permission errors)
-#
-# The output binary ends up at /app/qcom/bin/qcom-server.
-sudo -u qcom HOME=/app PATH=$PATH:/usr/local/go/bin GOPATH=/app/go make build
+# --- Install the published binary ---------------------------------------------
+# Latest linux/amd64 build from main. Fails the boot if Actions has not
+# published yet — do not fall back to compiling on the instance.
+DEPLOY_BUCKET="${QCOM_DEPLOY_BUCKET:-qcom-deploy-assets-078455283887-use1}"
+export AWS_REGION="${REGION}"
+export AWS_DEFAULT_REGION="${REGION}"
+export QCOM_DEPLOY_BUCKET="${DEPLOY_BUCKET}"
+bash "${APP_DIR}/scripts/pull-binary.sh"
 
 # --- Load secrets from SSM ----------------------------------------------------
 # Paginated fetch — AWS returns max 10 params per call without NextToken.
