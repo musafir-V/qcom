@@ -1,0 +1,66 @@
+# Build the Linux amd64 qcom-server on every push to main and publish it to
+# s3://qcom-deploy-assets-078455283887-use1/qcom-server
+#
+# Instances pull that object instead of compiling. See scripts/pull-binary.sh
+# and scripts/ec2-bootstrap.sh.
+#
+# Auth is GitHub OIDC → iam role github-qcom-actions (main branch only).
+# No AWS keys in repo secrets.
+
+name: Publish binary
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ROLE_ARN: arn:aws:iam::078455283887:role/github-qcom-actions
+  DEPLOY_BUCKET: qcom-deploy-assets-078455283887-use1
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build linux/amd64
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" -o bin/qcom-server ./cmd/server
+          file bin/qcom-server
+          file bin/qcom-server | grep -q 'ELF 64-bit LSB executable, x86-64'
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload to S3
+        run: |
+          SHA="${GITHUB_SHA}"
+          aws s3 cp bin/qcom-server \
+            "s3://${DEPLOY_BUCKET}/releases/qcom-server-${SHA}" \
+            --metadata "git-sha=${SHA}"
+          aws s3 cp bin/qcom-server \
+            "s3://${DEPLOY_BUCKET}/qcom-server" \
+            --metadata "git-sha=${SHA}"
+          printf '%s\n' "${SHA}" | aws s3 cp - "s3://${DEPLOY_BUCKET}/qcom-server.sha"
+          echo "Published ${SHA} → s3://${DEPLOY_BUCKET}/qcom-server"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qcom-server-${{ github.sha }}
+          path: bin/qcom-server
+          retention-days: 14
