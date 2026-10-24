@@ -389,7 +389,58 @@ func TestComputeETA_OnTime(t *testing.T) {
 	}
 }
 
-func TestComputeETA_Delayed(t *testing.T) {
+func TestComputeETA_JustBeforeExtension(t *testing.T) {
+	created := timezone.Now().Add(-13 * time.Minute).Truncate(time.Second)
+	eta := computeETA(created.UTC().Format(time.RFC3339))
+
+	if eta == nil {
+		t.Fatal("expected ETA payload, got nil")
+	}
+	if eta.IsDelayed || eta.Message != nil {
+		t.Fatal("expected on-time with no message at 13 minutes")
+	}
+	if eta.RemainingMinutes != 2 {
+		t.Fatalf("expected 2 remaining minutes, got %d", eta.RemainingMinutes)
+	}
+	if want := created.Add(15 * time.Minute); !mustParseRFC3339(t, eta.ExpiresAt).Equal(want) {
+		t.Fatalf("expires_at = %s, want %s", eta.ExpiresAt, want.Format(time.RFC3339))
+	}
+}
+
+func TestComputeETA_ExtendsWhenUnderOneMinuteLeft(t *testing.T) {
+	created := timezone.Now().Add(-(14*time.Minute + 30*time.Second)).Truncate(time.Second)
+	eta := computeETA(created.UTC().Format(time.RFC3339))
+
+	if eta == nil {
+		t.Fatal("expected ETA payload, got nil")
+	}
+	if eta.IsDelayed || eta.Message != nil {
+		t.Fatal("extension must be silent: expected not delayed and no message")
+	}
+	if eta.RemainingMinutes != 6 {
+		t.Fatalf("expected 6 remaining minutes after extension, got %d", eta.RemainingMinutes)
+	}
+	if want := created.Add(20 * time.Minute); !mustParseRFC3339(t, eta.ExpiresAt).Equal(want) {
+		t.Fatalf("expires_at = %s, want %s", eta.ExpiresAt, want.Format(time.RFC3339))
+	}
+}
+
+func TestComputeETA_NotDelayedAtOriginalDeadline(t *testing.T) {
+	createdAt := timezone.Now().Add(-15 * time.Minute).UTC().Format(time.RFC3339)
+	eta := computeETA(createdAt)
+
+	if eta == nil {
+		t.Fatal("expected ETA payload")
+	}
+	if eta.IsDelayed {
+		t.Fatal("expected not delayed at 15 minutes (inside the extension)")
+	}
+	if eta.RemainingMinutes != 5 {
+		t.Fatalf("expected 5 remaining minutes, got %d", eta.RemainingMinutes)
+	}
+}
+
+func TestComputeETA_DelayedAfterExtension(t *testing.T) {
 	createdAt := timezone.Now().Add(-20 * time.Minute).UTC().Format(time.RFC3339)
 	eta := computeETA(createdAt)
 
@@ -397,26 +448,35 @@ func TestComputeETA_Delayed(t *testing.T) {
 		t.Fatal("expected ETA payload, got nil")
 	}
 	if !eta.IsDelayed {
-		t.Fatal("expected delayed at 20 minutes")
+		t.Fatal("expected delayed once the extension runs out")
 	}
 	if eta.RemainingMinutes != 0 {
 		t.Fatalf("expected 0 remaining minutes, got %d", eta.RemainingMinutes)
 	}
-	if eta.Message == nil {
-		t.Fatal("expected delay message")
+	if eta.Message == nil || *eta.Message != "Your order is taking longer than usual." {
+		t.Fatalf("unexpected delay message: %v", eta.Message)
 	}
 }
 
-func TestComputeETA_ExactBoundary(t *testing.T) {
-	createdAt := timezone.Now().Add(-15 * time.Minute).UTC().Format(time.RFC3339)
-	eta := computeETA(createdAt)
+func TestComputeETA_StaysDelayedWithoutFurtherExtension(t *testing.T) {
+	created := timezone.Now().Add(-40 * time.Minute).Truncate(time.Second)
+	eta := computeETA(created.UTC().Format(time.RFC3339))
 
-	if eta == nil {
-		t.Fatal("expected ETA payload")
+	if eta == nil || !eta.IsDelayed || eta.RemainingMinutes != 0 {
+		t.Fatalf("expected delayed with 0 remaining at 40 minutes, got %+v", eta)
 	}
-	if !eta.IsDelayed {
-		t.Fatal("expected delayed at exactly 15 minutes")
+	if want := created.Add(20 * time.Minute); !mustParseRFC3339(t, eta.ExpiresAt).Equal(want) {
+		t.Fatalf("expires_at = %s, want %s", eta.ExpiresAt, want.Format(time.RFC3339))
 	}
+}
+
+func mustParseRFC3339(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("bad RFC3339 %q: %v", s, err)
+	}
+	return v
 }
 
 func TestComputeETA_InvalidTimestamp(t *testing.T) {

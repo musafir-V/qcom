@@ -16,7 +16,10 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const etaMinutes = 15 // fixed 15-minute delivery promise
+const (
+	etaMinutes          = 15 // fixed 15-minute delivery promise
+	etaExtensionMinutes = 5  // one-time silent extension once under 1 minute remains
+)
 
 // Dependency seams — the concrete service/repositories satisfy these.
 type trackOrderFetcher interface {
@@ -165,6 +168,8 @@ func orderTerminal(order map[string]json.RawMessage) bool {
 }
 
 // computeETA builds the ETA payload from the order's createdAt timestamp.
+// Once under a minute of the 15-minute promise remains, the promise is
+// silently extended by 5 minutes (once); after that it reports a delay.
 // All time math uses Africa/Lusaka timezone. Returns nil when createdAt is
 // unparseable.
 func computeETA(createdAtUTC string) *ETAPayload {
@@ -175,11 +180,15 @@ func computeETA(createdAtUTC string) *ETAPayload {
 
 	loc := timezone.ZambiaLocation()
 	createdAtZambia := createdAt.In(loc)
-	expiresAt := createdAtZambia.Add(etaMinutes * time.Minute)
 	now := timezone.Now()
 
 	elapsed := now.Sub(createdAtZambia).Minutes()
-	remaining := etaMinutes - elapsed
+	promiseMinutes := float64(etaMinutes)
+	if promiseMinutes-elapsed < 1 {
+		promiseMinutes += etaExtensionMinutes
+	}
+	expiresAt := createdAtZambia.Add(time.Duration(promiseMinutes) * time.Minute)
+	remaining := promiseMinutes - elapsed
 	remainingInt := int(math.Max(0, math.Ceil(remaining)))
 	isDelayed := remaining <= 0
 
@@ -190,7 +199,7 @@ func computeETA(createdAtUTC string) *ETAPayload {
 	}
 
 	if isDelayed {
-		msg := "Your delivery is running delayed. Please contact the driver for support."
+		msg := "Your order is taking longer than usual."
 		eta.Message = &msg
 	}
 
