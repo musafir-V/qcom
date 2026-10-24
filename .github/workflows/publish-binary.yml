@@ -25,9 +25,14 @@ env:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Pin 24.04 so glibc matches the Ubuntu 24.04 qcom instances.
+    # h3-go needs CGO (libh3); a CGO_ENABLED=0 build fails.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install C compiler for h3-go
+        run: sudo apt-get update -y && sudo apt-get install -y build-essential
 
       - uses: actions/setup-go@v5
         with:
@@ -37,7 +42,7 @@ jobs:
       - name: Build linux/amd64
         run: |
           mkdir -p bin
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
             go build -trimpath -ldflags="-s -w" -o bin/qcom-server ./cmd/server
           file bin/qcom-server
           file bin/qcom-server | grep -q 'ELF 64-bit LSB executable, x86-64'
