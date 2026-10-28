@@ -393,22 +393,6 @@ func (h *AdminDriverHandlers) AdminCompletePickupByOrder(w http.ResponseWriter, 
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
-// GET /api/v1/admin/orders/{orderId}/pickup/preview
-func (h *AdminDriverHandlers) PreviewAdminPickup(w http.ResponseWriter, r *http.Request) {
-	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
-	if orderID == "" {
-		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "orderId is required")
-		return
-	}
-	preview, err := h.tripService.PreviewAdminPickupByOrder(r.Context(), orderID)
-	if err != nil {
-		h.logger.WithError(err).Error("admin: pickup preview failed")
-		h.respondWithError(w, http.StatusInternalServerError, "PREVIEW_FAILED", "Failed to preview pickup")
-		return
-	}
-	h.respondWithJSON(w, http.StatusOK, preview)
-}
-
 // GET /api/v1/admin/orders/{orderId}/drop/preview
 func (h *AdminDriverHandlers) PreviewAdminDrop(w http.ResponseWriter, r *http.Request) {
 	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
