@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Deploy qcom to production by rolling-replacing each InService instance in the
-# ASG. New instances bootstrap from GitHub (main) via ec2-bootstrap.sh.
+# Deploy qcom to production by replacing each InService instance without
+# dropping below the current number of healthy ALB targets. For every old
+# instance the script raises desired capacity by one, waits until that extra
+# instance is healthy in the load balancer, then terminates the old instance
+# and decrements desired capacity back. New instances bootstrap from GitHub
+# (main) and pull the published binary from S3 via ec2-bootstrap.sh.
 #
 # Prerequisites: .deploy.local.env at repo root (see .deploy.local.env.example).
 # Usage: ./scripts/deploy.sh   or   make deploy
@@ -59,7 +63,7 @@ wait_healthy() {
 	return 1
 }
 
-echo "=== Deploying qcom via ASG rolling replace ==="
+echo "=== Deploying qcom via zero-downtime ASG replacement ==="
 echo "Region: ${REGION}  ASG: ${ASG}"
 
 TG_ARN=$(aws autoscaling describe-auto-scaling-groups \
@@ -90,15 +94,60 @@ if [[ -z "${INSTANCE_IDS}" ]]; then
 	exit 1
 fi
 
-echo "Replacing instance(s): ${INSTANCE_IDS}"
+echo "Replacing instance(s) without dropping healthy capacity: ${INSTANCE_IDS}"
+
+MAX_SIZE=$(aws autoscaling describe-auto-scaling-groups \
+	--auto-scaling-group-names "${ASG}" \
+	--region "${REGION}" \
+	--query 'AutoScalingGroups[0].MaxSize' \
+	--output text)
+
+ORIG_MAX=""
+restore_max() {
+	if [[ -n "${ORIG_MAX}" ]]; then
+		echo "Restoring MaxSize to ${ORIG_MAX}"
+		aws autoscaling update-auto-scaling-group \
+			--auto-scaling-group-name "${ASG}" \
+			--max-size "${ORIG_MAX}" \
+			--region "${REGION}" || true
+	fi
+}
+trap restore_max EXIT
+
+# One spare slot so the replacement can join before the old instance leaves.
+if [[ "${MAX_SIZE}" -lt $((DESIRED + 1)) ]]; then
+	ORIG_MAX="${MAX_SIZE}"
+	NEW_MAX=$((DESIRED + 1))
+	echo "Raising MaxSize ${MAX_SIZE} -> ${NEW_MAX} for the surge"
+	aws autoscaling update-auto-scaling-group \
+		--auto-scaling-group-name "${ASG}" \
+		--max-size "${NEW_MAX}" \
+		--region "${REGION}"
+fi
 
 for id in ${INSTANCE_IDS}; do
-	echo "=== Terminating ${id} ==="
+	CURRENT=$(aws autoscaling describe-auto-scaling-groups \
+		--auto-scaling-group-names "${ASG}" \
+		--region "${REGION}" \
+		--query 'AutoScalingGroups[0].DesiredCapacity' \
+		--output text)
+	SURGE=$((CURRENT + 1))
+	echo "=== Launching replacement before terminating ${id} (desired ${CURRENT} -> ${SURGE}) ==="
+	aws autoscaling set-desired-capacity \
+		--auto-scaling-group-name "${ASG}" \
+		--desired-capacity "${SURGE}" \
+		--no-honor-cooldown \
+		--region "${REGION}"
+	if ! wait_healthy "${TG_ARN}" "${SURGE}"; then
+		echo "ERROR: replacement did not become healthy. ${id} is still serving. Desired capacity left at ${SURGE}." >&2
+		exit 1
+	fi
+	echo "=== Terminating ${id} now that the replacement is healthy ==="
 	aws autoscaling terminate-instance-in-auto-scaling-group \
 		--instance-id "${id}" \
-		--no-should-decrement-desired-capacity \
+		--should-decrement-desired-capacity \
 		--region "${REGION}"
-	wait_healthy "${TG_ARN}" "${DESIRED}"
+	wait_healthy "${TG_ARN}" "${CURRENT}"
 done
 
 echo "=== Verifying ${HEALTH_URL} ==="
