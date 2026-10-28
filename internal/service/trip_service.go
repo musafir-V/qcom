@@ -91,6 +91,7 @@ type deRepoI interface {
 	UpdateStatus(ctx context.Context, phone string, status models.DEStatus, storeID, orderID string) error
 	AttachToTrip(ctx context.Context, phone, orderID, tripID, storeID string) error
 	ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32, includeArchived bool) ([]*models.DeliveryExecutive, string, error)
+	FindEligibleByStoreFIFO(ctx context.Context, storeID string) ([]*models.DeliveryExecutive, error)
 }
 
 // javaOrderAPI is the subset of JavaOrderClient used by TripService so tests
@@ -638,22 +639,10 @@ func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adm
 	}
 }
 
-type adminPickupMode string
-
-const (
-	adminPickupJavaOnly      adminPickupMode = "java_only"
-	adminPickupForceProgress adminPickupMode = "force_progress"
-	adminPickupAlreadyDone   adminPickupMode = "already_done"
-	adminPickupBlocked       adminPickupMode = "blocked"
-)
-
-type adminPickupClass struct {
-	Mode       adminPickupMode
-	Reason     string
-	JavaStatus string
-}
-
-func (s *TripService) classifyAdminPickupByOrder(ctx context.Context, orderID string) (*adminPickupClass, error) {
+// PreviewAdminPickupByOrder classifies how an admin can advance an order to
+// out for delivery. It does not mutate trip, rider, or Java state. The first
+// matching row in the design table wins.
+func (s *TripService) PreviewAdminPickupByOrder(ctx context.Context, orderID string) (*AdminDropPreview, error) {
 	javaStatus := ""
 	if s.javaClient != nil {
 		status, err := s.javaClient.GetOrderStatus(ctx, orderID)
@@ -666,7 +655,7 @@ func (s *TripService) classifyAdminPickupByOrder(ctx context.Context, orderID st
 	}
 
 	if javaStatus == "CANCELLED" {
-		return &adminPickupClass{Mode: adminPickupBlocked, Reason: "java_cancelled", JavaStatus: javaStatus}, nil
+		return &AdminDropPreview{Mode: AdminDropModeBlocked, Reason: "java_cancelled", JavaStatus: javaStatus}, nil
 	}
 
 	trip, err := s.tripRepo.GetByOrderID(ctx, orderID)
@@ -674,84 +663,108 @@ func (s *TripService) classifyAdminPickupByOrder(ctx context.Context, orderID st
 		return nil, err
 	}
 
-	if trip == nil || !pickupTripConsideredOpen(trip) || trip.Status == models.TripStatusCreated || trip.DEPhone == "" {
-		return missingOrNoDriverPickup(javaStatus), nil
+	var de *models.DeliveryExecutive
+	if trip != nil && trip.DEPhone != "" {
+		de, err = s.deRepo.GetByPhone(ctx, trip.DEPhone)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if trip.Status == models.TripStatusOutForDelivery {
-		return missingOrNoDriverPickup(javaStatus), nil
-	}
+	rider := adminDropRiderFrom(de)
 
 	if javaStatus == "OUT_FOR_DELIVERY" || javaStatus == "DELIVERED" {
-		return &adminPickupClass{Mode: adminPickupAlreadyDone, JavaStatus: javaStatus}, nil
+		return pickupPreview(AdminDropModeAlreadyDone, "", javaStatus, trip, rider, nil), nil
 	}
 
-	de, err := s.deRepo.GetByPhone(ctx, trip.DEPhone)
-	if err != nil {
-		return nil, err
-	}
-	if de != nil && de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
-		return &adminPickupClass{Mode: adminPickupBlocked, Reason: "rider_busy_elsewhere", JavaStatus: javaStatus}, nil
+	busyChecked := trip != nil && (trip.Status == models.TripStatusCreated ||
+		trip.Status == models.TripStatusAssigned ||
+		trip.Status == models.TripStatusAccepted)
+	if busyChecked && de != nil && de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
+		return pickupPreview(AdminDropModeBlocked, "rider_busy_elsewhere", javaStatus, trip, rider, nil), nil
 	}
 
-	return &adminPickupClass{Mode: adminPickupForceProgress, JavaStatus: javaStatus}, nil
+	if trip != nil && trip.DEPhone != "" && (trip.Status == models.TripStatusAssigned ||
+		trip.Status == models.TripStatusAccepted ||
+		trip.Status == models.TripStatusCreated) {
+		return pickupPreview(AdminDropModeForceProgress, "", javaStatus, trip, rider, nil), nil
+	}
+
+	if trip != nil && trip.Status == models.TripStatusOutForDelivery {
+		if javaStatus == "READY_FOR_DELIVERY" {
+			return pickupPreview(AdminDropModeJavaOnly, "", javaStatus, trip, rider, nil), nil
+		}
+		return pickupPreview(AdminDropModeBlocked, "java_not_ready", javaStatus, trip, rider, nil), nil
+	}
+
+	if trip != nil && trip.Status == models.TripStatusCreated && trip.DEPhone == "" && javaStatus == "READY_FOR_DELIVERY" {
+		candidates, cerr := s.listAdminPickupCandidates(ctx, trip.StoreID)
+		if cerr != nil {
+			return nil, cerr
+		}
+		return pickupPreview(AdminDropModePickRider, "", javaStatus, trip, nil, candidates), nil
+	}
+
+	if javaStatus == "READY_FOR_DELIVERY" {
+		return pickupPreview(AdminDropModeBlocked, "no_trip", javaStatus, trip, nil, nil), nil
+	}
+	return pickupPreview(AdminDropModeBlocked, "java_not_ready", javaStatus, trip, nil, nil), nil
 }
 
-func pickupTripConsideredOpen(trip *models.Trip) bool {
-	switch trip.Status {
-	case models.TripStatusAssigned, models.TripStatusAccepted, models.TripStatusOutForDelivery:
-		return true
-	default:
-		return false
+func pickupPreview(mode AdminDropMode, reason, javaStatus string, trip *models.Trip, rider *AdminDropRider, candidates []AdminDropCandidate) *AdminDropPreview {
+	p := &AdminDropPreview{
+		Mode:       mode,
+		Reason:     reason,
+		JavaStatus: javaStatus,
+		Rider:      rider,
+		Candidates: candidates,
 	}
-}
-
-func missingOrNoDriverPickup(javaStatus string) *adminPickupClass {
-	switch javaStatus {
-	case "OUT_FOR_DELIVERY", "DELIVERED":
-		return &adminPickupClass{Mode: adminPickupAlreadyDone, JavaStatus: javaStatus}
-	case "READY_FOR_DELIVERY":
-		return &adminPickupClass{Mode: adminPickupJavaOnly, JavaStatus: javaStatus}
-	default:
-		return &adminPickupClass{Mode: adminPickupBlocked, Reason: "java_not_ready", JavaStatus: javaStatus}
+	if trip != nil {
+		p.TripID = trip.TripID
+		p.TripStatus = string(trip.Status)
 	}
+	return p
 }
 
 // AdminCompletePickupByOrder advances an order to OUT_FOR_DELIVERY for admin
-// "Advance to OUT FOR DELIVERY". Mode comes from classifyAdminPickupByOrder:
-// java-only status write, force-progress the existing trip's pickup, already
-// done, or blocked. There is no pick-rider path and no preview GET.
+// "Advance to OUT FOR DELIVERY". Mode comes from PreviewAdminPickupByOrder.
+// A pooled trip is not assigned here: the dashboard calls POST /admin/assign
+// first. Pickup complete refuses when there is still no rider.
 func (s *TripService) AdminCompletePickupByOrder(ctx context.Context, orderID, adminUsername string) error {
 	op := logging.Start(ctx, s.logger, "TripService.AdminCompletePickupByOrder", logrus.Fields{
 		"order_id": orderID, "admin": adminUsername,
 	})
 	defer op.End()
 
-	class, err := s.classifyAdminPickupByOrder(ctx, orderID)
+	preview, err := s.PreviewAdminPickupByOrder(ctx, orderID)
 	if err != nil {
 		return op.Fail(err)
 	}
 
-	switch class.Mode {
-	case adminPickupBlocked:
-		switch class.Reason {
+	switch preview.Mode {
+	case AdminDropModeBlocked:
+		switch preview.Reason {
 		case "java_cancelled":
 			return op.Outcome("java_cancelled", ErrJavaOrderCancelled)
 		case "java_not_ready":
 			return op.Outcome("java_not_ready", ErrOrderNotDeliverable)
 		case "rider_busy_elsewhere":
 			return op.Outcome("rider_busy_elsewhere", ErrRiderBusyElsewhere)
+		case "no_trip":
+			return op.Outcome("rider_required", ErrRiderRequired)
 		default:
 			return op.Outcome("blocked", ErrOrderNotDeliverable)
 		}
-	case adminPickupAlreadyDone:
+	case AdminDropModeAlreadyDone:
 		return op.Outcome("already_ofd", ErrAlreadyOutForDelivery)
-	case adminPickupJavaOnly:
+	case AdminDropModeJavaOnly:
 		if err := s.forceJavaOutForDelivery(ctx, orderID, adminUsername); err != nil {
 			return op.Fail(err)
 		}
 		return nil
-	case adminPickupForceProgress:
-		if err := s.forceProgressPickup(ctx, orderID, adminUsername, class.JavaStatus); err != nil {
+	case AdminDropModePickRider:
+		return op.Outcome("rider_required", ErrRiderRequired)
+	case AdminDropModeForceProgress:
+		if err := s.forceProgressPickup(ctx, orderID, adminUsername, preview.JavaStatus); err != nil {
 			return op.Fail(err)
 		}
 		return nil
@@ -788,6 +801,7 @@ type AdminDropPreview struct {
 	Reason     string               `json:"reason,omitempty"`
 	TripID     string               `json:"trip_id,omitempty"`
 	JavaStatus string               `json:"java_status,omitempty"`
+	TripStatus string               `json:"trip_status,omitempty"`
 	Rider      *AdminDropRider      `json:"rider,omitempty"`
 	Candidates []AdminDropCandidate `json:"candidates,omitempty"`
 }
@@ -908,6 +922,28 @@ func (s *TripService) listAdminDropCandidates(ctx context.Context, storeID strin
 			break
 		}
 		cursor = next
+	}
+	return out, nil
+}
+
+// listAdminPickupCandidates is the assignment-cron set: status eligible and
+// on duty at the trip's store. free, offline, and busy are not in that set.
+func (s *TripService) listAdminPickupCandidates(ctx context.Context, storeID string) ([]AdminDropCandidate, error) {
+	des, err := s.deRepo.FindEligibleByStoreFIFO(ctx, storeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AdminDropCandidate, 0, len(des))
+	for _, de := range des {
+		if de == nil {
+			continue
+		}
+		out = append(out, AdminDropCandidate{
+			Phone:         de.PhoneNumber,
+			Name:          de.Name,
+			Status:        string(de.Status),
+			InHandCashZMW: de.InHandCashZMW,
+		})
 	}
 	return out, nil
 }

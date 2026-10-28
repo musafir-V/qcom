@@ -8,6 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
 )
 
@@ -22,6 +23,7 @@ func TestClassifyAdminAssignError(t *testing.T) {
 		{"not assignable", fmt.Errorf("%w: assigned", service.ErrInvalidTripTransition), http.StatusConflict, "ORDER_NOT_ASSIGNABLE"},
 		{"de not found", service.ErrDENotFound, http.StatusNotFound, "DRIVER_NOT_FOUND"},
 		{"de not eligible", service.ErrDENotEligible, http.StatusConflict, "DRIVER_NOT_ELIGIBLE"},
+		{"assign conflict", fmt.Errorf("%w: trip not created or DE not eligible", repository.ErrAdminAssignConflict), http.StatusConflict, "ORDER_NOT_ASSIGNABLE"},
 		{"unknown 500", errors.New("boom"), http.StatusInternalServerError, "ASSIGN_FAILED"},
 	}
 	for _, tc := range cases {

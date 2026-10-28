@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/sirupsen/logrus"
 )
@@ -60,6 +61,8 @@ func classifyAdminAssignError(err error) (status int, code string) {
 		return http.StatusNotFound, "DRIVER_NOT_FOUND"
 	case errors.Is(err, service.ErrDENotEligible):
 		return http.StatusConflict, "DRIVER_NOT_ELIGIBLE"
+	case errors.Is(err, repository.ErrAdminAssignConflict):
+		return http.StatusConflict, "ORDER_NOT_ASSIGNABLE"
 	default:
 		return http.StatusInternalServerError, "ASSIGN_FAILED"
 	}
