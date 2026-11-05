@@ -40,6 +40,9 @@ type PresenceReport struct {
 	Date               string            `json:"date"`
 	TotalOnlineMinutes int               `json:"total_online_minutes"`
 	Segments           []PresenceSegment `json:"segments"`
+	// FirstScanAt is the Zambia-local HH:MM of the earliest successful store-QR
+	// scan (scan_start or scan_return) on Date. Nil when none.
+	FirstScanAt *string `json:"first_scan_at"`
 }
 
 // reasonOngoing marks a segment that is still open at the end of the queried
@@ -97,6 +100,11 @@ func (s *PresenceService) GetDayPresence(ctx context.Context, phone, date string
 		if perr != nil {
 			s.logger.WithError(perr).WithField("phone", phone).Warn("presence: skipping event with bad ts")
 			continue
+		}
+
+		if report.FirstScanAt == nil && (e.Reason == models.ReasonScanStart || e.Reason == models.ReasonScanReturn) {
+			hhmm := t.In(loc).Format("15:04")
+			report.FirstScanAt = &hhmm
 		}
 
 		if e.ToState.IsOnline() {
