@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -771,14 +772,39 @@ type driverTripItem struct {
 	CompletedAt string  `json:"completed_at"`
 	OrderID     string  `json:"order_id"`
 	DistanceKM  float64 `json:"distance_km"`
+	// LastMileMin / ReturnMin are nil when the trip has no reliable timing
+	// (admin-synthesized arrival, no return scan, or pre-feature trip).
+	LastMileMin    *float64 `json:"last_mile_min"`
+	ReturnMin      *float64 `json:"return_min"`
+	MissingArrival bool     `json:"missing_arrival"`
 }
 
 // driverTripsResult is the full-window summary plus one page of items.
 type driverTripsResult struct {
-	TotalDistanceKM float64
-	TripCount       int
-	Items           []driverTripItem
-	NextCursor      string
+	TotalDistanceKM     float64
+	TripCount           int
+	LastMileMedianMin   *float64
+	LastMileP90Min      *float64
+	ReturnMedianMin     *float64
+	ReturnP90Min        *float64
+	MissingArrivalCount int
+	Items               []driverTripItem
+	NextCursor          string
+}
+
+// percentile returns the q-quantile (0..1) of sorted by linear interpolation,
+// or nil for an empty sample.
+func percentile(sorted []float64, q float64) *float64 {
+	if len(sorted) == 0 {
+		return nil
+	}
+	pos := float64(len(sorted)-1) * q
+	lo := int(pos)
+	v := sorted[lo]
+	if lo+1 < len(sorted) {
+		v += (sorted[lo+1] - sorted[lo]) * (pos - float64(lo))
+	}
+	return &v
 }
 
 // fetchDriverTrips drains every trip in [startTS, endTS] for deID via lister
@@ -801,20 +827,42 @@ func fetchDriverTrips(ctx context.Context, lister cashCollectionsTripLister, deI
 	}
 
 	var total float64
+	var lastMiles, returns []float64
+	missingArrivals := 0
 	items := make([]driverTripItem, 0, len(allTrips))
 	for _, trip := range allTrips {
-		items = append(items, driverTripItem{
-			CompletedAt: trip.CompletedAt,
-			OrderID:     trip.OrderID,
-			DistanceKM:  trip.DistanceKM,
-		})
+		item := driverTripItem{
+			CompletedAt:    trip.CompletedAt,
+			OrderID:        trip.OrderID,
+			DistanceKM:     trip.DistanceKM,
+			MissingArrival: trip.MissingArrival(),
+		}
+		if m, ok := trip.LastMileMinutes(); ok {
+			item.LastMileMin = &m
+			lastMiles = append(lastMiles, m)
+		}
+		if m, ok := trip.ReturnMinutes(); ok {
+			item.ReturnMin = &m
+			returns = append(returns, m)
+		}
+		if item.MissingArrival {
+			missingArrivals++
+		}
+		items = append(items, item)
 		total += trip.DistanceKM
 	}
+	sort.Float64s(lastMiles)
+	sort.Float64s(returns)
 
 	result := &driverTripsResult{
-		TotalDistanceKM: total,
-		TripCount:       len(items),
-		Items:           []driverTripItem{},
+		TotalDistanceKM:     total,
+		TripCount:           len(items),
+		LastMileMedianMin:   percentile(lastMiles, 0.5),
+		LastMileP90Min:      percentile(lastMiles, 0.9),
+		ReturnMedianMin:     percentile(returns, 0.5),
+		ReturnP90Min:        percentile(returns, 0.9),
+		MissingArrivalCount: missingArrivals,
+		Items:               []driverTripItem{},
 	}
 
 	if offset < len(items) {
@@ -890,12 +938,21 @@ func (h *AdminDriverHandlers) GetDriverTrips(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	h.respondWithJSON(w, http.StatusOK, map[string]interface{}{
-		"trip_count":        result.TripCount,
-		"total_distance_km": result.TotalDistanceKM,
-		"items":             result.Items,
-		"next_cursor":       result.NextCursor,
-	})
+	h.respondWithJSON(w, http.StatusOK, driverTripsResponse(result))
+}
+
+func driverTripsResponse(result *driverTripsResult) map[string]interface{} {
+	return map[string]interface{}{
+		"trip_count":            result.TripCount,
+		"total_distance_km":     result.TotalDistanceKM,
+		"last_mile_median_min":  result.LastMileMedianMin,
+		"last_mile_p90_min":     result.LastMileP90Min,
+		"return_median_min":     result.ReturnMedianMin,
+		"return_p90_min":        result.ReturnP90Min,
+		"missing_arrival_count": result.MissingArrivalCount,
+		"items":                 result.Items,
+		"next_cursor":           result.NextCursor,
+	}
 }
 
 // GET /api/v1/admin/drivers/{phone}/presence?date=YYYY-MM-DD

@@ -1247,6 +1247,7 @@ func synthesizeAdminDropReached(task *models.Task) {
 	task.Status = models.TaskStatusReached
 	if task.ReachedAt == "" {
 		task.ReachedAt = timezone.Now().Format(time.RFC3339)
+		task.ReachedByAdmin = true
 	}
 }
 

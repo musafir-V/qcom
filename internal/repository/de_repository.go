@@ -673,7 +673,7 @@ func (r *DERepository) FindOnDutyByStore(ctx context.Context, storeID string) ([
 // MarkEligibleFromScan transitions a DE to eligible after a validated presence
 // scan: it stamps the store and last-scan location/time, sets
 // duty_index_key = DE_ONDUTY#{store}, and REMOVEs any leftover scan_deadline_at.
-// current_order_id is cleared.
+// current_order_id and last_trip_id are cleared.
 func (r *DERepository) MarkEligibleFromScan(ctx context.Context, phone, storeID string, lat, lng float64, scanAt string) error {
 	op := logging.Start(ctx, r.logger, "MarkEligibleFromScan", logrus.Fields{
 		"phone": phone, "store_id": storeID,
@@ -690,7 +690,7 @@ func (r *DERepository) MarkEligibleFromScan(ctx context.Context, phone, storeID 
 		UpdateExpression: aws.String(
 			"SET #status = :eligible, current_store_id = :store, duty_index_key = :duty, " +
 				"last_scan_lat = :lat, last_scan_lng = :lng, " +
-				"last_scan_at = :scan_at, updated_at = :now REMOVE current_order_id, scan_deadline_at",
+				"last_scan_at = :scan_at, updated_at = :now REMOVE current_order_id, scan_deadline_at, last_trip_id",
 		),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
