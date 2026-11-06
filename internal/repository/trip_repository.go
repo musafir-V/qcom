@@ -349,7 +349,8 @@ func (r *TripRepository) MarkOutForDelivery(ctx context.Context, tripID string, 
 // CompleteTripAndFreeDE atomically marks the trip completed (with final tasks),
 // frees the assigned DE, and accrues the COD cash amount to the DE's in-hand
 // balance. The DE must be busy on this trip. On completion the DE stays on-duty
-// at storeID: status becomes free and duty_index_key = DE_ONDUTY#{store}.
+// at storeID: status becomes free and duty_index_key = DE_ONDUTY#{store}, and
+// last_trip_id points at this trip until the rider's next store scan.
 func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePhone, storeID string, tasks []models.Task, codAmount float64) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.CompleteTripAndFreeDE", logrus.Fields{
 		"trip_id": tripID, "de_phone": dePhone, "cod_amount_zmw": codAmount,
@@ -395,7 +396,7 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 					},
 					UpdateExpression: aws.String(
 						"SET #status = :free, updated_at = :now, in_hand_cash_zmw = if_not_exists(in_hand_cash_zmw, :zero) + :cod, " +
-							"current_store_id = :store, duty_index_key = :duty " +
+							"current_store_id = :store, duty_index_key = :duty, last_trip_id = :tid " +
 							"REMOVE current_order_id, current_trip_id, scan_deadline_at",
 					),
 					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
@@ -424,6 +425,35 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 		return op.Fail(fmt.Errorf("failed to complete trip and free DE: %w", err))
 	}
 	return nil
+}
+
+// StampReturnedAt records the rider's return-to-store scan on the trip. Only the
+// first scan wins: it reports false (no error) when returned_at is already set.
+func (r *TripRepository) StampReturnedAt(ctx context.Context, tripID, returnedAt string) (bool, error) {
+	op := logging.Start(ctx, r.logger, "TripRepository.StampReturnedAt", logrus.Fields{"trip_id": tripID})
+	defer op.End()
+
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:    aws.String("SET returned_at = :ret"),
+		ConditionExpression: aws.String("attribute_exists(PK) AND attribute_not_exists(returned_at)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":ret": &types.AttributeValueMemberS{Value: returnedAt},
+		},
+	})
+	if err != nil {
+		var condErr *types.ConditionalCheckFailedException
+		if errors.As(err, &condErr) {
+			op.Outcome("already_stamped", nil)
+			return false, nil
+		}
+		return false, op.Fail(fmt.Errorf("failed to stamp returned_at: %w", err))
+	}
+	return true, nil
 }
 
 // UpdateTasks replaces the entire tasks list on the trip item.
@@ -1110,7 +1140,7 @@ func (r *TripRepository) Reassign(
 					UpdateExpression: aws.String(
 						"SET #status = :busy, current_order_id = :oid, current_trip_id = :tid, " +
 							"current_store_id = :store, updated_at = :now " +
-							"REMOVE duty_index_key, scan_deadline_at",
+							"REMOVE duty_index_key, scan_deadline_at, last_trip_id",
 					),
 					ConditionExpression: aws.String(
 						"(#status = :eligible OR #status = :free) AND attribute_not_exists(current_trip_id)",

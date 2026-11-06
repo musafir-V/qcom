@@ -9,6 +9,9 @@ const (
 	ReasonScanStart DEStatusEventReason = "scan_start"
 	// ReasonScanReturn: free -> eligible via a validated store-QR scan.
 	ReasonScanReturn DEStatusEventReason = "scan_return"
+	// ReasonScanReturnWhileBusy: busy -> busy; a validated store-QR scan by a
+	// rider whose out-for-delivery trip is still open. Records the return only.
+	ReasonScanReturnWhileBusy DEStatusEventReason = "scan_return_while_busy"
 	// ReasonAssigned: eligible -> busy when a trip is assigned (clock pauses).
 	ReasonAssigned DEStatusEventReason = "assigned"
 	// ReasonDelivered: busy -> free on trip completion (clock resumes).

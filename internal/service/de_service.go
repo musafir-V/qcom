@@ -34,14 +34,30 @@ type deRepository interface {
 // wider than this — the fix is too coarse to trust against the tight geofence.
 const maxScanAccuracyMeters = 150.0
 
+type cashConfigReader interface {
+	Get(ctx context.Context) (*models.CashConfig, error)
+}
+
+type darkstoreReader interface {
+	GetByID(ctx context.Context, darkstoreID string) (*models.Darkstore, error)
+}
+
+// returnTripStore is the subset of *repository.TripRepository StartDuty uses to
+// stamp a rider's return-to-store scan onto their trip.
+type returnTripStore interface {
+	GetByID(ctx context.Context, tripID string) (*models.Trip, error)
+	StampReturnedAt(ctx context.Context, tripID, returnedAt string) (bool, error)
+}
+
 type DEService struct {
 	deRepo             deRepository
 	qrService          *QRService
 	referralService    *ReferralService
 	earningsLedgerRepo deEarningsLedgerReader
-	cashConfigRepo     *repository.CashConfigRepository
-	darkstoreRepo      *repository.DarkstoreRepository
+	cashConfigRepo     cashConfigReader
+	darkstoreRepo      darkstoreReader
 	statusEventRepo    statusEventAppender
+	tripRepo           returnTripStore
 	logger             *logrus.Logger
 }
 
@@ -49,8 +65,8 @@ type deEarningsLedgerReader interface {
 	SumPositiveCashByDEAfter(ctx context.Context, deID, afterTimestamp string) (float64, error)
 }
 
-func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo deEarningsLedgerReader, cashConfigRepo *repository.CashConfigRepository, darkstoreRepo *repository.DarkstoreRepository, statusEventRepo *repository.DEStatusEventRepository, logger *logrus.Logger) *DEService {
-	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, earningsLedgerRepo: earningsLedgerRepo, cashConfigRepo: cashConfigRepo, darkstoreRepo: darkstoreRepo, statusEventRepo: statusEventRepo, logger: logger}
+func NewDEService(deRepo *repository.DERepository, qrService *QRService, referralService *ReferralService, earningsLedgerRepo deEarningsLedgerReader, cashConfigRepo *repository.CashConfigRepository, darkstoreRepo *repository.DarkstoreRepository, statusEventRepo *repository.DEStatusEventRepository, tripRepo *repository.TripRepository, logger *logrus.Logger) *DEService {
+	return &DEService{deRepo: deRepo, qrService: qrService, referralService: referralService, earningsLedgerRepo: earningsLedgerRepo, cashConfigRepo: cashConfigRepo, darkstoreRepo: darkstoreRepo, statusEventRepo: statusEventRepo, tripRepo: tripRepo, logger: logger}
 }
 
 type RegisterDERequest struct {
@@ -196,7 +212,9 @@ type ScanLocation struct {
 // StartDuty validates the store QR + a geofenced presence scan and transitions
 // the DE to eligible. Valid from: offline or free. On success it stamps the
 // last-scan location/time and appends a status event (scan_start from offline,
-// scan_return from free).
+// scan_return from free). A free rider's scan is also stamped as the return of
+// their last trip. A busy rider stays busy, but a valid scan while their trip is
+// out for delivery is recorded as that trip's return.
 func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc ScanLocation) (string, error) {
 	op := logging.Start(ctx, s.logger, "StartDuty", logrus.Fields{"phone": dePhone})
 	defer op.End()
@@ -210,7 +228,7 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc S
 	}
 
 	if de.Status == models.DEStatusBusy {
-		return "", op.Outcome("busy", fmt.Errorf("cannot start duty while on an active delivery"))
+		return "", s.recordBusyReturn(ctx, op, de, qrCode, loc)
 	}
 	if de.Status == models.DEStatusEligible {
 		return "", op.Outcome("already_on_duty", fmt.Errorf("already on duty at store %s", de.CurrentStoreID))
@@ -224,6 +242,108 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc S
 		return "", op.Outcome("cash_limit_exceeded", fmt.Errorf("in-hand cash limit exceeded; deposit cash to resume"))
 	}
 
+	storeID, err := s.validateStoreScan(ctx, op, de, qrCode, loc)
+	if err != nil {
+		return "", err
+	}
+
+	fromState := de.Status
+	now := timezone.Now()
+	nowUTC := now.UTC().Format(time.RFC3339)
+
+	if err := s.deRepo.MarkEligibleFromScan(ctx, dePhone, storeID, loc.Lat, loc.Lng, nowUTC); err != nil {
+		return "", op.Fail(fmt.Errorf("failed to update DE status: %w", err))
+	}
+
+	reason := models.ReasonScanStart
+	if fromState == models.DEStatusFree {
+		reason = models.ReasonScanReturn
+		if de.LastTripID != "" {
+			s.stampReturn(ctx, op, de.LastTripID, nowUTC)
+		}
+	}
+	s.appendStatusEvent(ctx, &models.DEStatusEvent{
+		Phone:     dePhone,
+		FromState: fromState,
+		ToState:   models.DEStatusEligible,
+		Reason:    reason,
+		StoreID:   storeID,
+		Lat:       loc.Lat,
+		Lng:       loc.Lng,
+		AccuracyM: loc.AccuracyM,
+		TS:        nowUTC,
+	})
+
+	op.With("store_id", storeID)
+	return storeID, nil
+}
+
+// recordBusyReturn handles a store scan from a busy rider. It always returns an
+// error (the rider stays busy). The messages must keep "active delivery": the
+// handler maps that phrase to INVALID_STATE.
+func (s *DEService) recordBusyReturn(ctx context.Context, op *logging.Op, de *models.DeliveryExecutive, qrCode string, loc ScanLocation) error {
+	errBusy := fmt.Errorf("cannot start duty while on an active delivery")
+
+	trip := s.outForDeliveryTrip(ctx, op, de)
+	if trip == nil {
+		return op.Outcome("busy", errBusy)
+	}
+
+	storeID, err := s.validateStoreScan(ctx, op, de, qrCode, loc)
+	if err != nil {
+		return err
+	}
+
+	nowUTC := timezone.Now().UTC().Format(time.RFC3339)
+	s.stampReturn(ctx, op, trip.TripID, nowUTC)
+	s.appendStatusEvent(ctx, &models.DEStatusEvent{
+		Phone:     de.PhoneNumber,
+		FromState: models.DEStatusBusy,
+		ToState:   models.DEStatusBusy,
+		Reason:    models.ReasonScanReturnWhileBusy,
+		StoreID:   storeID,
+		Lat:       loc.Lat,
+		Lng:       loc.Lng,
+		AccuracyM: loc.AccuracyM,
+		TS:        nowUTC,
+	})
+	return op.Outcome("busy_return_recorded", fmt.Errorf(
+		"Return recorded. You still have an active delivery; ask admin to close the order, then scan again to go on duty"))
+}
+
+// outForDeliveryTrip returns the rider's current trip when it is out for
+// delivery, or nil (including on lookup failure — the scan then falls back to
+// the plain busy rejection).
+func (s *DEService) outForDeliveryTrip(ctx context.Context, op *logging.Op, de *models.DeliveryExecutive) *models.Trip {
+	if s.tripRepo == nil || de.CurrentTripID == "" {
+		return nil
+	}
+	trip, err := s.tripRepo.GetByID(ctx, de.CurrentTripID)
+	if err != nil {
+		op.Logger().WithError(err).WithField("trip_id", de.CurrentTripID).Warn("busy scan: failed to fetch current trip")
+		return nil
+	}
+	if trip == nil || trip.Status != models.TripStatusOutForDelivery {
+		return nil
+	}
+	return trip
+}
+
+// stampReturn writes returned_at best-effort; the scan's outcome must not
+// depend on the reporting write.
+func (s *DEService) stampReturn(ctx context.Context, op *logging.Op, tripID, returnedAt string) {
+	if s.tripRepo == nil {
+		return
+	}
+	if _, err := s.tripRepo.StampReturnedAt(ctx, tripID, returnedAt); err != nil {
+		op.Logger().WithError(err).WithField("trip_id", tripID).Warn("failed to stamp trip returned_at")
+	}
+}
+
+// validateStoreScan checks the QR, the rider's assigned store, and the
+// anti-spoof geofence. It returns the scanned store ID.
+func (s *DEService) validateStoreScan(ctx context.Context, op *logging.Op, de *models.DeliveryExecutive, qrCode string, loc ScanLocation) (string, error) {
+	dePhone := de.PhoneNumber
 	storeID, err := s.qrService.ParseStoreID(qrCode)
 	if err != nil {
 		return "", op.Outcome("invalid_qr", fmt.Errorf("invalid QR code: %w", err))
@@ -263,32 +383,6 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc S
 		s.logRejectedScan(op, dePhone, storeID, loc, "outside_geofence")
 		return "", op.Outcome("outside_geofence", fmt.Errorf("outside store geofence; move closer to the store and try again"))
 	}
-
-	fromState := de.Status
-	now := timezone.Now()
-	nowUTC := now.UTC().Format(time.RFC3339)
-
-	if err := s.deRepo.MarkEligibleFromScan(ctx, dePhone, storeID, loc.Lat, loc.Lng, nowUTC); err != nil {
-		return "", op.Fail(fmt.Errorf("failed to update DE status: %w", err))
-	}
-
-	reason := models.ReasonScanStart
-	if fromState == models.DEStatusFree {
-		reason = models.ReasonScanReturn
-	}
-	s.appendStatusEvent(ctx, &models.DEStatusEvent{
-		Phone:     dePhone,
-		FromState: fromState,
-		ToState:   models.DEStatusEligible,
-		Reason:    reason,
-		StoreID:   storeID,
-		Lat:       loc.Lat,
-		Lng:       loc.Lng,
-		AccuracyM: loc.AccuracyM,
-		TS:        nowUTC,
-	})
-
-	op.With("store_id", storeID)
 	return storeID, nil
 }
 

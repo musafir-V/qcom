@@ -88,6 +88,9 @@ type DeliveryExecutive struct {
 	CurrentStoreID      string  `json:"current_store_id,omitempty" dynamodbav:"current_store_id,omitempty"`
 	CurrentOrderID      string  `json:"current_order_id,omitempty" dynamodbav:"current_order_id,omitempty"`
 	CurrentTripID       string  `json:"current_trip_id,omitempty" dynamodbav:"current_trip_id,omitempty"`
+	// LastTripID is the trip this rider most recently completed, held until
+	// their next store scan so that scan can be stamped as the trip's return.
+	LastTripID string `json:"last_trip_id,omitempty" dynamodbav:"last_trip_id,omitempty"`
 	TotalTripsCompleted int     `json:"total_trips_completed" dynamodbav:"total_trips_completed"`
 	DailyTripCount      int     `json:"daily_trip_count" dynamodbav:"daily_trip_count"`
 	DailyCountDate      string  `json:"daily_count_date,omitempty" dynamodbav:"daily_count_date,omitempty"`

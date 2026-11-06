@@ -97,7 +97,7 @@ func main() {
 	qrService := service.NewQRService(logger)
 	marketingQRService := service.NewMarketingQRService(qrRepo, logger)
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
-	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, logger)
+	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, tripRepo, logger)
 	presenceService := service.NewPresenceService(deStatusEventRepo, logger)
 	cashDepositService := service.NewCashDepositService(deRepo, cashConfigRepo, logger)
 

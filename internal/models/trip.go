@@ -60,6 +60,9 @@ type Task struct {
 	RecipientName string     `json:"recipient_name,omitempty" dynamodbav:"recipient_name,omitempty"` // drop task only
 	DeliveryZone  string     `json:"delivery_zone,omitempty" dynamodbav:"delivery_zone,omitempty"`   // pickup task only: rack label e.g. "Blue Rack 2"
 	PhotoS3Key    string     `json:"photo_s3_key,omitempty" dynamodbav:"photo_s3_key,omitempty"`     // set when driver uploads a verification photo
+	// ReachedByAdmin marks a drop whose ReachedAt was synthesized at admin
+	// completion time, so it does not reflect the driver's actual arrival.
+	ReachedByAdmin bool `json:"reached_by_admin,omitempty" dynamodbav:"reached_by_admin,omitempty"`
 }
 
 type Trip struct {
@@ -103,7 +106,14 @@ type Trip struct {
 	Reassignments []TripReassignment `json:"-" dynamodbav:"reassignments,omitempty"`
 	CompletedAt    string   `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
 	CancelledAt    string   `json:"cancelled_at,omitempty" dynamodbav:"cancelled_at,omitempty"`
+	// ReturnedAt is the first validated store-QR scan by this trip's rider
+	// after the trip went out for delivery. Written once, never overwritten.
+	ReturnedAt string `json:"returned_at,omitempty" dynamodbav:"returned_at,omitempty"`
 }
+
+// ReturnHandoverAllowance is deducted from drop-reached→store-scan time to
+// account for the doorstep handover before the rider starts riding back.
+const ReturnHandoverAllowance = 3 * time.Minute
 
 // TripReassignment is one admin-driven rider→rider handover of a trip.
 // Appended to Trip.Reassignments; never mutated once written.
@@ -185,6 +195,55 @@ func (t *Trip) ActualDeliveryMinutes() (float64, bool) {
 		return 0, false
 	}
 	return ds.Sub(ps).Minutes(), true
+}
+
+// MissingArrival reports whether the drop's arrival time was synthesized by an
+// admin rather than marked by the rider.
+func (t *Trip) MissingArrival() bool {
+	d := t.DropTask()
+	return d != nil && d.ReachedByAdmin
+}
+
+// riderDropReachedAt returns the rider-marked drop arrival time.
+func (t *Trip) riderDropReachedAt() (time.Time, bool) {
+	d := t.DropTask()
+	if d == nil || d.ReachedByAdmin || d.ReachedAt == "" {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse(time.RFC3339, d.ReachedAt)
+	return ts, err == nil
+}
+
+// LastMileMinutes returns pickup-completed → drop-reached minutes.
+func (t *Trip) LastMileMinutes() (float64, bool) {
+	p := t.PickupTask()
+	reached, ok := t.riderDropReachedAt()
+	if p == nil || p.CompletedAt == "" || !ok {
+		return 0, false
+	}
+	picked, err := time.Parse(time.RFC3339, p.CompletedAt)
+	if err != nil {
+		return 0, false
+	}
+	return reached.Sub(picked).Minutes(), true
+}
+
+// ReturnMinutes returns drop-reached → store-scan minutes less
+// ReturnHandoverAllowance, floored at zero.
+func (t *Trip) ReturnMinutes() (float64, bool) {
+	reached, ok := t.riderDropReachedAt()
+	if !ok || t.ReturnedAt == "" {
+		return 0, false
+	}
+	returned, err := time.Parse(time.RFC3339, t.ReturnedAt)
+	if err != nil {
+		return 0, false
+	}
+	d := returned.Sub(reached) - ReturnHandoverAllowance
+	if d < 0 {
+		d = 0
+	}
+	return d.Minutes(), true
 }
 
 // IsValidTripTransition reports whether a trip may move from `from` to `to`.
