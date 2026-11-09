@@ -82,6 +82,7 @@ type tripRepoI interface {
 	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
 	UpdateEditByOrder(ctx context.Context, tripID string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error
 	AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error
+	PutAdminDropReason(ctx context.Context, rec *models.AdminDropReason) error
 }
 
 // deRepoI is the subset of DERepository methods used by TripService.
@@ -97,7 +98,7 @@ type deRepoI interface {
 // can inject a stub. *JavaOrderClient already satisfies it.
 type javaOrderAPI interface {
 	GetOrderStatus(ctx context.Context, orderID string) (string, error)
-	UpdateOrderStatus(ctx context.Context, orderID, status, actorID string) error
+	UpdateOrderStatus(ctx context.Context, orderID, status, actorID, notes string) error
 }
 
 // statusEventAppender appends DE status-event log entries (presence timeline).
@@ -588,7 +589,7 @@ func (s *TripService) AdminCompleteTask(ctx context.Context, driverPhone string,
 // AdminCompleteDropByOrder force-delivers an order for admin "Mark Delivered".
 // Mode comes from PreviewAdminDropByOrder: java-only status writes, assign a
 // rider then complete, or force-progress the existing trip (pickup then drop).
-func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adminUsername, driverPhone string) error {
+func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adminUsername, driverPhone string, dropReason *models.AdminDropReason) error {
 	op := logging.Start(ctx, s.logger, "TripService.AdminCompleteDropByOrder", logrus.Fields{
 		"order_id": orderID, "admin": adminUsername,
 	})
@@ -600,6 +601,10 @@ func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adm
 	}
 
 	skipJava := preview.JavaStatus == "DELIVERED"
+	notes := ""
+	if dropReason != nil {
+		notes = dropReason.Reason
+	}
 
 	switch preview.Mode {
 	case AdminDropModeBlocked:
@@ -616,25 +621,38 @@ func (s *TripService) AdminCompleteDropByOrder(ctx context.Context, orderID, adm
 	case AdminDropModeAlreadyDone:
 		return op.Outcome("already_delivered", ErrAlreadyDelivered)
 	case AdminDropModeJavaOnly:
-		if err := s.forceJavaDeliver(ctx, orderID, adminUsername); err != nil {
+		if err := s.forceJavaDeliver(ctx, orderID, adminUsername, notes); err != nil {
 			return op.Fail(err)
 		}
-		return nil
 	case AdminDropModePickRider:
 		if strings.TrimSpace(driverPhone) == "" {
 			return op.Outcome("rider_required", ErrRiderRequired)
 		}
-		if err := s.forceAssignAndComplete(ctx, orderID, adminUsername, driverPhone, skipJava); err != nil {
+		if err := s.forceAssignAndComplete(ctx, orderID, adminUsername, driverPhone, skipJava, notes); err != nil {
 			return op.Fail(err)
 		}
-		return nil
 	case AdminDropModeForceProgress:
-		if err := s.forceProgressExisting(ctx, orderID, adminUsername, skipJava); err != nil {
+		if err := s.forceProgressExisting(ctx, orderID, adminUsername, skipJava, notes); err != nil {
 			return op.Fail(err)
 		}
-		return nil
 	default:
 		return op.Outcome("unknown_mode", ErrOrderNotDeliverable)
+	}
+
+	s.persistAdminDropReason(ctx, dropReason)
+	return nil
+}
+
+func (s *TripService) persistAdminDropReason(ctx context.Context, rec *models.AdminDropReason) {
+	if rec == nil || strings.TrimSpace(rec.Reason) == "" || s.tripRepo == nil {
+		return
+	}
+	if rec.At == "" {
+		rec.At = timezone.Now().UTC().Format(time.RFC3339)
+	}
+	if err := s.tripRepo.PutAdminDropReason(ctx, rec); err != nil {
+		s.logger.WithError(err).WithField("order_id", rec.OrderID).
+			Error("failed to persist admin drop reason")
 	}
 }
 
@@ -912,7 +930,7 @@ func (s *TripService) listAdminDropCandidates(ctx context.Context, storeID strin
 	return out, nil
 }
 
-func (s *TripService) forceJavaDeliver(ctx context.Context, orderID, adminUsername string) error {
+func (s *TripService) forceJavaDeliver(ctx context.Context, orderID, adminUsername, notes string) error {
 	if s.javaClient == nil {
 		return ErrOrderNotDeliverable
 	}
@@ -922,12 +940,12 @@ func (s *TripService) forceJavaDeliver(ctx context.Context, orderID, adminUserna
 	case "DELIVERED":
 		return nil
 	case "READY_FOR_DELIVERY":
-		if err := s.javaClient.UpdateOrderStatus(ctx, orderID, "OUT_FOR_DELIVERY", actor); err != nil {
+		if err := s.javaClient.UpdateOrderStatus(ctx, orderID, "OUT_FOR_DELIVERY", actor, ""); err != nil {
 			return err
 		}
-		return s.javaClient.UpdateOrderStatus(ctx, orderID, "DELIVERED", actor)
+		return s.javaClient.UpdateOrderStatus(ctx, orderID, "DELIVERED", actor, notes)
 	case "OUT_FOR_DELIVERY":
-		return s.javaClient.UpdateOrderStatus(ctx, orderID, "DELIVERED", actor)
+		return s.javaClient.UpdateOrderStatus(ctx, orderID, "DELIVERED", actor, notes)
 	default:
 		return ErrOrderNotDeliverable
 	}
@@ -941,7 +959,7 @@ func (s *TripService) forceJavaOutForDelivery(ctx context.Context, orderID, admi
 	actor := "ADMIN:" + adminUsername
 	switch st {
 	case "READY_FOR_DELIVERY":
-		return s.javaClient.UpdateOrderStatus(ctx, orderID, "OUT_FOR_DELIVERY", actor)
+		return s.javaClient.UpdateOrderStatus(ctx, orderID, "OUT_FOR_DELIVERY", actor, "")
 	case "OUT_FOR_DELIVERY", "DELIVERED":
 		return nil
 	case "CANCELLED":
@@ -951,7 +969,7 @@ func (s *TripService) forceJavaOutForDelivery(ctx context.Context, orderID, admi
 	}
 }
 
-func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, adminUsername, driverPhone string, skipJava bool) (err error) {
+func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, adminUsername, driverPhone string, skipJava bool, notes string) (err error) {
 	de, err := s.deRepo.GetByPhone(ctx, driverPhone)
 	if err != nil {
 		return err
@@ -1006,7 +1024,7 @@ func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, admin
 	if trip == nil {
 		return fmt.Errorf("%w: no trip for order %s", ErrTripNotFound, orderID)
 	}
-	if cerr := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava); cerr != nil {
+	if cerr := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava, notes); cerr != nil {
 		return cerr
 	}
 	if prior == models.DEStatusOffline {
@@ -1017,7 +1035,7 @@ func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, admin
 	return nil
 }
 
-func (s *TripService) forceProgressExisting(ctx context.Context, orderID, adminUsername string, skipJava bool) error {
+func (s *TripService) forceProgressExisting(ctx context.Context, orderID, adminUsername string, skipJava bool, notes string) error {
 	trip, err := s.tripRepo.GetByOrderID(ctx, orderID)
 	if err != nil {
 		return err
@@ -1048,7 +1066,7 @@ func (s *TripService) forceProgressExisting(ctx context.Context, orderID, adminU
 		}
 		trip.Status = models.TripStatusAccepted
 	}
-	if err := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava); err != nil {
+	if err := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava, notes); err != nil {
 		return err
 	}
 	if prior == models.DEStatusOffline {
@@ -1115,7 +1133,7 @@ func (s *TripService) forceProgressPickup(ctx context.Context, orderID, adminUse
 // forceJavaDeliver after the trip work — so the two writes cannot race and a
 // Java refusal fails the POST (the same guarantee as the no-trip path). When
 // Java is already DELIVERED (javaAlreadyDelivered), Java is left untouched.
-func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.Trip, de *models.DeliveryExecutive, adminUsername string, javaAlreadyDelivered bool) error {
+func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.Trip, de *models.DeliveryExecutive, adminUsername string, javaAlreadyDelivered bool, notes string) error {
 	pickup := trip.PickupTask()
 	if pickup != nil && pickup.Status != models.TaskStatusCompleted {
 		if trip.Status != models.TripStatusAccepted {
@@ -1148,7 +1166,7 @@ func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.T
 	if javaAlreadyDelivered {
 		return nil
 	}
-	return s.forceJavaDeliver(ctx, trip.OrderID, adminUsername)
+	return s.forceJavaDeliver(ctx, trip.OrderID, adminUsername, notes)
 }
 
 // adminSelectTask resolves the pickup/drop task an admin completion targets.
@@ -1389,7 +1407,7 @@ func (s *TripService) syncJavaWithRetry(orderID, status, actor string) {
 	ctx := context.Background()
 	backoff := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
 	for i, delay := range backoff {
-		if err := s.javaClient.UpdateOrderStatus(ctx, orderID, status, actor); err != nil {
+		if err := s.javaClient.UpdateOrderStatus(ctx, orderID, status, actor, ""); err != nil {
 			s.logger.WithError(err).WithFields(logrus.Fields{
 				"order_id": orderID, "status": status, "attempt": i + 1,
 			}).Warn("java sync retry")
