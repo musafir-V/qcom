@@ -310,3 +310,43 @@ func TestGetReadyForDeliveryOrders_NonOKStatus(t *testing.T) {
 		t.Fatalf("error = %v, want status code 500 in message", err)
 	}
 }
+
+func TestUpdateOrderStatus_UsesProvidedNotes(t *testing.T) {
+	var gotBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := newTestJavaClient(srv.URL).UpdateOrderStatus(context.Background(), "ORD1", "DELIVERED", "ADMIN:ops", `OTP "skip"`)
+	if err != nil {
+		t.Fatalf("UpdateOrderStatus: %v", err)
+	}
+	if gotBody["status"] != "DELIVERED" {
+		t.Fatalf("status=%q", gotBody["status"])
+	}
+	if gotBody["notes"] != `OTP "skip"` {
+		t.Fatalf("notes=%q", gotBody["notes"])
+	}
+}
+
+func TestUpdateOrderStatus_DefaultsNotesWhenEmpty(t *testing.T) {
+	var gotBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if err := newTestJavaClient(srv.URL).UpdateOrderStatus(context.Background(), "ORD1", "DELIVERED", "DE:1", ""); err != nil {
+		t.Fatalf("UpdateOrderStatus: %v", err)
+	}
+	if gotBody["notes"] != defaultJavaStatusNotes {
+		t.Fatalf("notes=%q, want %q", gotBody["notes"], defaultJavaStatusNotes)
+	}
+}

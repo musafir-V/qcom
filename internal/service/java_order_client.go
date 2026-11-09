@@ -177,18 +177,27 @@ func (c *JavaOrderClient) GetReadyForDeliveryOrders(ctx context.Context, storeID
 	return allOrders, nil
 }
 
+const defaultJavaStatusNotes = "triggered by bunzo-qcom"
+
 // UpdateOrderStatus calls Java to transition an order to a new status.
 // actorID identifies who triggered the change (e.g. "DE:{deID}").
-func (c *JavaOrderClient) UpdateOrderStatus(ctx context.Context, orderID, status, actorID string) error {
+// notes is stored on the Java order-event trail; empty uses defaultJavaStatusNotes.
+func (c *JavaOrderClient) UpdateOrderStatus(ctx context.Context, orderID, status, actorID, notes string) error {
 	op := logging.Start(ctx, c.logger, "JavaOrderClient.UpdateOrderStatus", logrus.Fields{
 		"order_id": orderID, "status": status,
 	})
 	defer op.End()
 
 	url := fmt.Sprintf("%s%s/api/v1/orders/%s/status", c.baseURL, orderServicePathPrefix, orderID)
-	body := fmt.Sprintf(`{"status":%q,"notes":"triggered by bunzo-qcom"}`, status)
+	if strings.TrimSpace(notes) == "" {
+		notes = defaultJavaStatusNotes
+	}
+	payload, err := json.Marshal(map[string]string{"status": status, "notes": notes})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to encode status update: %w", err))
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payload)))
 	if err != nil {
 		return op.Fail(fmt.Errorf("failed to build request: %w", err))
 	}

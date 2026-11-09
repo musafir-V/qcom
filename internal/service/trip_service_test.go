@@ -624,6 +624,7 @@ type stubTripRepo struct {
 	dropDeadline            int64
 	adminAssignCalled       bool
 	adminAssignErr          error
+	capturedDropReason      *models.AdminDropReason
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -714,6 +715,14 @@ func (s *stubTripRepo) RejectToPool(_ context.Context, _, _, _, _ string) error 
 	panic("stubTripRepo.RejectToPool: unexpected call")
 }
 
+func (s *stubTripRepo) PutAdminDropReason(_ context.Context, rec *models.AdminDropReason) error {
+	if rec != nil {
+		copied := *rec
+		s.capturedDropReason = &copied
+	}
+	return nil
+}
+
 func (s *stubTripRepo) UpdatePayment(_ context.Context, _ string, payment *models.Payment) error {
 	s.updatePaymentCalled = true
 	s.capturedPayment = payment
@@ -770,11 +779,12 @@ func (s *stubDERepo) ListByAssignedStore(_ context.Context, _, _, _ string, _ in
 }
 
 type stubJavaOrder struct {
-	status    string
-	getErr    error
-	updates   []string
-	updateErr error
-	lastActor string
+	status         string
+	getErr         error
+	updates        []string
+	updateErr      error
+	lastActor      string
+	deliveredNotes string
 }
 
 func (s *stubJavaOrder) GetOrderStatus(_ context.Context, _ string) (string, error) {
@@ -784,12 +794,15 @@ func (s *stubJavaOrder) GetOrderStatus(_ context.Context, _ string) (string, err
 	return s.status, nil
 }
 
-func (s *stubJavaOrder) UpdateOrderStatus(_ context.Context, _, status, actorID string) error {
+func (s *stubJavaOrder) UpdateOrderStatus(_ context.Context, _, status, actorID, notes string) error {
 	if s.updateErr != nil {
 		return s.updateErr
 	}
 	s.updates = append(s.updates, status)
 	s.lastActor = actorID
+	if status == "DELIVERED" {
+		s.deliveredNotes = notes
+	}
 	return nil
 }
 
@@ -1494,7 +1507,7 @@ func TestAdminCompleteDropByOrder_FindsTripAndCompletes(t *testing.T) {
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
 
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-3", "ops-user", "")
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-3", "ops-user", "", nil)
 	if err != nil {
 		t.Fatalf("expected order-scoped complete to succeed, got: %v", err)
 	}
@@ -1515,11 +1528,34 @@ func TestAdminCompleteDropByOrder_NoTrip_JavaOnly(t *testing.T) {
 	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
 	svc := newTripServiceForTest(&stubTripRepo{}, &stubDERepo{}, &stubNotifier{})
 	svc.javaClient = java
-	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-J1", "ops", ""); err != nil {
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-J1", "ops", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(java.updates) != 2 || java.updates[0] != "OUT_FOR_DELIVERY" || java.updates[1] != "DELIVERED" {
 		t.Fatalf("updates=%v", java.updates)
+	}
+}
+
+func TestAdminCompleteDropByOrder_JavaOnly_PersistsReasonAndNotes(t *testing.T) {
+	java := &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
+	repo := &stubTripRepo{}
+	svc := newTripServiceForTest(repo, &stubDERepo{}, &stubNotifier{})
+	svc.javaClient = java
+	reason := &models.AdminDropReason{
+		OrderID: "ORD-NOTE", ReasonCode: models.AdminDropReasonOTPNotProvided,
+		Reason: "OTP Not Provided", AdminUsername: "ops",
+	}
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-NOTE", "ops", "", reason); err != nil {
+		t.Fatal(err)
+	}
+	if java.deliveredNotes != "OTP Not Provided" {
+		t.Fatalf("delivered notes=%q", java.deliveredNotes)
+	}
+	if repo.capturedDropReason == nil || repo.capturedDropReason.Reason != "OTP Not Provided" {
+		t.Fatalf("dynamo reason=%+v", repo.capturedDropReason)
+	}
+	if repo.capturedDropReason.At == "" {
+		t.Fatal("expected timestamp on persisted reason")
 	}
 }
 
@@ -1537,7 +1573,7 @@ func TestAdminCompleteDropByOrder_ForceProgress_PickupThenDrop(t *testing.T) {
 	deRepo := &stubDERepo{de: de}
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
-	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-5", "ops", ""); err != nil {
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-5", "ops", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if !repo.completeTripCalled {
@@ -1553,7 +1589,7 @@ func TestAdminCompleteDropByOrder_PickRider_RequiresPhone(t *testing.T) {
 		TripID: "t1", OrderID: "ORD-U1", StoreID: "221", Status: models.TripStatusCreated,
 	}}, &stubDERepo{}, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-U1", "ops", "")
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-U1", "ops", "", nil)
 	if !errors.Is(err, ErrRiderRequired) {
 		t.Fatalf("got %v", err)
 	}
@@ -1571,7 +1607,7 @@ func TestAdminCompleteDropByOrder_PickRider_AssignsAndCompletes(t *testing.T) {
 	deRepo := &stubDERepo{de: de}
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
-	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-U2", "ops", "+260770990570"); err != nil {
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-U2", "ops", "+260770990570", nil); err != nil {
 		t.Fatal(err)
 	}
 	if !repo.adminAssignCalled || !repo.completeTripCalled {
@@ -1588,7 +1624,7 @@ func TestAdminCompleteDropByOrder_BusyElsewhere(t *testing.T) {
 		TripID: "t1", OrderID: "ORD-B1", DEPhone: "+2609", DEID: "de-1", Status: models.TripStatusAssigned,
 	}}, &stubDERepo{de: de}, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-B1", "ops", "")
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-B1", "ops", "", nil)
 	if !errors.Is(err, ErrRiderBusyElsewhere) {
 		t.Fatalf("got %v", err)
 	}
@@ -1612,7 +1648,7 @@ func TestAdminCompleteDropByOrder_ForceProgress_JavaSequenced(t *testing.T) {
 	java := &stubJavaOrder{status: "READY_FOR_DELIVERY"}
 	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
 	svc.javaClient = java
-	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-SEQ", "ops", ""); err != nil {
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-SEQ", "ops", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(java.updates) != 2 || java.updates[0] != "OUT_FOR_DELIVERY" || java.updates[1] != "DELIVERED" {
@@ -1638,7 +1674,7 @@ func TestAdminCompleteDropByOrder_ForceProgress_JavaRefusalFailsPOST(t *testing.
 	java := &stubJavaOrder{status: "READY_FOR_DELIVERY", updateErr: javaErr}
 	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
 	svc.javaClient = java
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-REFUSE", "ops", "")
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-REFUSE", "ops", "", nil)
 	if !errors.Is(err, javaErr) {
 		t.Fatalf("expected the Java refusal to fail the POST, got %v", err)
 	}
@@ -1660,7 +1696,7 @@ func TestAdminCompleteDropByOrder_ForceProgress_JavaDelivered_ClosesTripNoPost(t
 	java := &stubJavaOrder{status: "DELIVERED"}
 	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
 	svc.javaClient = java
-	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-DONE", "ops", ""); err != nil {
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-DONE", "ops", "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if !repo.completeTripCalled {
@@ -1689,7 +1725,7 @@ func TestAdminCompleteDropByOrder_PickRider_AssignFails_RestoresPrior(t *testing
 	deRepo := &stubDERepo{de: de}
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-AF", "ops", "+260770990571")
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-AF", "ops", "+260770990571", nil)
 	if err == nil {
 		t.Fatal("expected an error when admin-assign fails")
 	}
@@ -1720,7 +1756,7 @@ func TestAdminCompleteDropByOrder_PickRider_AssignConflict_Sentinel(t *testing.T
 	}
 	svc := newTripServiceForTest(repo, &stubDERepo{de: de}, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "READY_FOR_DELIVERY"}
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-CF", "ops", "+260770990572")
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-CF", "ops", "+260770990572", nil)
 	if !errors.Is(err, ErrForceAssignConflict) {
 		t.Fatalf("expected ErrForceAssignConflict, got %v", err)
 	}
@@ -1743,7 +1779,7 @@ func TestAdminCompleteDropByOrder_TerminalTrip_Rejected(t *testing.T) {
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "DELIVERED"}
 
-	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-4", "ops-user", "")
+	err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-4", "ops-user", "", nil)
 	if !errors.Is(err, ErrAlreadyDelivered) {
 		t.Fatalf("expected ErrAlreadyDelivered, got: %v", err)
 	}
@@ -2194,7 +2230,7 @@ func TestAdminCompleteDropByOrder_Drop_SynthesizesReached(t *testing.T) {
 	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
 	svc.javaClient = &stubJavaOrder{status: "OUT_FOR_DELIVERY"}
 
-	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-ORDER-REACHED", "ops", ""); err != nil {
+	if err := svc.AdminCompleteDropByOrder(context.Background(), "ORD-ADMIN-ORDER-REACHED", "ops", "", nil); err != nil {
 		t.Fatalf("admin drop by order: %v", err)
 	}
 

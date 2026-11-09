@@ -1169,3 +1169,27 @@ func (r *TripRepository) Reassign(
 	}
 	return nil
 }
+
+// PutAdminDropReason upserts the admin Mark-Delivered reason for an order.
+func (r *TripRepository) PutAdminDropReason(ctx context.Context, rec *models.AdminDropReason) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.PutAdminDropReason", logrus.Fields{
+		"order_id": rec.OrderID, "reason_code": rec.ReasonCode,
+	})
+	defer op.End()
+
+	item, err := attributevalue.MarshalMap(rec)
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to marshal admin drop reason: %w", err))
+	}
+	item["PK"] = &types.AttributeValueMemberS{Value: rec.GetPK()}
+	item["SK"] = &types.AttributeValueMemberS{Value: rec.GetSK()}
+
+	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(r.tableName),
+		Item:      item,
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to put admin drop reason: %w", err))
+	}
+	return nil
+}

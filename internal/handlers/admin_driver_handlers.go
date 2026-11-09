@@ -340,8 +340,9 @@ func (h *AdminDriverHandlers) adminCompleteTask(w http.ResponseWriter, r *http.R
 
 // POST /api/v1/admin/orders/{orderId}/drop/complete
 // Order-scoped counterpart to AdminCompleteDrop, for the admin order-detail
-// "Mark Delivered" action which only has the order id on hand. Body is
-// optional: { "driver_phone": "..." } when a rider must be picked.
+// "Mark Delivered" action. Body: { "reason_code": "...", "note": "...",
+// "driver_phone": "..." }. reason_code is required. note is required only for
+// reason_code=not_listed. driver_phone is required when a rider must be picked.
 func (h *AdminDriverHandlers) AdminCompleteDropByOrder(w http.ResponseWriter, r *http.Request) {
 	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
 	if orderID == "" {
@@ -352,10 +353,32 @@ func (h *AdminDriverHandlers) AdminCompleteDropByOrder(w http.ResponseWriter, r 
 
 	var req struct {
 		DriverPhone string `json:"driver_phone"`
+		ReasonCode  string `json:"reason_code"`
+		Note        string `json:"note"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	err := h.tripService.AdminCompleteDropByOrder(r.Context(), orderID, adminUsername, req.DriverPhone)
+	reason, err := models.FormatAdminDropReason(req.ReasonCode, req.Note)
+	if err != nil {
+		switch {
+		case errors.Is(err, models.ErrAdminDropReasonNoteRequired):
+			h.respondWithError(w, http.StatusBadRequest, "REASON_NOTE_REQUIRED", "Enter a reason")
+		case errors.Is(err, models.ErrAdminDropReasonNoteTooLong):
+			h.respondWithError(w, http.StatusBadRequest, "REASON_NOTE_TOO_LONG", "Reason is too long")
+		default:
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_REASON_CODE", "Select a delivery reason")
+		}
+		return
+	}
+
+	dropReason := &models.AdminDropReason{
+		OrderID:       orderID,
+		ReasonCode:    req.ReasonCode,
+		Note:          strings.TrimSpace(req.Note),
+		Reason:        reason,
+		AdminUsername: adminUsername,
+	}
+	err = h.tripService.AdminCompleteDropByOrder(r.Context(), orderID, adminUsername, req.DriverPhone, dropReason)
 	if err != nil {
 		status, code := classifyTaskUpdateError(err)
 		if status == http.StatusInternalServerError {
