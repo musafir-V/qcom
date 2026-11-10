@@ -180,7 +180,7 @@ func (s *DisputeService) resolveStoreID(ctx context.Context, orderNumber string)
 	if s.trips == nil {
 		return models.UnknownStoreID
 	}
-	trip, err := s.trips.GetByOrderID(ctx, orderNumber)
+	trip, err := s.trips.ResolveTripByOrderID(ctx, orderNumber)
 	if err != nil {
 		s.logger.WithError(err).WithField("order_number", orderNumber).
 			Warn("failed to resolve store for dispute; falling back to UNKNOWN")

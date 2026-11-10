@@ -55,6 +55,12 @@ func TestClassifyTaskUpdateError(t *testing.T) {
 			wantCode:   "TRIP_ALREADY_CLOSED",
 		},
 		{
+			name:       "trip inactive",
+			err:        fmt.Errorf("%w: trip-old", service.ErrTripInactive),
+			wantStatus: http.StatusConflict,
+			wantCode:   "TRIP_INACTIVE",
+		},
+		{
 			name:       "prerequisite incomplete",
 			err:        fmt.Errorf("%w: %w", service.ErrPrerequisiteIncomplete, errors.New("pickup not done")),
 			wantStatus: http.StatusBadRequest,

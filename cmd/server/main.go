@@ -111,6 +111,13 @@ func main() {
 	ruleCache := service.NewRuleCache(ruleRepo, 60*time.Second, logger)
 	ruleCache.Start(appCtx)
 	fareEngine := service.NewFareEngine(ruleCache)
+	batchingConfigRepo := repository.NewBatchingConfigRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	batchingService := service.NewBatchingService(
+		batchingConfigRepo, tripRepo, deRepo, javaOrderClient, darkstoreRepo,
+		payoutConfigRepo, cashConfigRepo, distanceService, fareEngine,
+		payoutService, notificationService, logger,
+	)
+	tripService.SetBatching(batchingService)
 	rewardCron := service.NewRewardCron(deRepo, tripRepo, ruleRepo, earningsLedgerRepo, cronLockRepo, logger)
 	assignmentCron := service.NewAssignmentCron(tripRepo, deRepo, cronLockRepo, payoutConfigRepo, assignmentConfigRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, javaOrderClient, distanceService, fareEngine, notificationService, logger)
 
@@ -474,6 +481,8 @@ func setupRouter(
 	// Order-scoped drop complete for the order-detail "Mark Delivered" action,
 	// which has the order id but not the driver's phone on hand.
 	admin.HandleFunc("/orders/{orderId}/pickup/complete", adminDriverHandlers.AdminCompletePickupByOrder).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/orders/{orderId}/batch/candidates", adminDriverHandlers.BatchCandidates).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/orders/{orderId}/batch", adminDriverHandlers.ConfirmBatch).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/orders/{orderId}/drop/preview", adminDriverHandlers.PreviewAdminDrop).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/orders/{orderId}/drop/complete", adminDriverHandlers.AdminCompleteDropByOrder).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/assigned-store", adminDriverHandlers.UpdateAssignedStore).Methods("PATCH", "OPTIONS")

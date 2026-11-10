@@ -135,6 +135,29 @@ func TestComputeCompletionPayout_OnTimeFalseWhenActualDurationUnavailable(t *tes
 	}
 }
 
+func TestComputeCompletionPayout_BatchedUsesDropsOnTime(t *testing.T) {
+	deadline := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC).Unix()
+	trip := &models.Trip{
+		OrderIDs:       []string{"A", "B"},
+		DistanceKM:     8.0,
+		RateMultiplier: 1.0,
+		SLAMinutes:     1, // would be late if using ActualDeliveryMinutes
+		Tasks: []models.Task{
+			{Type: models.TaskTypePickup, CompletedAt: "2026-11-10T10:00:00Z"},
+			{Type: models.TaskTypeDrop, CompletedAt: "2026-11-10T11:00:00Z", DropDeadline: &deadline},
+			{Type: models.TaskTypeDrop, CompletedAt: "2026-11-10T11:30:00Z", DropDeadline: &deadline},
+		},
+	}
+	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0}
+	got := computeCompletionPayout(trip, cfg)
+	if got.DistanceKM != 8.0 {
+		t.Fatalf("frozen km = %.1f, want 8", got.DistanceKM)
+	}
+	if !got.OnTime {
+		t.Fatal("expected on_time from per-drop deadlines")
+	}
+}
+
 func TestComputeCompletionPayout_CarriesDistanceKMThrough(t *testing.T) {
 	trip := &models.Trip{
 		DistanceKM:     7.3,

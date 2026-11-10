@@ -33,7 +33,7 @@ type trackFakeTripGetter struct {
 	err  error
 }
 
-func (f trackFakeTripGetter) GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
+func (f trackFakeTripGetter) ResolveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
 	return f.trip, f.err
 }
 
@@ -72,6 +72,43 @@ func orderWith(status, createdAt string) map[string]json.RawMessage {
 		o["createdAt"] = json.RawMessage(`"` + createdAt + `"`)
 	}
 	return o
+}
+
+func TestTrack_OTPFromThisOrderDrop(t *testing.T) {
+	trip := &models.Trip{
+		OrderID:  "ORD1",
+		OrderIDs: []string{"ORD1", "ORD2"},
+		Status:   models.TripStatusOutForDelivery,
+		DEPhone:  "+260971000001",
+		Tasks: []models.Task{
+			{Type: models.TaskTypeDrop, OrderID: "ORD1", Status: models.TaskStatusCreated, OTP: "1111"},
+			{Type: models.TaskTypeDrop, OrderID: "ORD2", Status: models.TaskStatusCreated, OTP: "2222"},
+		},
+	}
+	h := &TrackHandlers{
+		tripRepo:   trackFakeTripGetter{trip: trip},
+		deRepo:     fakeDEResolver{de: &models.DeliveryExecutive{Name: "Ada", PhoneNumber: "+260971000001"}},
+		javaClient: fakeOrderFetcher{raw: orderWith("OUT_FOR_DELIVERY", "")},
+		logger:     logrus.New(),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/orders/ORD2/track", nil)
+	req = mux.SetURLVars(req, map[string]string{"orderId": "ORD2"})
+	rr := httptest.NewRecorder()
+	h.Track(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rr.Code, rr.Body.String())
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	var otp string
+	if err := json.Unmarshal(payload["otp"], &otp); err != nil {
+		t.Fatalf("otp: %v", err)
+	}
+	if otp != "2222" {
+		t.Fatalf("otp = %q, want this order's 2222", otp)
+	}
 }
 
 func tripWith(status models.TripStatus, dropStatus models.TaskStatus, otp string) *models.Trip {
@@ -164,6 +201,19 @@ func TestTrack_OutForDelivery_Reached_ShowsOTPNameETAAndPreservesOrder(t *testin
 	}
 	if string(body["grandTotal"]) != `42.5` || string(body["status"]) != `"OUT_FOR_DELIVERY"` {
 		t.Errorf("order fields not preserved: grandTotal=%s status=%s", body["grandTotal"], body["status"])
+	}
+}
+
+func TestTrack_InactiveTrip_DoesNotHideETA(t *testing.T) {
+	of := fakeOrderFetcher{raw: baseOrder()}
+	tg := trackFakeTripGetter{trip: tripWith(models.TripStatusInactive, models.TaskStatusCreated, "4321")}
+	rec := doTrack(newTrackHandlers(of, tg, fakeDEResolver{}), "ORD1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := decodeBody(t, rec)
+	if string(body["eta"]) == "null" || len(body["eta"]) == 0 {
+		t.Errorf("inactive is not terminal; eta must stay: %s", body["eta"])
 	}
 }
 

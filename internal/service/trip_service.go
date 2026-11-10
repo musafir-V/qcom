@@ -83,6 +83,10 @@ type tripRepoI interface {
 	UpdateEditByOrder(ctx context.Context, tripID string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error
 	AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error
 	PutAdminDropReason(ctx context.Context, rec *models.AdminDropReason) error
+	LiveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+	ResolveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+	CompleteDropKeepBusy(ctx context.Context, tripID, dePhone, currentOrderID string, tasks []models.Task, codAmount float64) error
+	SetCurrentOrderID(ctx context.Context, dePhone, orderID string) error
 }
 
 // deRepoI is the subset of DERepository methods used by TripService.
@@ -92,6 +96,7 @@ type deRepoI interface {
 	UpdateStatus(ctx context.Context, phone string, status models.DEStatus, storeID, orderID string) error
 	AttachToTrip(ctx context.Context, phone, orderID, tripID, storeID string) error
 	ListByAssignedStore(ctx context.Context, indexKey, namePrefix, cursor string, limit int32, includeArchived bool) ([]*models.DeliveryExecutive, string, error)
+	StampLastAppVersion(ctx context.Context, phone, version string) error
 }
 
 // javaOrderAPI is the subset of JavaOrderClient used by TripService so tests
@@ -115,6 +120,7 @@ type TripService struct {
 	statusEventRepo    statusEventAppender
 	reachedConfig      reachedConfigStore
 	dropDeadlineConfig dropDeadlineConfigStore
+	batching           *BatchingService
 	logger             *logrus.Logger
 }
 
@@ -139,6 +145,34 @@ func NewTripService(
 		reachedConfig:      reachedConfig,
 		dropDeadlineConfig: dropDeadlineConfig,
 		logger:             logger,
+	}
+}
+
+func (s *TripService) SetBatching(b *BatchingService) { s.batching = b }
+
+// BatchCandidates lists same-store busy riders this order can merge onto.
+func (s *TripService) BatchCandidates(ctx context.Context, orderID string) (*BatchCandidatesResult, error) {
+	if s.batching == nil {
+		return nil, ErrBatchingDisabled
+	}
+	return s.batching.Candidates(ctx, orderID)
+}
+
+// ConfirmBatch merges this order onto the target rider's live trip.
+func (s *TripService) ConfirmBatch(ctx context.Context, in BatchConfirmInput) (*BatchConfirmResult, error) {
+	if s.batching == nil {
+		return nil, ErrBatchingDisabled
+	}
+	return s.batching.Confirm(ctx, in)
+}
+
+// NoteAppVersion stamps X-App-Version on the DE. Empty version is a no-op.
+func (s *TripService) NoteAppVersion(ctx context.Context, dePhone, version string) {
+	if s.deRepo == nil || strings.TrimSpace(version) == "" {
+		return
+	}
+	if err := s.deRepo.StampLastAppVersion(ctx, dePhone, version); err != nil {
+		s.logger.WithError(err).WithField("phone", dePhone).Warn("failed to stamp last_app_version")
 	}
 }
 
@@ -175,6 +209,18 @@ func (s *TripService) CancelTripByOrder(ctx context.Context, orderID, reason str
 		s.logger.WithFields(logrus.Fields{"order_id": orderID, "trip_id": trip.TripID}).
 			Debug("CancelTripByOrder: trip already cancelled — idempotent no-op")
 		return nil
+	}
+	if trip.Status == models.TripStatusInactive {
+		s.logger.WithFields(logrus.Fields{"order_id": orderID, "trip_id": trip.TripID}).
+			Debug("CancelTripByOrder: trip inactive — no-op")
+		return nil
+	}
+
+	if len(trip.LiveOrderIDs()) > 1 {
+		if s.batching == nil {
+			return fmt.Errorf("CancelTripByOrder: batching not configured for multi-order trip %s", trip.TripID)
+		}
+		return s.batching.CancelOne(ctx, trip, orderID)
 	}
 
 	if err := s.tripRepo.CancelByOrderID(ctx, trip.TripID, trip.DEPhone, trip.StoreID); err != nil {
@@ -261,12 +307,26 @@ func (s *TripService) UpdateTripPayment(ctx context.Context, in PaymentUpdateInp
 		Currency:      in.Currency,
 	})
 
-	if err := s.tripRepo.UpdatePayment(ctx, trip.TripID, payment); err != nil {
-		if errors.Is(err, repository.ErrTripTerminal) {
+	if drop := trip.DropForOrder(in.OrderID); drop != nil {
+		drop.Payment = payment
+	}
+
+	var persistErr error
+	if len(trip.Tasks) == 0 {
+		persistErr = s.tripRepo.UpdatePayment(ctx, trip.TripID, payment)
+	} else {
+		rollup := trip.PaymentRollup()
+		if rollup == nil {
+			rollup = payment
+		}
+		persistErr = s.tripRepo.UpdateEditByOrder(ctx, trip.TripID, trip.ItemsRollup(), rollup, trip.Tasks)
+	}
+	if persistErr != nil {
+		if errors.Is(persistErr, repository.ErrTripTerminal) {
 			op.Outcome("trip_terminal", nil)
 			return PaymentUpdateResult{Updated: false, Reason: "trip_terminal"}, nil
 		}
-		return PaymentUpdateResult{}, op.Fail(err)
+		return PaymentUpdateResult{}, op.Fail(persistErr)
 	}
 
 	op.With("collect_cash", payment.CollectCash)
@@ -327,12 +387,27 @@ func (s *TripService) EditTripByOrder(ctx context.Context, in EditTripByOrderInp
 
 	tasks := append([]models.Task(nil), trip.Tasks...)
 	for i := range tasks {
-		if tasks[i].Type == models.TaskTypePickup {
+		if tasks[i].Type == models.TaskTypePickup && trip.TaskOrderID(&tasks[i]) == in.OrderID {
 			tasks[i].DeliveryZone = in.DeliveryZone
+			if len(items) > 0 {
+				tasks[i].Items = items
+			}
+		}
+		if tasks[i].Type == models.TaskTypeDrop && trip.TaskOrderID(&tasks[i]) == in.OrderID {
+			tasks[i].Payment = payment
 		}
 	}
 
-	if err := s.tripRepo.UpdateEditByOrder(ctx, trip.TripID, items, payment, tasks); err != nil {
+	trip.Tasks = tasks
+	rollupItems := trip.ItemsRollup()
+	if len(rollupItems) == 0 {
+		rollupItems = items
+	}
+	rollupPay := trip.PaymentRollup()
+	if rollupPay == nil {
+		rollupPay = payment
+	}
+	if err := s.tripRepo.UpdateEditByOrder(ctx, trip.TripID, rollupItems, rollupPay, tasks); err != nil {
 		if errors.Is(err, repository.ErrTripTerminal) {
 			op.Outcome("trip_terminal", nil)
 			return PaymentUpdateResult{Updated: false, Reason: "trip_terminal"}, nil
@@ -409,17 +484,30 @@ func (s *TripService) GetCurrentTrip(ctx context.Context, dePhone string) (*mode
 	if de == nil {
 		return nil, op.Outcome("not_found", fmt.Errorf("DE not found"))
 	}
-	if de.CurrentOrderID == "" {
+	var trip *models.Trip
+	if de.CurrentTripID != "" {
+		t, gerr := s.tripRepo.GetByID(ctx, de.CurrentTripID)
+		if gerr != nil {
+			return nil, op.Fail(gerr)
+		}
+		trip = t
+	} else if de.CurrentOrderID != "" {
+		t, gerr := s.tripRepo.GetByOrderID(ctx, de.CurrentOrderID)
+		if gerr != nil {
+			return nil, op.Fail(gerr)
+		}
+		trip = t
+	} else {
 		return nil, nil
 	}
-
-	trip, err := s.tripRepo.GetByOrderID(ctx, de.CurrentOrderID)
-	if err != nil {
-		return nil, op.Fail(err)
-	}
-	// Guard against stale current_order_id pointing at a closed trip.
-	if trip != nil && (trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled) {
+	if trip != nil && models.IsStaleCurrentTrip(trip.Status) {
 		return nil, nil
+	}
+	if trip != nil {
+		trip.Items = trip.ItemsRollup()
+		if roll := trip.PaymentRollup(); roll != nil {
+			trip.Payment = roll
+		}
 	}
 	return trip, nil
 }
@@ -455,9 +543,12 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 		return nil, op.Outcome("forbidden", ErrTripForbidden)
 	}
 
-	// 3. Trip-level guard: reject if already closed
+	// 3. Trip-level guard: reject if already closed or superseded
 	if trip.Status == models.TripStatusCompleted || trip.Status == models.TripStatusCancelled {
 		return nil, op.Outcome("trip_closed", fmt.Errorf("%w: %s", ErrTripClosed, trip.Status))
+	}
+	if trip.Status == models.TripStatusInactive || (de.CurrentTripID != "" && de.CurrentTripID != tripID) {
+		return nil, op.Outcome("trip_inactive", fmt.Errorf("%w: %s", ErrTripInactive, tripID))
 	}
 
 	// 4. Find task
@@ -530,7 +621,7 @@ func (s *TripService) UpdateTaskStatus(ctx context.Context, tripID, taskID, call
 	// not written while the store is still packing. Admin / skipJava paths
 	// go through applyTaskCompletion directly and stay ungated.
 	if task.Type == models.TaskTypePickup && newStatus == models.TaskStatusCompleted {
-		if err := s.requirePacked(ctx, trip.OrderID); err != nil {
+		if err := s.requirePacked(ctx, trip.TaskOrderID(task)); err != nil {
 			return nil, op.Outcome("order_not_packed", err)
 		}
 	}
@@ -707,7 +798,7 @@ func (s *TripService) classifyAdminPickupByOrder(ctx context.Context, orderID st
 	if err != nil {
 		return nil, err
 	}
-	if de != nil && de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
+	if riderBusyElsewhere(de, trip) {
 		return &adminPickupClass{Mode: adminPickupBlocked, Reason: "rider_busy_elsewhere", JavaStatus: javaStatus}, nil
 	}
 
@@ -855,7 +946,7 @@ func (s *TripService) PreviewAdminDropByOrder(ctx context.Context, orderID strin
 		return nil, err
 	}
 	rider := adminDropRiderFrom(de)
-	if de != nil && de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
+	if riderBusyElsewhere(de, trip) {
 		return &AdminDropPreview{
 			Mode:       AdminDropModeBlocked,
 			Reason:     "rider_busy_elsewhere",
@@ -1024,7 +1115,7 @@ func (s *TripService) forceAssignAndComplete(ctx context.Context, orderID, admin
 	if trip == nil {
 		return fmt.Errorf("%w: no trip for order %s", ErrTripNotFound, orderID)
 	}
-	if cerr := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava, notes); cerr != nil {
+	if cerr := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava, notes, orderID); cerr != nil {
 		return cerr
 	}
 	if prior == models.DEStatusOffline {
@@ -1050,13 +1141,13 @@ func (s *TripService) forceProgressExisting(ctx context.Context, orderID, adminU
 	if de == nil {
 		return fmt.Errorf("%w: %s", ErrDENotFound, trip.DEPhone)
 	}
-	if de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
+	if riderBusyElsewhere(de, trip) {
 		return ErrRiderBusyElsewhere
 	}
 
 	prior := de.Status
-	if de.CurrentOrderID != trip.OrderID || de.Status != models.DEStatusBusy {
-		if err := s.deRepo.AttachToTrip(ctx, de.PhoneNumber, trip.OrderID, trip.TripID, trip.StoreID); err != nil {
+	if de.CurrentTripID != trip.TripID || de.Status != models.DEStatusBusy {
+		if err := s.deRepo.AttachToTrip(ctx, de.PhoneNumber, firstIncompleteOrderID(trip), trip.TripID, trip.StoreID); err != nil {
 			return err
 		}
 	}
@@ -1066,7 +1157,7 @@ func (s *TripService) forceProgressExisting(ctx context.Context, orderID, adminU
 		}
 		trip.Status = models.TripStatusAccepted
 	}
-	if err := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava, notes); err != nil {
+	if err := s.completePickupThenDrop(ctx, trip, de, adminUsername, skipJava, notes, orderID); err != nil {
 		return err
 	}
 	if prior == models.DEStatusOffline {
@@ -1092,12 +1183,12 @@ func (s *TripService) forceProgressPickup(ctx context.Context, orderID, adminUse
 	if de == nil {
 		return fmt.Errorf("%w: %s", ErrDENotFound, trip.DEPhone)
 	}
-	if de.Status == models.DEStatusBusy && de.CurrentOrderID != "" && de.CurrentOrderID != trip.OrderID {
+	if riderBusyElsewhere(de, trip) {
 		return ErrRiderBusyElsewhere
 	}
 
-	if de.CurrentOrderID != trip.OrderID || de.Status != models.DEStatusBusy {
-		if err := s.deRepo.AttachToTrip(ctx, de.PhoneNumber, trip.OrderID, trip.TripID, trip.StoreID); err != nil {
+	if de.CurrentTripID != trip.TripID || de.Status != models.DEStatusBusy {
+		if err := s.deRepo.AttachToTrip(ctx, de.PhoneNumber, firstIncompleteOrderID(trip), trip.TripID, trip.StoreID); err != nil {
 			return err
 		}
 	}
@@ -1108,7 +1199,7 @@ func (s *TripService) forceProgressPickup(ctx context.Context, orderID, adminUse
 		trip.Status = models.TripStatusAccepted
 	}
 
-	pickup := trip.PickupTask()
+	pickup := trip.PickupForOrder(orderID)
 	if pickup != nil && pickup.Status != models.TaskStatusCompleted {
 		if err := validateTaskTransition(*pickup, models.TaskStatusCompleted, false); err != nil {
 			return err
@@ -1133,8 +1224,8 @@ func (s *TripService) forceProgressPickup(ctx context.Context, orderID, adminUse
 // forceJavaDeliver after the trip work — so the two writes cannot race and a
 // Java refusal fails the POST (the same guarantee as the no-trip path). When
 // Java is already DELIVERED (javaAlreadyDelivered), Java is left untouched.
-func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.Trip, de *models.DeliveryExecutive, adminUsername string, javaAlreadyDelivered bool, notes string) error {
-	pickup := trip.PickupTask()
+func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.Trip, de *models.DeliveryExecutive, adminUsername string, javaAlreadyDelivered bool, notes, orderID string) error {
+	pickup := trip.PickupForOrder(orderID)
 	if pickup != nil && pickup.Status != models.TaskStatusCompleted {
 		if trip.Status != models.TripStatusAccepted {
 			if err := s.tripRepo.Accept(ctx, trip.TripID, de.DEID); err != nil {
@@ -1149,41 +1240,35 @@ func (s *TripService) completePickupThenDrop(ctx context.Context, trip *models.T
 			return err
 		}
 	}
-	trip.Status = models.TripStatusOutForDelivery
 
-	drop, err := adminSelectTask(trip, models.TaskTypeDrop)
-	if err != nil {
-		return err
+	drop := trip.DropForOrder(orderID)
+	if drop == nil {
+		return fmt.Errorf("%w: drop task missing for order %s", ErrTaskNotFound, orderID)
 	}
-	if err := validateTaskTransition(*drop, models.TaskStatusCompleted, false); err != nil {
-		return err
-	}
-	synthesizeAdminDropReached(drop)
-	if err := s.applyTaskCompletion(ctx, trip, drop, de, models.TaskStatusCompleted, "", adminUsername, true); err != nil {
-		return err
+	if drop.Status != models.TaskStatusCompleted {
+		if err := validateTaskTransition(*drop, models.TaskStatusCompleted, false); err != nil {
+			return err
+		}
+		synthesizeAdminDropReached(drop)
+		if err := s.applyTaskCompletion(ctx, trip, drop, de, models.TaskStatusCompleted, "", adminUsername, true); err != nil {
+			return err
+		}
 	}
 
 	if javaAlreadyDelivered {
 		return nil
 	}
-	return s.forceJavaDeliver(ctx, trip.OrderID, adminUsername, notes)
+	return s.forceJavaDeliver(ctx, orderID, adminUsername, notes)
 }
 
-// adminSelectTask resolves the pickup/drop task an admin completion targets.
+// adminSelectTask resolves the first incomplete pickup/drop on a driver's trip.
 func adminSelectTask(trip *models.Trip, taskType models.TaskType) (*models.Task, error) {
-	var task *models.Task
-	switch taskType {
-	case models.TaskTypePickup:
-		task = trip.PickupTask()
-	case models.TaskTypeDrop:
-		task = trip.DropTask()
-	default:
-		return nil, fmt.Errorf("%w: unsupported task type", ErrTaskNotFound)
+	for i := range trip.Tasks {
+		if trip.Tasks[i].Type == taskType && trip.Tasks[i].Status != models.TaskStatusCompleted {
+			return &trip.Tasks[i], nil
+		}
 	}
-	if task == nil {
-		return nil, fmt.Errorf("%w: %s task missing", ErrTaskNotFound, taskType)
-	}
-	return task, nil
+	return nil, fmt.Errorf("%w: %s task missing", ErrTaskNotFound, taskType)
 }
 
 // javaActor formats the actor string recorded against a Java order-status
@@ -1276,9 +1361,21 @@ func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip
 	}
 
 	actor := javaActor(de, adminUsername)
+	orderID := trip.TaskOrderID(task)
 
 	if task.Type == models.TaskTypeDrop && newStatus == models.TaskStatusCompleted {
-		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, trip.TripID, de.PhoneNumber, trip.StoreID, trip.Tasks, codAccrualAmount(trip)); err != nil {
+		cod := dropCODAmount(trip, task)
+		if len(trip.OpenDrops()) > 0 {
+			if err := s.tripRepo.CompleteDropKeepBusy(ctx, trip.TripID, de.PhoneNumber, firstIncompleteOrderID(trip), trip.Tasks, cod); err != nil {
+				return err
+			}
+			if !skipJava {
+				s.syncJavaIfNeeded(orderID, "DELIVERED", actor)
+			}
+			s.notifyCustomerForOrder(trip, de, eventDelivered, orderID)
+			return nil
+		}
+		if err := s.tripRepo.CompleteTripAndFreeDE(ctx, trip.TripID, de.PhoneNumber, trip.StoreID, trip.Tasks, cod); err != nil {
 			return err
 		}
 		s.appendStatusEvent(ctx, &models.DEStatusEvent{
@@ -1290,15 +1387,18 @@ func (s *TripService) applyTaskCompletion(ctx context.Context, trip *models.Trip
 			TS:        timezone.Now().UTC().Format(time.RFC3339),
 		})
 		if !skipJava {
-			go s.syncJavaWithRetry(trip.OrderID, "DELIVERED", actor)
+			s.syncJavaIfNeeded(orderID, "DELIVERED", actor)
 		}
-		s.notifyCustomer(trip, de, eventDelivered)
+		s.notifyCustomerForOrder(trip, de, eventDelivered, orderID)
 		s.recordTripPayout(trip, de)
 		return nil
 	}
 
 	if err := s.tripRepo.UpdateTasks(ctx, trip.TripID, trip.Tasks); err != nil {
 		return err
+	}
+	if de != nil {
+		_ = s.tripRepo.SetCurrentOrderID(ctx, de.PhoneNumber, firstIncompleteOrderID(trip))
 	}
 
 	s.onTaskCompleted(ctx, trip, task, de, actor, skipJava)
@@ -1310,9 +1410,17 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 	// Use a detached context for all writes — the request context may be cancelled
 	// if the client disconnects before these writes complete.
 	bgCtx := context.Background()
+	orderID := trip.TaskOrderID(task)
 
 	switch {
 	case task.Type == models.TaskTypePickup && task.Status == models.TaskStatusCompleted:
+		if trip.HasIncompletePickup() {
+			if !skipJava {
+				s.syncJavaIfNeeded(orderID, "OUT_FOR_DELIVERY", actor)
+			}
+			s.notifyCustomerForOrder(trip, de, eventOutForDelivery, orderID)
+			return
+		}
 		var cfg *models.DropDeadlineConfig
 		if s.dropDeadlineConfig != nil {
 			var err error
@@ -1324,14 +1432,16 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 			}
 		}
 		deadline := models.ComputeDropDeadlineUnix(timezone.Now(), trip.DistanceKM, cfg.EffectiveMinutesPerKm(), cfg.EffectiveExtraMinutes())
+		if min := trip.MinOpenDropDeadline(); min != nil {
+			deadline = *min
+		}
 		if err := s.tripRepo.MarkOutForDelivery(bgCtx, trip.TripID, deadline); err != nil {
 			s.logger.WithError(err).WithField("trip_id", trip.TripID).Error("failed to mirror trip status")
 		}
 		if !skipJava {
-			go s.syncJavaWithRetry(trip.OrderID, "OUT_FOR_DELIVERY", actor)
+			s.syncJavaIfNeeded(orderID, "OUT_FOR_DELIVERY", actor)
 		}
-		s.notifyCustomer(trip, de, eventOutForDelivery)
-
+		s.notifyCustomerForOrder(trip, de, eventOutForDelivery, orderID)
 	}
 }
 
@@ -1345,6 +1455,16 @@ func (s *TripService) onTaskCompleted(ctx context.Context, trip *models.Trip, ta
 // Dispatches on a goroutine so the driver's swipe-to-confirm is not delayed by
 // the FCM round-trip. Payload construction is synchronous and pure, so the
 // interesting logic stays testable.
+func (s *TripService) notifyCustomerForOrder(trip *models.Trip, de *models.DeliveryExecutive, event customerOrderEvent, orderID string) {
+	if trip == nil {
+		return
+	}
+	if orderID != "" && trip.OrderID != "" && orderID != trip.OrderID {
+		return
+	}
+	s.notifyCustomer(trip, de, event)
+}
+
 func (s *TripService) notifyCustomer(trip *models.Trip, de *models.DeliveryExecutive, event customerOrderEvent) {
 	if s.notifier == nil {
 		s.logger.WithFields(logrus.Fields{
@@ -1401,6 +1521,29 @@ func tripOrderID(trip *models.Trip) string {
 // Runs in a goroutine — does not block the DE response. actor is the fully
 // formatted Java actor string (e.g. "DE:{deId}" or "ADMIN:{username}"); see
 // javaActor.
+func (s *TripService) syncJavaIfNeeded(orderID, status, actor string) {
+	if s.javaClient == nil || orderID == "" {
+		return
+	}
+	go func() {
+		ctx := context.Background()
+		current, err := s.javaClient.GetOrderStatus(ctx, orderID)
+		if err == nil {
+			switch status {
+			case "OUT_FOR_DELIVERY":
+				if current == "OUT_FOR_DELIVERY" || current == "DELIVERED" {
+					return
+				}
+			case "DELIVERED":
+				if current == "DELIVERED" {
+					return
+				}
+			}
+		}
+		s.syncJavaWithRetry(orderID, status, actor)
+	}()
+}
+
 func (s *TripService) syncJavaWithRetry(orderID, status, actor string) {
 	if s.javaClient == nil {
 		return
@@ -1468,11 +1611,55 @@ func validateDropOTP(task models.Task, otp string) error {
 // codAccrualAmount returns the cash a DE collects on completing this trip's
 // drop. Only COD (collect_cash) trips accrue in-hand cash; prepaid trips are 0.
 // Rounded to 2dp so DynamoDB never stores float64 binary noise.
-func codAccrualAmount(trip *models.Trip) float64 {
-	if trip.Payment != nil && trip.Payment.CollectCash {
-		return money.Round2ZMW(trip.Payment.AmountZMW)
+func dropCODAmount(trip *models.Trip, task *models.Task) float64 {
+	var p *models.Payment
+	if task != nil {
+		p = task.Payment
+	}
+	if p == nil && trip != nil {
+		p = trip.Payment
+	}
+	if p != nil && p.CollectCash {
+		return money.Round2ZMW(p.AmountZMW)
 	}
 	return 0
+}
+
+func codAccrualAmount(trip *models.Trip) float64 {
+	if trip == nil {
+		return 0
+	}
+	return dropCODAmount(trip, trip.DropTask())
+}
+
+func firstIncompleteOrderID(trip *models.Trip) string {
+	if trip == nil {
+		return ""
+	}
+	if t := trip.FirstIncompleteTask(); t != nil {
+		if id := trip.TaskOrderID(t); id != "" {
+			return id
+		}
+	}
+	return trip.OrderID
+}
+
+func riderBusyElsewhere(de *models.DeliveryExecutive, trip *models.Trip) bool {
+	if de == nil || trip == nil || de.Status != models.DEStatusBusy {
+		return false
+	}
+	if de.CurrentTripID != "" {
+		return de.CurrentTripID != trip.TripID
+	}
+	if de.CurrentOrderID == "" {
+		return false
+	}
+	for _, oid := range trip.LiveOrderIDs() {
+		if oid == de.CurrentOrderID {
+			return false
+		}
+	}
+	return de.CurrentOrderID != trip.OrderID
 }
 
 // validateTaskAgainstTripStatus enforces that a task may only be completed when
@@ -1536,7 +1723,10 @@ func validatePickupScan(trip *models.Trip, scannedOrderID string) error {
 	if trip.Status != models.TripStatusAccepted {
 		return fmt.Errorf("%w: cannot verify pickup from %s", ErrInvalidTripTransition, trip.Status)
 	}
-	if scannedOrderID == "" || scannedOrderID != trip.OrderID {
+	if scannedOrderID == "" {
+		return ErrPickupOrderMismatch
+	}
+	if trip.PickupForOrder(scannedOrderID) == nil && scannedOrderID != trip.OrderID {
 		return ErrPickupOrderMismatch
 	}
 	return nil
@@ -1571,7 +1761,7 @@ func (s *TripService) requirePacked(ctx context.Context, orderID string) error {
 	if err != nil {
 		return err
 	}
-	if status != eligibleOrderStatus {
+	if status != eligibleOrderStatus && status != "OUT_FOR_DELIVERY" {
 		return ErrOrderNotPacked
 	}
 	return nil
@@ -1591,7 +1781,7 @@ func (s *TripService) VerifyPickup(ctx context.Context, tripID, callerDEPhone, s
 	if err := validatePickupScan(trip, scannedOrderID); err != nil {
 		return op.Outcome("verify_failed", err)
 	}
-	if err := s.requirePacked(ctx, trip.OrderID); err != nil {
+	if err := s.requirePacked(ctx, scannedOrderID); err != nil {
 		return op.Outcome("order_not_packed", err)
 	}
 	return nil

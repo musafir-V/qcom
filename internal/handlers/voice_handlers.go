@@ -24,6 +24,7 @@ type userEnsurer interface {
 // without a real DynamoDB connection.
 type tripGetter interface {
 	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+	ResolveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
 }
 
 // callCounter abstracts CallRecordRepository.CountByTripDirection so the
@@ -182,7 +183,7 @@ func (h *VoiceHandlers) AnswerWebhook(w http.ResponseWriter, r *http.Request) {
 		"custom_data_keys": customDataKeys,
 	}).Info("voice: AnswerWebhook: received")
 
-	trip, err := h.trips.GetByOrderID(r.Context(), req.CustomData.OrderID)
+	trip, err := h.trips.ResolveTripByOrderID(r.Context(), req.CustomData.OrderID)
 	if err != nil || trip == nil {
 		h.logger.WithError(err).WithFields(logrus.Fields{
 			"webhook":  "answer",
@@ -364,7 +365,7 @@ func (h *VoiceHandlers) EventWebhook(w http.ResponseWriter, r *http.Request) {
 	// Resolve the trip by order_id to get the canonical TripID (DDB key) and
 	// FIX 1: derive direction server-side so the rate cap cannot be evaded by
 	// rotating custom_data.direction on the client.
-	trip, tripErr := h.trips.GetByOrderID(r.Context(), orderID)
+	trip, tripErr := h.trips.ResolveTripByOrderID(r.Context(), orderID)
 	if tripErr != nil || trip == nil {
 		h.logger.WithError(tripErr).Warn("voice: EventWebhook: trip not found by order_id, skipping upsert")
 		h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "ok"})

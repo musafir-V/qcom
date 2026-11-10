@@ -57,7 +57,7 @@ func TestUpdateEditByOrderUpdateExpression_IncludesPackedSnapshotFields(t *testi
 
 func TestUpdateEditByOrderConditionExpression_MatchesUpdatePayment(t *testing.T) {
 	cond := updateEditByOrderConditionExpression()
-	want := "attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed"
+	want := "attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed AND #status <> :inactive"
 	if cond != want {
 		t.Fatalf("condition = %q, want %q", cond, want)
 	}

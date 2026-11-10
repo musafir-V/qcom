@@ -577,36 +577,43 @@ func buildTripFromOrder(
 	distKM, basePayZMW float64,
 	ds *models.Darkstore,
 ) *models.Trip {
+	items := tripItemsFromOrder(order)
+	payment := paymentFromOrder(order)
 	return &models.Trip{
 		TripID:         tripID,
 		OrderID:        orderID,
+		OrderIDs:       []string{orderID},
 		StoreID:        storeID,
 		Status:         models.TripStatusCreated,
 		DistanceKM:     distKM,
 		BasePayZMW:     basePayZMW,
 		CustomerUserID: order.CustomerID,
-		Items:          tripItemsFromOrder(order),
-		Payment:        paymentFromOrder(order),
+		Items:          items,
+		Payment:        payment,
 		Tasks: []models.Task{
 			{
 				TaskID:       pickupTaskID,
 				Type:         models.TaskTypePickup,
 				Status:       models.TaskStatusCreated,
+				OrderID:      orderID,
 				Address:      ds.Name,
 				Lat:          ds.Latitude,
 				Lng:          ds.Longitude,
 				DeliveryZone: order.DeliveryZone,
+				Items:        items,
 			},
 			{
 				TaskID:        dropTaskID,
 				Type:          models.TaskTypeDrop,
 				Status:        models.TaskStatusCreated,
+				OrderID:       orderID,
 				Phone:         order.Delivery.Phone,
 				Address:       order.Delivery.Address,
 				Lat:           order.Delivery.Lat,
 				Lng:           order.Delivery.Lng,
 				OTP:           randomOTP(),
 				RecipientName: firstNonEmpty(order.Delivery.Name, recipientFallback),
+				Payment:       payment,
 			},
 		},
 	}

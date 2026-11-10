@@ -269,7 +269,7 @@ func (s *AdminService) ReassignTrip(ctx context.Context, tripID, toDEPhone, reas
 	}
 
 	if err := s.tripRepo.Reassign(ctx, trip.TripID, trip.DEPhone, trip.DEID,
-		toDE.DEID, toDE.PhoneNumber, trip.OrderID, trip.StoreID,
+		toDE.DEID, toDE.PhoneNumber, firstIncompleteOrderID(trip), trip.StoreID,
 		fromStatus == models.TripStatusAssigned, entry); err != nil {
 		if errors.Is(err, repository.ErrReassignConflict) {
 			return op.Outcome("conflict", fmt.Errorf("%w: %v", ErrReassignConflict, err))
