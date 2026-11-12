@@ -417,6 +417,89 @@ func (h *AdminDriverHandlers) AdminCompletePickupByOrder(w http.ResponseWriter, 
 	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
+// GET /api/v1/admin/orders/{orderId}/batch/candidates
+func (h *AdminDriverHandlers) BatchCandidates(w http.ResponseWriter, r *http.Request) {
+	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
+	if orderID == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "orderId is required")
+		return
+	}
+	result, err := h.tripService.BatchCandidates(r.Context(), orderID)
+	if err != nil {
+		status, code := classifyBatchingError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("admin: batch candidates failed")
+			h.respondWithError(w, status, code, "Failed to list batch candidates")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, result)
+}
+
+// POST /api/v1/admin/orders/{orderId}/batch
+func (h *AdminDriverHandlers) ConfirmBatch(w http.ResponseWriter, r *http.Request) {
+	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])
+	if orderID == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "orderId is required")
+		return
+	}
+	var req struct {
+		TargetDEPhone     string            `json:"target_de_phone"`
+		ExpectedUpdatedAt map[string]string `json:"expected_updated_at"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.TargetDEPhone) == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_FIELD", "target_de_phone is required")
+		return
+	}
+	result, err := h.tripService.ConfirmBatch(r.Context(), service.BatchConfirmInput{
+		OrderID:           orderID,
+		TargetDEPhone:     req.TargetDEPhone,
+		ExpectedUpdatedAt: req.ExpectedUpdatedAt,
+	})
+	if err != nil {
+		status, code := classifyBatchingError(err)
+		if status == http.StatusInternalServerError {
+			h.logger.WithError(err).Error("admin: batch confirm failed")
+			h.respondWithError(w, status, code, "Failed to batch order")
+			return
+		}
+		h.respondWithError(w, status, code, err.Error())
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, result)
+}
+
+func classifyBatchingError(err error) (status int, code string) {
+	switch {
+	case errors.Is(err, service.ErrBatchingDisabled):
+		return http.StatusForbidden, "BATCHING_DISABLED"
+	case errors.Is(err, service.ErrAppTooOld):
+		return http.StatusConflict, "APP_TOO_OLD"
+	case errors.Is(err, service.ErrStaleMerge):
+		return http.StatusConflict, "STALE_MERGE"
+	case errors.Is(err, service.ErrAlreadyOnRider):
+		return http.StatusConflict, "ALREADY_ON_RIDER"
+	case errors.Is(err, service.ErrWrongStore):
+		return http.StatusConflict, "WRONG_STORE"
+	case errors.Is(err, service.ErrNoLiveTrip):
+		return http.StatusConflict, "NO_LIVE_TRIP"
+	case errors.Is(err, service.ErrDriverNotBusy):
+		return http.StatusConflict, "DRIVER_NOT_BUSY"
+	case errors.Is(err, service.ErrOrderNotBatchable):
+		return http.StatusConflict, "ORDER_NOT_BATCHABLE"
+	case errors.Is(err, service.ErrDENotFound):
+		return http.StatusNotFound, "DRIVER_NOT_FOUND"
+	default:
+		return http.StatusInternalServerError, "BATCH_FAILED"
+	}
+}
+
 // GET /api/v1/admin/orders/{orderId}/drop/preview
 func (h *AdminDriverHandlers) PreviewAdminDrop(w http.ResponseWriter, r *http.Request) {
 	orderID := strings.TrimSpace(mux.Vars(r)["orderId"])

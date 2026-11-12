@@ -34,6 +34,7 @@ func NewTripHandlers(tripService *service.TripService, uploadService *service.Up
 // Returns the DE's current active trip with full task details.
 func (h *TripHandlers) GetCurrentTrip(w http.ResponseWriter, r *http.Request) {
 	phone, _ := r.Context().Value("phone").(string)
+	h.tripService.NoteAppVersion(r.Context(), phone, r.Header.Get("X-App-Version"))
 
 	trip, err := h.tripService.GetCurrentTrip(r.Context(), phone)
 	if err != nil {
@@ -105,6 +106,8 @@ func classifyTaskUpdateError(err error) (status int, code string) {
 		return http.StatusForbidden, "FORBIDDEN"
 	case errors.Is(err, service.ErrTripClosed):
 		return http.StatusBadRequest, "TRIP_ALREADY_CLOSED"
+	case errors.Is(err, service.ErrTripInactive):
+		return http.StatusConflict, "TRIP_INACTIVE"
 	case errors.Is(err, service.ErrPrerequisiteIncomplete):
 		return http.StatusBadRequest, "PREREQUISITE_TASK_INCOMPLETE"
 	case errors.Is(err, service.ErrInvalidOTP):

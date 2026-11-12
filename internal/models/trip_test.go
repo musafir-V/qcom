@@ -145,6 +145,10 @@ func TestIsValidTripTransition(t *testing.T) {
 		{TripStatusAssigned, TripStatusCancelled},
 		{TripStatusAccepted, TripStatusCancelled},
 		{TripStatusOutForDelivery, TripStatusCancelled},
+		{TripStatusCreated, TripStatusInactive},
+		{TripStatusAssigned, TripStatusInactive},
+		{TripStatusAccepted, TripStatusInactive},
+		{TripStatusOutForDelivery, TripStatusInactive},
 	}
 	for _, c := range valid {
 		if !IsValidTripTransition(c.from, c.to) {
@@ -159,6 +163,9 @@ func TestIsValidTripTransition(t *testing.T) {
 		{TripStatusCompleted, TripStatusCreated},
 		{TripStatusCancelled, TripStatusAssigned},
 		{TripStatusOutForDelivery, TripStatusAccepted},
+		{TripStatusInactive, TripStatusAccepted},
+		{TripStatusInactive, TripStatusCreated},
+		{TripStatusCompleted, TripStatusInactive},
 	}
 	for _, c := range invalid {
 		if IsValidTripTransition(c.from, c.to) {
@@ -182,6 +189,20 @@ func TestTripSyncIndexKeys(t *testing.T) {
 	trip.SyncIndexKeys()
 	if trip.TripOrderID != "ORD123" {
 		t.Errorf("TripOrderID = %q, want ORD123", trip.TripOrderID)
+	}
+	if len(trip.OrderIDs) != 1 || trip.OrderIDs[0] != "ORD123" {
+		t.Errorf("OrderIDs = %v, want [ORD123]", trip.OrderIDs)
+	}
+}
+
+func TestTripSyncIndexKeys_OrderIDsWins(t *testing.T) {
+	trip := &Trip{OrderID: "OLD", OrderIDs: []string{"A", "B"}}
+	trip.SyncIndexKeys()
+	if trip.OrderID != "A" {
+		t.Errorf("OrderID = %q, want A", trip.OrderID)
+	}
+	if trip.TripOrderID != "A" {
+		t.Errorf("TripOrderID = %q, want A", trip.TripOrderID)
 	}
 }
 
@@ -298,5 +319,78 @@ func TestTripDynamo_DropDeadlineNumber(t *testing.T) {
 	}
 	if n.Value != "1710000000" {
 		t.Fatalf("drop_deadline = %q, want 1710000000", n.Value)
+	}
+}
+
+func TestTrip_BatchedTaskHelpers(t *testing.T) {
+	dlA := int64(100)
+	dlB := int64(50)
+	trip := &Trip{
+		OrderID:  "A",
+		OrderIDs: []string{"A", "B"},
+		Tasks: []Task{
+			{TaskID: "pA", Type: TaskTypePickup, OrderID: "A", Status: TaskStatusCompleted, Items: []TripItem{{Name: "Milk"}}},
+			{TaskID: "pB", Type: TaskTypePickup, OrderID: "B", Status: TaskStatusCreated, Items: []TripItem{{Name: "Bread"}}},
+			{TaskID: "dA", Type: TaskTypeDrop, OrderID: "A", Status: TaskStatusCreated, DropDeadline: &dlA, Payment: &Payment{CollectCash: true, AmountZMW: 10}},
+			{TaskID: "dB", Type: TaskTypeDrop, OrderID: "B", Status: TaskStatusCreated, DropDeadline: &dlB, Payment: &Payment{CollectCash: false, AmountZMW: 5}},
+		},
+	}
+	if p := trip.PickupForOrder("B"); p == nil || p.TaskID != "pB" {
+		t.Fatalf("PickupForOrder B = %+v", p)
+	}
+	if d := trip.DropForOrder("A"); d == nil || d.TaskID != "dA" {
+		t.Fatalf("DropForOrder A = %+v", d)
+	}
+	if got := trip.FirstIncompleteTask(); got == nil || got.TaskID != "pB" {
+		t.Fatalf("FirstIncompleteTask = %+v, want pB", got)
+	}
+	if n := len(trip.OpenPickups()); n != 1 {
+		t.Fatalf("OpenPickups = %d, want 1", n)
+	}
+	if n := len(trip.OpenDrops()); n != 2 {
+		t.Fatalf("OpenDrops = %d, want 2", n)
+	}
+	min := trip.MinOpenDropDeadline()
+	if min == nil || *min != 50 {
+		t.Fatalf("MinOpenDropDeadline = %v, want 50", min)
+	}
+	roll := trip.PaymentRollup()
+	if roll == nil || !roll.CollectCash || roll.AmountZMW != 10 {
+		t.Fatalf("PaymentRollup = %+v, want COD 10", roll)
+	}
+	items := trip.ItemsRollup()
+	if len(items) != 2 || items[0].Name != "Milk" || items[1].Name != "Bread" {
+		t.Fatalf("ItemsRollup = %+v", items)
+	}
+}
+
+func TestTrip_DropsOnTime(t *testing.T) {
+	dl := int64(1_700_000_100)
+	ok := &Trip{Tasks: []Task{
+		{Type: TaskTypeDrop, CompletedAt: "2023-11-14T22:15:00Z", DropDeadline: &dl},
+	}}
+	if !ok.DropsOnTime() {
+		t.Fatal("expected on-time when completed_at unix <= deadline")
+	}
+	late := &Trip{Tasks: []Task{
+		{Type: TaskTypeDrop, CompletedAt: "2023-11-14T22:16:41Z", DropDeadline: &dl},
+	}}
+	if late.DropsOnTime() {
+		t.Fatal("expected late when completed_at unix > deadline")
+	}
+	missing := &Trip{Tasks: []Task{
+		{Type: TaskTypeDrop, CompletedAt: "2023-11-14T22:16:41Z"},
+	}}
+	if !missing.DropsOnTime() {
+		t.Fatal("missing deadline must count as on-time")
+	}
+}
+
+func TestIsLiveAndStaleTripStatus(t *testing.T) {
+	if !IsLiveTripStatus(TripStatusAccepted) || IsLiveTripStatus(TripStatusInactive) {
+		t.Fatal("live/inactive classification")
+	}
+	if !IsStaleCurrentTrip(TripStatusInactive) || IsStaleCurrentTrip(TripStatusAccepted) {
+		t.Fatal("stale current-trip classification")
 	}
 }

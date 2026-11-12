@@ -128,6 +128,21 @@ func (s *PayoutService) writeReferralBonusEntries(ctx context.Context, referredD
 	}
 }
 
+func batchedOnTime(trip *models.Trip) bool {
+	if trip == nil {
+		return false
+	}
+	if len(trip.LiveOrderIDs()) > 1 {
+		return true
+	}
+	for i := range trip.Tasks {
+		if trip.Tasks[i].Type == models.TaskTypeDrop && trip.Tasks[i].DropDeadline != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func computeBasePay(distanceKM float64, cfg *models.PayoutConfig) float64 {
 	return cfg.RatePerKmZMW * distanceKM
 }
@@ -150,8 +165,13 @@ func computeCompletionPayout(trip *models.Trip, cfg *models.PayoutConfig) comple
 	basePayZMW := money.Round2ZMW(rawBasePayZMW)
 	bonusPayZMW := money.Round2ZMW(totalPayZMW - basePayZMW)
 
-	actualMinutes, ok := trip.ActualDeliveryMinutes()
-	onTime := ok && actualMinutes < trip.SLAMinutes
+	onTime := false
+	if batchedOnTime(trip) {
+		onTime = trip.DropsOnTime()
+	} else {
+		actualMinutes, ok := trip.ActualDeliveryMinutes()
+		onTime = ok && actualMinutes < trip.SLAMinutes
+	}
 
 	return completionPayout{
 		DistanceKM:  distanceKM,

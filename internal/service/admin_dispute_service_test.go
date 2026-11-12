@@ -170,6 +170,10 @@ func (s *stubTripStoreForDispute) GetByOrderID(_ context.Context, _ string) (*mo
 	return s.trip, s.err
 }
 
+func (s *stubTripStoreForDispute) ResolveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
+	return s.GetByOrderID(ctx, orderID)
+}
+
 type stubDEStoreForDispute struct {
 	de  *models.DeliveryExecutive
 	err error

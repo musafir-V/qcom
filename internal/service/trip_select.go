@@ -17,7 +17,7 @@ func ChooseTripForLegs(trips []*models.Trip) *models.Trip {
 			continue
 		}
 		switch t.Status {
-		case models.TripStatusCancelled, models.TripStatusDistanceFailed:
+		case models.TripStatusCancelled, models.TripStatusDistanceFailed, models.TripStatusInactive:
 			continue
 		case models.TripStatusCompleted:
 			completed = append(completed, t)

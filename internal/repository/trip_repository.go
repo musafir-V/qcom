@@ -84,14 +84,32 @@ func (r *TripRepository) Create(ctx context.Context, trip *models.Trip) error {
 	item["PK"] = &types.AttributeValueMemberS{Value: trip.GetPK()}
 	item["SK"] = &types.AttributeValueMemberS{Value: trip.GetSK()}
 
-	_, err = r.client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName:           aws.String(r.tableName),
-		Item:                item,
-		ConditionExpression: aws.String("attribute_not_exists(PK)"),
-	})
+	transact := []types.TransactWriteItem{
+		{
+			Put: &types.Put{
+				TableName:           aws.String(r.tableName),
+				Item:                item,
+				ConditionExpression: aws.String("attribute_not_exists(PK)"),
+			},
+		},
+	}
+	for _, oid := range trip.LiveOrderIDs() {
+		sib, serr := marshalOrderIndexSibling(trip.TripID, oid, trip.Status)
+		if serr != nil {
+			return op.Fail(serr)
+		}
+		transact = append(transact, types.TransactWriteItem{
+			Put: &types.Put{
+				TableName: aws.String(r.tableName),
+				Item:      sib,
+			},
+		})
+	}
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: transact})
 	if err != nil {
-		var condErr *types.ConditionalCheckFailedException
-		if errors.As(err, &condErr) {
+		var txErr *types.TransactionCanceledException
+		if errors.As(err, &txErr) {
 			return op.Outcome("already_exists", fmt.Errorf("trip already exists for order %s", trip.OrderID))
 		}
 		return op.Fail(fmt.Errorf("failed to create trip: %w", err))
@@ -125,63 +143,23 @@ func (r *TripRepository) GetByID(ctx context.Context, tripID string) (*models.Tr
 	return &trip, nil
 }
 
-// GetByOrderID fetches a trip using the sparse OrderIndex GSI (trip_order_id).
-// Returns nil if no trip exists for this order yet.
+// GetByOrderID returns the live trip for this order (see LiveTripByOrderID).
 func (r *TripRepository) GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
-	op := logging.Start(ctx, r.logger, "TripRepository.GetByOrderID", logrus.Fields{"order_id": orderID})
-	defer op.End()
-
-	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(r.tableName),
-		IndexName:              aws.String("OrderIndex"),
-		KeyConditionExpression: aws.String("trip_order_id = :oid"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":oid": &types.AttributeValueMemberS{Value: orderID},
-		},
-		Limit: aws.Int32(1),
-	})
-	if err != nil {
-		return nil, op.Fail(fmt.Errorf("failed to query OrderIndex: %w", err))
-	}
-	if len(result.Items) == 0 {
-		return nil, nil
-	}
-
-	var trip models.Trip
-	if err := attributevalue.UnmarshalMap(result.Items[0], &trip); err != nil {
-		return nil, op.Fail(fmt.Errorf("failed to unmarshal trip: %w", err))
-	}
-	return &trip, nil
+	return r.LiveTripByOrderID(ctx, orderID)
 }
 
-// ListByOrderID returns every trip on OrderIndex for orderID (no Limit).
-// Empty match is nil, nil.
+// ListByOrderID returns every distinct hydrated trip on OrderIndex for orderID.
+// Empty match is nil, nil. Includes inactive/completed/cancelled.
 func (r *TripRepository) ListByOrderID(ctx context.Context, orderID string) ([]*models.Trip, error) {
 	op := logging.Start(ctx, r.logger, "TripRepository.ListByOrderID", logrus.Fields{"order_id": orderID})
 	defer op.End()
 
-	result, err := r.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:              aws.String(r.tableName),
-		IndexName:              aws.String("OrderIndex"),
-		KeyConditionExpression: aws.String("trip_order_id = :oid"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":oid": &types.AttributeValueMemberS{Value: orderID},
-		},
-	})
+	trips, err := r.tripsFromOrderIndex(ctx, orderID)
 	if err != nil {
-		return nil, op.Fail(fmt.Errorf("failed to query OrderIndex: %w", err))
+		return nil, op.Fail(err)
 	}
-	if len(result.Items) == 0 {
+	if len(trips) == 0 {
 		return nil, nil
-	}
-
-	trips := make([]*models.Trip, 0, len(result.Items))
-	for _, item := range result.Items {
-		var trip models.Trip
-		if err := attributevalue.UnmarshalMap(item, &trip); err != nil {
-			return nil, op.Fail(fmt.Errorf("failed to unmarshal trip: %w", err))
-		}
-		trips = append(trips, &trip)
 	}
 	return trips, nil
 }
@@ -365,8 +343,7 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 	nowT := time.Now().UTC()
 	now := nowT.Format(time.RFC3339)
 
-	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
-		TransactItems: []types.TransactWriteItem{
+	transact := []types.TransactWriteItem{
 			{
 				Update: &types.Update{
 					TableName: aws.String(r.tableName),
@@ -376,13 +353,14 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 					},
 					UpdateExpression: aws.String("SET tasks = :tasks, #status = :completed, completed_at = :now, updated_at = :now"),
 					ConditionExpression: aws.String(
-						"#status <> :completed AND #status <> :cancelled",
+						"#status <> :completed AND #status <> :cancelled AND #status <> :inactive",
 					),
 					ExpressionAttributeNames: map[string]string{"#status": "status"},
 					ExpressionAttributeValues: map[string]types.AttributeValue{
 						":tasks":     tasksAttr,
 						":completed": &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
 						":cancelled": &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
+						":inactive":  &types.AttributeValueMemberS{Value: string(models.TripStatusInactive)},
 						":now":       &types.AttributeValueMemberS{Value: now},
 					},
 				},
@@ -415,8 +393,10 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 					},
 				},
 			},
-		},
-	})
+	}
+	transact = append(transact, orderIndexStatusUpdates(r.tableName, tripID, orderIDsFromTasks(tasks), models.TripStatusCompleted)...)
+
+	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: transact})
 	if err != nil {
 		var txErr *types.TransactionCanceledException
 		if errors.As(err, &txErr) {
@@ -682,6 +662,11 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone, s
 	nowT := time.Now().UTC()
 	now := nowT.Format(time.RFC3339)
 
+	orderIDs := []string{}
+	if existing, gerr := r.GetByID(ctx, tripID); gerr == nil && existing != nil {
+		orderIDs = existing.LiveOrderIDs()
+	}
+
 	items := []types.TransactWriteItem{
 		{
 			Update: &types.Update{
@@ -690,17 +675,19 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone, s
 					"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 					"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 				},
-				ConditionExpression:      aws.String("#status <> :completed AND #status <> :cancelled"),
+				ConditionExpression:      aws.String("#status <> :completed AND #status <> :cancelled AND #status <> :inactive"),
 				UpdateExpression:         aws.String("SET #status = :cancelled, cancelled_at = :now, updated_at = :now"),
 				ExpressionAttributeNames: map[string]string{"#status": "status"},
 				ExpressionAttributeValues: map[string]types.AttributeValue{
 					":cancelled": &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
 					":completed": &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
+					":inactive":  &types.AttributeValueMemberS{Value: string(models.TripStatusInactive)},
 					":now":       &types.AttributeValueMemberS{Value: now},
 				},
 			},
 		},
 	}
+	items = append(items, orderIndexStatusUpdates(r.tableName, tripID, orderIDs, models.TripStatusCancelled)...)
 
 	if dePhone != "" {
 		deUpdate := &types.Update{
@@ -768,7 +755,7 @@ func (r *TripRepository) UpdatePayment(ctx context.Context, tripID string, payme
 			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 		},
 		UpdateExpression:         aws.String("SET payment = :payment, updated_at = :now"),
-		ConditionExpression:      aws.String("attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed"),
+		ConditionExpression:      aws.String("attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed AND #status <> :inactive"),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":payment":         paymentAttr,
@@ -776,6 +763,7 @@ func (r *TripRepository) UpdatePayment(ctx context.Context, tripID string, payme
 			":completed":       &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
 			":cancelled":       &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
 			":distance_failed": &types.AttributeValueMemberS{Value: string(models.TripStatusDistanceFailed)},
+			":inactive":        &types.AttributeValueMemberS{Value: string(models.TripStatusInactive)},
 		},
 	})
 	if err != nil {
@@ -795,7 +783,7 @@ func updateEditByOrderUpdateExpression() string {
 
 // updateEditByOrderConditionExpression matches UpdatePayment: reject terminal trips.
 func updateEditByOrderConditionExpression() string {
-	return "attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed"
+	return "attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed AND #status <> :inactive"
 }
 
 // UpdateEditByOrder overwrites the trip's packed snapshot (items, payment, tasks).
@@ -837,6 +825,7 @@ func (r *TripRepository) UpdateEditByOrder(ctx context.Context, tripID string, i
 			":completed":       &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
 			":cancelled":       &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
 			":distance_failed": &types.AttributeValueMemberS{Value: string(models.TripStatusDistanceFailed)},
+			":inactive":        &types.AttributeValueMemberS{Value: string(models.TripStatusInactive)},
 		},
 	})
 	if err != nil {

@@ -26,7 +26,7 @@ type trackOrderFetcher interface {
 	GetOrderRaw(ctx context.Context, orderID string) (map[string]json.RawMessage, error)
 }
 type trackTripGetter interface {
-	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+	ResolveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
 }
 type trackDEResolver interface {
 	GetByPhone(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
@@ -83,7 +83,7 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Trip enrichment is best-effort — a lookup failure degrades to null fields.
-	trip, err := h.tripRepo.GetByOrderID(r.Context(), orderID)
+	trip, err := h.tripRepo.ResolveTripByOrderID(r.Context(), orderID)
 	if err != nil {
 		h.logger.WithError(err).Error("track: trip lookup failed, returning order without tracking fields")
 		trip = nil
@@ -119,7 +119,11 @@ func (h *TrackHandlers) Track(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if committed {
-			if drop := trip.DropTask(); drop != nil && (drop.Status == models.TaskStatusCreated || drop.Status == models.TaskStatusReached) {
+			drop := trip.DropForOrder(orderID)
+			if drop == nil {
+				drop = trip.DropTask()
+			}
+			if drop != nil && (drop.Status == models.TaskStatusCreated || drop.Status == models.TaskStatusReached) {
 				otp = &drop.OTP
 			}
 		}

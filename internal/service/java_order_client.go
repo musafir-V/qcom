@@ -281,3 +281,40 @@ func (c *JavaOrderClient) GetOrderRaw(ctx context.Context, orderID string) (map[
 	}
 	return order, nil
 }
+
+// GetOrder fetches a single order as JavaOrder. Missing → (nil, nil).
+func (c *JavaOrderClient) GetOrder(ctx context.Context, orderID string) (*JavaOrder, error) {
+	raw, err := c.GetOrderRaw(ctx, orderID)
+	if err != nil || raw == nil {
+		return nil, err
+	}
+	buf, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-encode order: %w", err)
+	}
+	var order JavaOrder
+	if err := json.Unmarshal(buf, &order); err != nil {
+		return nil, fmt.Errorf("failed to decode order: %w", err)
+	}
+	order.normalizeOrderID()
+	order.StoreID = storeIDFromRaw(raw)
+	return &order, nil
+}
+
+func storeIDFromRaw(raw map[string]json.RawMessage) string {
+	for _, key := range []string{"storeId", "store_id", "darkstoreId"} {
+		v, ok := raw[key]
+		if !ok {
+			continue
+		}
+		var s string
+		if json.Unmarshal(v, &s) == nil && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+		var n json.Number
+		if json.Unmarshal(v, &n) == nil && n.String() != "" {
+			return n.String()
+		}
+	}
+	return ""
+}

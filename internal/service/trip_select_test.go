@@ -34,6 +34,15 @@ func TestChooseTripForLegs_IgnoresDistanceFailedAndAllCancelled(t *testing.T) {
 	}
 }
 
+func TestChooseTripForLegs_SkipsInactive(t *testing.T) {
+	inactive := &models.Trip{OrderID: "ORD1", Status: models.TripStatusInactive, CreatedAt: "2026-11-10T11:00:00Z"}
+	live := &models.Trip{OrderID: "ORD1", Status: models.TripStatusAccepted, CreatedAt: "2026-11-10T10:00:00Z"}
+	got := ChooseTripForLegs([]*models.Trip{inactive, live})
+	if got != live {
+		t.Fatalf("got %+v, want live accepted", got)
+	}
+}
+
 func TestChooseTripForLegs_Empty(t *testing.T) {
 	if ChooseTripForLegs(nil) != nil {
 		t.Fatal("expected nil")

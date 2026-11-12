@@ -13,12 +13,18 @@ const (
 	TripStatusOutForDelivery TripStatus = "out_for_delivery"
 	TripStatusCompleted      TripStatus = "completed"
 	TripStatusCancelled      TripStatus = "cancelled"
+	// TripStatusInactive is terminal: the trip was superseded by a merge/split,
+	// not cancelled. The order is still live on a successor. No transitions out.
+	TripStatusInactive TripStatus = "inactive"
 	// TripStatusDistanceFailed is a terminal state for orders the Distance Matrix
 	// API cannot route (ZERO_RESULTS / NOT_FOUND). Persisting it stops the
 	// assignment cron from re-attempting — and re-billing — the same order every
 	// tick. It is intentionally absent from IsValidTripTransition: such trips are
 	// dead ends requiring manual intervention (fix the coordinates, then cancel).
 	TripStatusDistanceFailed TripStatus = "distance_failed"
+
+	DistanceMethodGoogle    = "google"
+	DistanceMethodHaversine = "haversine"
 
 	TaskTypePickup TaskType = "pickup"
 	TaskTypeDrop   TaskType = "drop"
@@ -49,6 +55,7 @@ type Task struct {
 	TaskID        string     `json:"task_id" dynamodbav:"task_id"`
 	Type          TaskType   `json:"type" dynamodbav:"type"`
 	Status        TaskStatus `json:"status" dynamodbav:"status"`
+	OrderID       string     `json:"order_id,omitempty" dynamodbav:"order_id,omitempty"`
 	CreatedAt     string     `json:"created_at,omitempty" dynamodbav:"created_at,omitempty"`
 	ReachedAt     string     `json:"reached_at,omitempty" dynamodbav:"reached_at,omitempty"`
 	CompletedAt   string     `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
@@ -62,22 +69,34 @@ type Task struct {
 	PhotoS3Key    string     `json:"photo_s3_key,omitempty" dynamodbav:"photo_s3_key,omitempty"`     // set when driver uploads a verification photo
 	// ReachedByAdmin marks a drop whose ReachedAt was synthesized at admin
 	// completion time, so it does not reflect the driver's actual arrival.
-	ReachedByAdmin bool `json:"reached_by_admin,omitempty" dynamodbav:"reached_by_admin,omitempty"`
+	ReachedByAdmin bool       `json:"reached_by_admin,omitempty" dynamodbav:"reached_by_admin,omitempty"`
+	Items          []TripItem `json:"items,omitempty" dynamodbav:"items,omitempty"`                 // pickup task: that order's packed lines
+	Payment        *Payment   `json:"payment,omitempty" dynamodbav:"payment,omitempty"`             // drop task: that order's cash snapshot
+	DropDeadline   *int64     `json:"drop_deadline,omitempty" dynamodbav:"drop_deadline,omitempty"` // drop task: unix seconds for that order
 }
 
 type Trip struct {
-	TripID  string     `json:"trip_id" dynamodbav:"trip_id"`
-	OrderID string     `json:"order_id" dynamodbav:"order_id"`
-	// TripOrderID is the sparse OrderIndex GSI hash key; equals OrderID.
+	TripID  string `json:"trip_id" dynamodbav:"trip_id"`
+	OrderID string `json:"order_id" dynamodbav:"order_id"`
+	// OrderIDs is every live order on this trip, in pickup merge order.
+	// OrderID is kept as OrderIDs[0] for old readers.
+	OrderIDs []string `json:"order_ids,omitempty" dynamodbav:"order_ids,omitempty"`
+	// TripOrderID is the sparse OrderIndex GSI hash key; equals OrderIDs[0].
 	// Only trip items set this attribute so VOICECTX and other types never pollute the index.
 	TripOrderID string     `json:"-" dynamodbav:"trip_order_id,omitempty"`
 	StoreID     string     `json:"store_id" dynamodbav:"store_id"`
-	DEID    string     `json:"de_id,omitempty" dynamodbav:"de_id,omitempty"`
-	DEPhone string     `json:"de_phone,omitempty" dynamodbav:"de_phone,omitempty"`
-	Status  TripStatus `json:"status" dynamodbav:"status"`
-	Tasks   []Task     `json:"tasks" dynamodbav:"tasks"`
-	Items   []TripItem `json:"items,omitempty" dynamodbav:"items,omitempty"`
-	Payment *Payment   `json:"payment,omitempty" dynamodbav:"payment,omitempty"`
+	DEID        string     `json:"de_id,omitempty" dynamodbav:"de_id,omitempty"`
+	DEPhone     string     `json:"de_phone,omitempty" dynamodbav:"de_phone,omitempty"`
+	Status      TripStatus `json:"status" dynamodbav:"status"`
+	Tasks       []Task     `json:"tasks" dynamodbav:"tasks"`
+	Items       []TripItem `json:"items,omitempty" dynamodbav:"items,omitempty"`
+	Payment     *Payment   `json:"payment,omitempty" dynamodbav:"payment,omitempty"`
+	// SupersedesTripIDs are the live trips this one replaced (merge / steal leftover).
+	SupersedesTripIDs []string `json:"supersedes_trip_ids,omitempty" dynamodbav:"supersedes_trip_ids,omitempty"`
+	// SupersededByTripID is set on inactive trips pointing at the successor.
+	SupersededByTripID string `json:"superseded_by_trip_id,omitempty" dynamodbav:"superseded_by_trip_id,omitempty"`
+	// DistanceMethod is "google" or "haversine" for the frozen tour km.
+	DistanceMethod string `json:"distance_method,omitempty" dynamodbav:"distance_method,omitempty"`
 
 	// Payout — set at creation (base) and completion (bonus+total)
 	DistanceKM        float64 `json:"distance_km" dynamodbav:"distance_km"`
@@ -94,8 +113,8 @@ type Trip struct {
 
 	CustomerUserID string `json:"customer_user_id,omitempty" dynamodbav:"customer_user_id,omitempty"`
 
-	CreatedAt   string `json:"created_at" dynamodbav:"created_at"`
-	UpdatedAt   string `json:"updated_at" dynamodbav:"updated_at"`
+	CreatedAt      string   `json:"created_at" dynamodbav:"created_at"`
+	UpdatedAt      string   `json:"updated_at" dynamodbav:"updated_at"`
 	AssignedAt     string   `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
 	AcceptDeadline string   `json:"accept_deadline,omitempty" dynamodbav:"accept_deadline,omitempty"`
 	DropDeadline   *int64   `json:"drop_deadline,omitempty" dynamodbav:"drop_deadline,omitempty"`
@@ -104,8 +123,8 @@ type Trip struct {
 	// GetCurrentTrip returns *models.Trip straight to the driver app, and this
 	// array carries the ops admin's username and a reason code about the rider.
 	Reassignments []TripReassignment `json:"-" dynamodbav:"reassignments,omitempty"`
-	CompletedAt    string   `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
-	CancelledAt    string   `json:"cancelled_at,omitempty" dynamodbav:"cancelled_at,omitempty"`
+	CompletedAt   string             `json:"completed_at,omitempty" dynamodbav:"completed_at,omitempty"`
+	CancelledAt   string             `json:"cancelled_at,omitempty" dynamodbav:"cancelled_at,omitempty"`
 	// ReturnedAt is the first validated store-QR scan by this trip's rider
 	// after the trip went out for delivery. Written once, never overwritten.
 	ReturnedAt string `json:"returned_at,omitempty" dynamodbav:"returned_at,omitempty"`
@@ -146,11 +165,45 @@ func IsValidReassignReasonCode(code string) bool { return reassignReasonCodes[co
 func (t *Trip) GetPK() string { return "TRIP!" + t.TripID }
 func (t *Trip) GetSK() string { return "METADATA" }
 
-// SyncIndexKeys copies OrderID into TripOrderID before persisting a trip.
+// SyncIndexKeys copies OrderIDs[0] (falling back to OrderID) into TripOrderID
+// and keeps OrderID aligned with OrderIDs[0] for old readers.
 func (t *Trip) SyncIndexKeys() {
+	if len(t.OrderIDs) == 0 && t.OrderID != "" {
+		t.OrderIDs = []string{t.OrderID}
+	}
+	if len(t.OrderIDs) > 0 {
+		t.OrderID = t.OrderIDs[0]
+	}
 	if id := t.OrderID; id != "" {
 		t.TripOrderID = id
 	}
+}
+
+// LiveOrderIDs returns order_ids, or a single-element slice of order_id for
+// trips written before batching.
+func (t *Trip) LiveOrderIDs() []string {
+	if t == nil {
+		return nil
+	}
+	if len(t.OrderIDs) > 0 {
+		return t.OrderIDs
+	}
+	if t.OrderID != "" {
+		return []string{t.OrderID}
+	}
+	return nil
+}
+
+// TaskOrderID is the order this task belongs to, falling back to the trip's
+// singleton order_id for rows written before batching.
+func (t *Trip) TaskOrderID(task *Task) string {
+	if task != nil && task.OrderID != "" {
+		return task.OrderID
+	}
+	if t != nil {
+		return t.OrderID
+	}
+	return ""
 }
 
 // PickupTask returns the pickup task from the embedded list.
@@ -181,6 +234,185 @@ func (t *Trip) TaskByID(taskID string) *Task {
 		}
 	}
 	return nil
+}
+
+// TasksForOrder returns pointers into the trip's task slice for this order.
+func (t *Trip) TasksForOrder(orderID string) []*Task {
+	var out []*Task
+	for i := range t.Tasks {
+		if t.TaskOrderID(&t.Tasks[i]) == orderID {
+			out = append(out, &t.Tasks[i])
+		}
+	}
+	return out
+}
+
+// PickupForOrder returns this order's pickup task.
+func (t *Trip) PickupForOrder(orderID string) *Task {
+	for i := range t.Tasks {
+		if t.Tasks[i].Type == TaskTypePickup && t.TaskOrderID(&t.Tasks[i]) == orderID {
+			return &t.Tasks[i]
+		}
+	}
+	return nil
+}
+
+// DropForOrder returns this order's drop task.
+func (t *Trip) DropForOrder(orderID string) *Task {
+	for i := range t.Tasks {
+		if t.Tasks[i].Type == TaskTypeDrop && t.TaskOrderID(&t.Tasks[i]) == orderID {
+			return &t.Tasks[i]
+		}
+	}
+	return nil
+}
+
+// FirstIncompleteTask returns the first task whose status is not completed.
+func (t *Trip) FirstIncompleteTask() *Task {
+	for i := range t.Tasks {
+		if t.Tasks[i].Status != TaskStatusCompleted {
+			return &t.Tasks[i]
+		}
+	}
+	return nil
+}
+
+// OpenPickups returns pickup tasks that are not completed.
+func (t *Trip) OpenPickups() []*Task {
+	var out []*Task
+	for i := range t.Tasks {
+		if t.Tasks[i].Type == TaskTypePickup && t.Tasks[i].Status != TaskStatusCompleted {
+			out = append(out, &t.Tasks[i])
+		}
+	}
+	return out
+}
+
+// OpenDrops returns drop tasks that are not completed.
+func (t *Trip) OpenDrops() []*Task {
+	var out []*Task
+	for i := range t.Tasks {
+		if t.Tasks[i].Type == TaskTypeDrop && t.Tasks[i].Status != TaskStatusCompleted {
+			out = append(out, &t.Tasks[i])
+		}
+	}
+	return out
+}
+
+// IsLiveTripStatus reports whether a trip still owns live work.
+func IsLiveTripStatus(s TripStatus) bool {
+	switch s {
+	case TripStatusCreated, TripStatusAssigned, TripStatusAccepted, TripStatusOutForDelivery:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsStaleCurrentTrip is true when GetCurrentTrip should return trip: null.
+func IsStaleCurrentTrip(s TripStatus) bool {
+	return s == TripStatusCompleted || s == TripStatusCancelled || s == TripStatusInactive
+}
+
+// HasIncompletePickup reports whether any pickup is still open.
+func (t *Trip) HasIncompletePickup() bool {
+	return len(t.OpenPickups()) > 0
+}
+
+// MinOpenDropDeadline is the earliest remaining drop-task deadline, or nil.
+func (t *Trip) MinOpenDropDeadline() *int64 {
+	var min *int64
+	for _, d := range t.OpenDrops() {
+		if d.DropDeadline == nil {
+			continue
+		}
+		if min == nil || *d.DropDeadline < *min {
+			v := *d.DropDeadline
+			min = &v
+		}
+	}
+	return min
+}
+
+// DropsOnTime reports whether every drop completed at or before its deadline.
+// A missing deadline is treated as on-time for that drop. No drops → true.
+func (t *Trip) DropsOnTime() bool {
+	for i := range t.Tasks {
+		task := &t.Tasks[i]
+		if task.Type != TaskTypeDrop {
+			continue
+		}
+		if task.DropDeadline == nil || *task.DropDeadline == 0 {
+			continue
+		}
+		if task.CompletedAt == "" {
+			return false
+		}
+		completed, err := time.Parse(time.RFC3339, task.CompletedAt)
+		if err != nil {
+			return false
+		}
+		if completed.Unix() > *task.DropDeadline {
+			return false
+		}
+	}
+	return true
+}
+
+// PaymentRollup is collect_cash if any open drop collects cash, amount = sum of those.
+// A singleton trip (one order) prefers that order's drop payment so the rider
+// still sees method/amount on prepaid; batched trips follow the COD rollup.
+func (t *Trip) PaymentRollup() *Payment {
+	if t == nil {
+		return nil
+	}
+	if len(t.LiveOrderIDs()) <= 1 {
+		if d := t.DropForOrder(t.OrderID); d != nil && d.Payment != nil {
+			return d.Payment
+		}
+		return t.Payment
+	}
+	var roll Payment
+	any := false
+	for i := range t.Tasks {
+		task := &t.Tasks[i]
+		if task.Type != TaskTypeDrop || task.Status == TaskStatusCompleted {
+			continue
+		}
+		p := task.Payment
+		if p == nil {
+			continue
+		}
+		any = true
+		if p.CollectCash {
+			roll.CollectCash = true
+			roll.AmountZMW += p.AmountZMW
+			if roll.Currency == "" {
+				roll.Currency = p.Currency
+			}
+			if roll.Method == "" {
+				roll.Method = p.Method
+			}
+		}
+	}
+	if !any {
+		return t.Payment
+	}
+	return &roll
+}
+
+// ItemsRollup concatenates pickup-task items in task order, falling back to trip.Items.
+func (t *Trip) ItemsRollup() []TripItem {
+	var items []TripItem
+	for i := range t.Tasks {
+		if t.Tasks[i].Type == TaskTypePickup && len(t.Tasks[i].Items) > 0 {
+			items = append(items, t.Tasks[i].Items...)
+		}
+	}
+	if len(items) > 0 {
+		return items
+	}
+	return t.Items
 }
 
 // ActualDeliveryMinutes returns actual delivery minutes and whether both timestamps exist.
@@ -252,13 +484,13 @@ func (t *Trip) ReturnMinutes() (float64, bool) {
 func IsValidTripTransition(from, to TripStatus) bool {
 	switch from {
 	case TripStatusCreated:
-		return to == TripStatusAssigned || to == TripStatusAccepted || to == TripStatusCancelled
+		return to == TripStatusAssigned || to == TripStatusAccepted || to == TripStatusCancelled || to == TripStatusInactive
 	case TripStatusAssigned:
-		return to == TripStatusAccepted || to == TripStatusCreated || to == TripStatusCancelled
+		return to == TripStatusAccepted || to == TripStatusCreated || to == TripStatusCancelled || to == TripStatusInactive
 	case TripStatusAccepted:
-		return to == TripStatusOutForDelivery || to == TripStatusCancelled
+		return to == TripStatusOutForDelivery || to == TripStatusCancelled || to == TripStatusInactive
 	case TripStatusOutForDelivery:
-		return to == TripStatusCompleted || to == TripStatusCancelled
+		return to == TripStatusCompleted || to == TripStatusCancelled || to == TripStatusInactive
 	default:
 		return false
 	}

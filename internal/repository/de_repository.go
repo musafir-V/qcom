@@ -806,6 +806,32 @@ func (r *DERepository) IncrementDailyCount(ctx context.Context, phone, todayZamb
 	return newCount, nil
 }
 
+// StampLastAppVersion records the driver app semver from X-App-Version.
+// An empty version is a no-op so a missing header never clears a stored value.
+func (r *DERepository) StampLastAppVersion(ctx context.Context, phone, version string) error {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "DE!" + phone},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression: aws.String("SET last_app_version = :v, updated_at = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":v":   &types.AttributeValueMemberS{Value: version},
+			":now": &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to stamp last_app_version: %w", err)
+	}
+	return nil
+}
+
 // UpdateLastDisbursedAt stamps the last_disbursed_at field on the DE record.
 // Called when ops records a disbursement so future earnings summaries reset
 // their outstanding-balance window.

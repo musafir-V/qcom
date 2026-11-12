@@ -51,6 +51,10 @@ func (f *fakeTripGetter) GetByOrderID(_ context.Context, _ string) (*models.Trip
 	return f.trip, nil
 }
 
+func (f *fakeTripGetter) ResolveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
+	return f.GetByOrderID(ctx, orderID)
+}
+
 // fakeCallCounter returns the configured count.
 type fakeCallCounter struct{ count int }
 

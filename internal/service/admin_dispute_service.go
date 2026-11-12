@@ -28,6 +28,7 @@ type dispositionLookup interface {
 
 type tripStoreForDispute interface {
 	GetByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+	ResolveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
 }
 
 type deStoreForDispute interface {
@@ -143,7 +144,7 @@ func (s *AdminDisputeService) GetDetail(ctx context.Context, id string) (*Disput
 	}
 	detail := &DisputeDetail{Dispute: d}
 	if s.trips != nil {
-		trip, err := s.trips.GetByOrderID(ctx, d.OrderNumber)
+		trip, err := s.trips.ResolveTripByOrderID(ctx, d.OrderNumber)
 		if err == nil && trip != nil {
 			detail.Trip = trip
 			if s.riders != nil && trip.DEPhone != "" {

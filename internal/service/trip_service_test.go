@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -566,7 +567,7 @@ func TestEditTripByOrder_IdempotentSecondCall(t *testing.T) {
 		t.Fatalf("second call tasks len = %d, first = %d", len(repo.editedTasks), len(firstTasks))
 	}
 	for i := range firstTasks {
-		if repo.editedTasks[i] != firstTasks[i] {
+		if !reflect.DeepEqual(repo.editedTasks[i], firstTasks[i]) {
 			t.Fatalf("second call task[%d] = %+v, first = %+v", i, repo.editedTasks[i], firstTasks[i])
 		}
 	}
@@ -625,6 +626,8 @@ type stubTripRepo struct {
 	adminAssignCalled       bool
 	adminAssignErr          error
 	capturedDropReason      *models.AdminDropReason
+	keepBusyCalled          bool
+	currentOrderID          string
 }
 
 func (s *stubTripRepo) GetByOrderID(_ context.Context, _ string) (*models.Trip, error) {
@@ -737,6 +740,30 @@ func (s *stubTripRepo) UpdateEditByOrder(_ context.Context, _ string, items []mo
 	return s.updateEditByOrderErr
 }
 
+func (s *stubTripRepo) LiveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
+	return s.GetByOrderID(ctx, orderID)
+}
+
+func (s *stubTripRepo) ResolveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
+	return s.GetByOrderID(ctx, orderID)
+}
+
+func (s *stubTripRepo) CompleteDropKeepBusy(_ context.Context, _, _, _ string, tasks []models.Task, _ float64) error {
+	s.keepBusyCalled = true
+	s.capturedTasks = make([]models.Task, len(tasks))
+	copy(s.capturedTasks, tasks)
+	if s.trip != nil {
+		s.trip.Tasks = make([]models.Task, len(tasks))
+		copy(s.trip.Tasks, tasks)
+	}
+	return nil
+}
+
+func (s *stubTripRepo) SetCurrentOrderID(_ context.Context, _, orderID string) error {
+	s.currentOrderID = orderID
+	return nil
+}
+
 // stubDERepo satisfies deRepoI for unit tests.
 type stubDERepo struct {
 	de          *models.DeliveryExecutive
@@ -776,6 +803,13 @@ func (s *stubDERepo) AttachToTrip(_ context.Context, phone, orderID, tripID, _ s
 
 func (s *stubDERepo) ListByAssignedStore(_ context.Context, _, _, _ string, _ int32, _ bool) ([]*models.DeliveryExecutive, string, error) {
 	return s.listed, "", nil
+}
+
+func (s *stubDERepo) StampLastAppVersion(_ context.Context, phone, version string) error {
+	if de, err := s.GetByPhone(context.Background(), phone); err == nil && de != nil {
+		de.LastAppVersion = version
+	}
+	return nil
 }
 
 type stubJavaOrder struct {
