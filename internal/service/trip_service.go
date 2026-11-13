@@ -79,6 +79,7 @@ type tripRepoI interface {
 	Accept(ctx context.Context, tripID, deID string) error
 	RejectToPool(ctx context.Context, tripID, dePhone, storeID, deID string) error
 	CancelByOrderID(ctx context.Context, tripID, dePhone, storeID string) error
+	ReleaseDistanceFailedGuard(ctx context.Context, orderID string) error
 	UpdatePayment(ctx context.Context, tripID string, payment *models.Payment) error
 	UpdateEditByOrder(ctx context.Context, tripID string, items []models.TripItem, payment *models.Payment, tasks []models.Task) error
 	AdminAssign(ctx context.Context, tripID, orderID, deID, dePhone, storeID string) error
@@ -197,7 +198,10 @@ func (s *TripService) CancelTripByOrder(ctx context.Context, orderID, reason str
 		return fmt.Errorf("CancelTripByOrder: lookup failed: %w", err)
 	}
 	if trip == nil {
-		s.logger.WithField("order_id", orderID).Debug("CancelTripByOrder: no trip found — no-op")
+		if err := s.tripRepo.ReleaseDistanceFailedGuard(ctx, orderID); err != nil {
+			return fmt.Errorf("CancelTripByOrder: release distance_failed guard: %w", err)
+		}
+		s.logger.WithField("order_id", orderID).Debug("CancelTripByOrder: no live trip — no-op")
 		return nil
 	}
 	if trip.Status == models.TripStatusCompleted {

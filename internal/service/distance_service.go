@@ -104,7 +104,9 @@ func (s *DistanceService) DistanceKM(ctx context.Context, originLat, originLng, 
 
 	if result.Status != "OK" {
 		if isNoRouteStatus(result.Status) {
-			return 0, op.Fail(fmt.Errorf("distance API status %s: %w", result.Status, ErrNoRoute))
+			// Permanent. Outcome stays Info so a no-route result is not an error
+			// the assignment cron would otherwise emit on every retry.
+			return 0, op.Outcome("no_route", fmt.Errorf("distance API status %s: %w", result.Status, ErrNoRoute))
 		}
 		return 0, op.Fail(fmt.Errorf("distance API status: %s", result.Status))
 	}
@@ -115,7 +117,7 @@ func (s *DistanceService) DistanceKM(ctx context.Context, originLat, originLng, 
 	elem := result.Rows[0].Elements[0]
 	if elem.Status != "OK" {
 		if isNoRouteStatus(elem.Status) {
-			return 0, op.Fail(fmt.Errorf("distance element status %s: %w", elem.Status, ErrNoRoute))
+			return 0, op.Outcome("no_route", fmt.Errorf("distance element status %s: %w", elem.Status, ErrNoRoute))
 		}
 		return 0, op.Fail(fmt.Errorf("distance element status: %s", elem.Status))
 	}

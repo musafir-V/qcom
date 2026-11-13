@@ -40,6 +40,18 @@ func TestSortTripsByCreatedAt_StableForEqualTimestamps(t *testing.T) {
 	}
 }
 
+func TestNeedsTripCreate_DistanceFailedDoesNotRetry(t *testing.T) {
+	if needsTripCreate(nil, true) {
+		t.Fatal("distance_failed order must not create another trip")
+	}
+	if needsTripCreate(&models.Trip{Status: models.TripStatusCreated}, false) {
+		t.Fatal("live trip must not create another trip")
+	}
+	if !needsTripCreate(nil, false) {
+		t.Fatal("order with no trip should create")
+	}
+}
+
 func TestIsAcceptExpired(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 

@@ -253,13 +253,15 @@ func (c *AssignmentCron) processStore(
 				return
 			}
 			o.OrderID = orderID
-			existing, err := c.tripRepo.GetByOrderID(ctx, orderID)
+			// GetByOrderID returns only a live trip, so a distance_failed trip
+			// used to look like "no trip" and createTrip ran again every tick.
+			existing, distanceFailed, err := c.tripRepo.AssignmentTripForOrder(ctx, orderID)
 			if err != nil {
 				c.logger.WithError(err).WithField("order_id", orderID).
 					Error("assignment cron: failed to check trip existence")
 				return
 			}
-			results[idx] = orderResult{order: o, trip: existing, needsCreate: existing == nil}
+			results[idx] = orderResult{order: o, trip: existing, needsCreate: needsTripCreate(existing, distanceFailed)}
 		}(i, order)
 	}
 	wg.Wait()
@@ -463,6 +465,17 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 	}
 	order.OrderID = orderID
 
+	// Suppressed no-route orders must not reach Distance Matrix. The guard is
+	// written in the same transaction as the distance_failed trip; this check
+	// is what makes "will not retry" true on the next tick.
+	blocked, berr := c.tripRepo.DistanceCreateBlocked(ctx, orderID)
+	if berr != nil {
+		return nil, berr
+	}
+	if blocked {
+		return nil, nil
+	}
+
 	// The order should carry its own store, but Java may send it empty; fall
 	// back to the store this tick is currently processing.
 	storeID := order.StoreID
@@ -484,8 +497,9 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 	distKM, err := c.distanceService.DistanceKM(ctx, ds.Latitude, ds.Longitude, order.Delivery.Lat, order.Delivery.Lng)
 	if err != nil {
 		// Permanent no-route (ZERO_RESULTS / NOT_FOUND): persist a terminal
-		// distance_failed trip so the order disappears from the needs-create set
-		// and is never re-billed to the Distance Matrix API. Returns (nil, nil):
+		// distance_failed trip and a suppressed guard. Live-trip lookup ignores
+		// distance_failed, so the guard — not the trip row — is what keeps the
+		// next tick from calling Distance Matrix again. Returns (nil, nil):
 		// the order is handled, but there is no assignable trip.
 		if errors.Is(err, ErrNoRoute) {
 			failed := buildTripFromOrder(order, "", "", "", orderID, storeID, 0, 0, ds)
@@ -556,6 +570,12 @@ func deEligibleForAssign(
 		return false
 	}
 	return store.ScannedSinceOpen(de.LastScanAt, now)
+}
+
+// needsTripCreate is false when a live trip already exists or the order is
+// suppressed after a permanent no-route failure.
+func needsTripCreate(existing *models.Trip, distanceFailed bool) bool {
+	return existing == nil && !distanceFailed
 }
 
 // sortTripsByCreatedAt sorts trips ascending by created_at (oldest first = FIFO).

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/sirupsen/logrus"
 )
@@ -60,5 +62,72 @@ func TestUpdateEditByOrderConditionExpression_MatchesUpdatePayment(t *testing.T)
 	want := "attribute_exists(PK) AND #status <> :completed AND #status <> :cancelled AND #status <> :distance_failed AND #status <> :inactive"
 	if cond != want {
 		t.Fatalf("condition = %q, want %q", cond, want)
+	}
+}
+
+func TestAssignmentBlocksCreate_ExistingDistanceFailedDoesNotRetry(t *testing.T) {
+	blocked, backfill := assignmentBlocksCreate(distanceFailedGuardAbsent, false, true)
+	if !blocked || !backfill {
+		t.Fatalf("existing distance_failed must block create and backfill the guard, blocked=%v backfill=%v", blocked, backfill)
+	}
+}
+
+func TestAssignmentBlocksCreate_SuppressedGuardBlocksWithoutBackfill(t *testing.T) {
+	blocked, backfill := assignmentBlocksCreate(distanceFailedGuardSuppressed, false, false)
+	if !blocked || backfill {
+		t.Fatalf("suppressed guard blocks without another backfill, blocked=%v backfill=%v", blocked, backfill)
+	}
+}
+
+func TestAssignmentBlocksCreate_ReleasedGuardAllowsOneRetry(t *testing.T) {
+	blocked, backfill := assignmentBlocksCreate(distanceFailedGuardReleased, false, true)
+	if blocked || backfill {
+		t.Fatalf("released guard must allow one retry despite old distance_failed rows, blocked=%v backfill=%v", blocked, backfill)
+	}
+}
+
+func TestAssignmentBlocksCreate_LiveTripWins(t *testing.T) {
+	blocked, backfill := assignmentBlocksCreate(distanceFailedGuardAbsent, true, true)
+	if blocked || backfill {
+		t.Fatalf("live trip must stay assignable, blocked=%v backfill=%v", blocked, backfill)
+	}
+}
+
+func TestNoteOrderIndexStatus_DistanceFailedIsNotHydrated(t *testing.T) {
+	seen := map[string]bool{}
+	liveID, failed := noteOrderIndexStatus(string(models.TripStatusDistanceFailed), "T1", seen)
+	if liveID != "" || !failed {
+		t.Fatalf("distance_failed liveID=%q failed=%v", liveID, failed)
+	}
+	liveID, failed = noteOrderIndexStatus(string(models.TripStatusCreated), "T2", seen)
+	if liveID != "T2" || failed {
+		t.Fatalf("created liveID=%q failed=%v", liveID, failed)
+	}
+	liveID, failed = noteOrderIndexStatus(string(models.TripStatusCancelled), "T3", seen)
+	if liveID != "" || failed {
+		t.Fatalf("cancelled liveID=%q failed=%v", liveID, failed)
+	}
+	liveID, failed = noteOrderIndexStatus("", "T4", seen)
+	if liveID != "T4" || failed {
+		t.Fatalf("missing status should hydrate, liveID=%q failed=%v", liveID, failed)
+	}
+	liveID, _ = noteOrderIndexStatus(string(models.TripStatusCreated), "T2", seen)
+	if liveID != "" {
+		t.Fatalf("duplicate trip id should not hydrate twice, liveID=%q", liveID)
+	}
+}
+
+func TestDistanceFailedGuardSuppress_DoesNotTouchOrderIndex(t *testing.T) {
+	w := distanceFailedGuardSuppress("tbl", "ORD0136933544", "2026-11-13T00:00:00Z")
+	if w.Update == nil {
+		t.Fatal("expected Update")
+	}
+	pk, ok := w.Update.Key["PK"].(*types.AttributeValueMemberS)
+	if !ok || pk.Value != "DISTFAIL!ORD0136933544" {
+		t.Fatalf("PK = %#v", w.Update.Key["PK"])
+	}
+	expr := aws.ToString(w.Update.UpdateExpression)
+	if strings.Contains(expr, "trip_order_id") {
+		t.Fatalf("guard update must not set trip_order_id: %s", expr)
 	}
 }

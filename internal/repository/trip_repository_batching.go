@@ -121,20 +121,207 @@ func tripIDFromIndexItem(item map[string]types.AttributeValue) string {
 	return ""
 }
 
-// LiveTripByOrderID returns the unique live trip for this order.
-// If several live trips exist, the newest created_at wins and an error is logged.
-func (r *TripRepository) LiveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
-	op := logging.Start(ctx, r.logger, "TripRepository.LiveTripByOrderID", logrus.Fields{"order_id": orderID})
-	defer op.End()
+const (
+	distanceFailedGuardSK = "METADATA"
+	// maxOrderIndexPages caps a projected OrderIndex walk. A page is ~1MB;
+	// 100 pages is far above a real order and stops a runaway LastEvaluatedKey.
+	maxOrderIndexPages = 100
+)
 
-	trips, err := r.tripsFromOrderIndex(ctx, orderID)
-	if err != nil {
-		return nil, op.Fail(err)
+func distanceFailedGuardPK(orderID string) string { return "DISTFAIL!" + orderID }
+
+func distanceFailedGuardKey(orderID string) map[string]types.AttributeValue {
+	return map[string]types.AttributeValue{
+		"PK": &types.AttributeValueMemberS{Value: distanceFailedGuardPK(orderID)},
+		"SK": &types.AttributeValueMemberS{Value: distanceFailedGuardSK},
 	}
+}
+
+type distanceFailedGuardState int
+
+const (
+	distanceFailedGuardAbsent distanceFailedGuardState = iota
+	distanceFailedGuardSuppressed
+	distanceFailedGuardReleased
+)
+
+// distanceFailedGuardState reads the per-order no-route guard.
+// The item is not a trip: it has no trip_order_id, so it never appears on OrderIndex.
+// Suppressed means "do not create another trip". Released means an operator
+// cancelled the distance_failed trip and the next tick may try once.
+func (r *TripRepository) distanceFailedGuardState(ctx context.Context, orderID string) (distanceFailedGuardState, error) {
+	if orderID == "" {
+		return distanceFailedGuardAbsent, nil
+	}
+	out, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:            aws.String(r.tableName),
+		Key:                  distanceFailedGuardKey(orderID),
+		ProjectionExpression: aws.String("suppressed"),
+		ConsistentRead:       aws.Bool(true),
+	})
+	if err != nil {
+		return distanceFailedGuardAbsent, fmt.Errorf("distance_failed guard: %w", err)
+	}
+	if len(out.Item) == 0 {
+		return distanceFailedGuardAbsent, nil
+	}
+	if b, ok := out.Item["suppressed"].(*types.AttributeValueMemberBOOL); ok && !b.Value {
+		return distanceFailedGuardReleased, nil
+	}
+	return distanceFailedGuardSuppressed, nil
+}
+
+// DistanceCreateBlocked reports whether createTrip must skip Distance Matrix
+// for this order. True only when the no-route guard is suppressed.
+func (r *TripRepository) DistanceCreateBlocked(ctx context.Context, orderID string) (bool, error) {
+	st, err := r.distanceFailedGuardState(ctx, orderID)
+	if err != nil {
+		return false, err
+	}
+	return st == distanceFailedGuardSuppressed, nil
+}
+
+// assignmentBlocksCreate is the cron's create/no-create decision.
+// backfill persists a suppressed guard so the next tick is one GetItem,
+// not another OrderIndex walk over historical distance_failed trips.
+func assignmentBlocksCreate(st distanceFailedGuardState, hasLive, sawDistanceFailed bool) (blocked, backfill bool) {
+	switch {
+	case st == distanceFailedGuardSuppressed:
+		return true, false
+	case hasLive:
+		return false, false
+	case st == distanceFailedGuardReleased:
+		// Explicit retry. Leftover distance_failed rows must not re-block it.
+		return false, false
+	case sawDistanceFailed:
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+func distanceFailedGuardSuppress(table, orderID, now string) types.TransactWriteItem {
+	return types.TransactWriteItem{
+		Update: &types.Update{
+			TableName:        aws.String(table),
+			Key:              distanceFailedGuardKey(orderID),
+			UpdateExpression: aws.String("SET suppressed = :t, order_id = :oid, updated_at = :now"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":t":   &types.AttributeValueMemberBOOL{Value: true},
+				":oid": &types.AttributeValueMemberS{Value: orderID},
+				":now": &types.AttributeValueMemberS{Value: now},
+			},
+		},
+	}
+}
+
+func distanceFailedGuardRelease(table, orderID, now string) types.TransactWriteItem {
+	return types.TransactWriteItem{
+		Update: &types.Update{
+			TableName:        aws.String(table),
+			Key:              distanceFailedGuardKey(orderID),
+			UpdateExpression: aws.String("SET suppressed = :f, order_id = :oid, updated_at = :now"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":f":   &types.AttributeValueMemberBOOL{Value: false},
+				":oid": &types.AttributeValueMemberS{Value: orderID},
+				":now": &types.AttributeValueMemberS{Value: now},
+			},
+		},
+	}
+}
+
+func (r *TripRepository) suppressDistanceFailedGuard(ctx context.Context, orderID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:        aws.String(r.tableName),
+		Key:              distanceFailedGuardKey(orderID),
+		UpdateExpression: aws.String("SET suppressed = :t, order_id = :oid, updated_at = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":t":   &types.AttributeValueMemberBOOL{Value: true},
+			":oid": &types.AttributeValueMemberS{Value: orderID},
+			":now": &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("suppress distance_failed guard: %w", err)
+	}
+	return nil
+}
+
+func orderIndexStatus(item map[string]types.AttributeValue) string {
+	if v, ok := item["status"].(*types.AttributeValueMemberS); ok {
+		return v.Value
+	}
+	return ""
+}
+
+// noteOrderIndexStatus classifies one OrderIndex row.
+// distance_failed blocks a new create and is not hydrated.
+// cancelled, completed, and inactive are ignored.
+// Any other status, including a missing one, is hydrated — it may be live.
+func noteOrderIndexStatus(status, tripID string, seen map[string]bool) (liveID string, distanceFailed bool) {
+	switch models.TripStatus(status) {
+	case models.TripStatusDistanceFailed:
+		return "", true
+	case models.TripStatusCancelled, models.TripStatusCompleted, models.TripStatusInactive:
+		return "", false
+	default:
+		if tripID == "" || seen[tripID] {
+			return "", false
+		}
+		seen[tripID] = true
+		return tripID, false
+	}
+}
+
+// scanOrderIndexStatuses walks OrderIndex for orderID without hydrating
+// terminal trips. Live (or unknown) trip IDs are returned for GetByID.
+func (r *TripRepository) scanOrderIndexStatuses(ctx context.Context, orderID string) (liveIDs []string, sawDistanceFailed bool, err error) {
+	seen := map[string]bool{}
+	var start map[string]types.AttributeValue
+	for page := 0; page < maxOrderIndexPages; page++ {
+		out, err := r.client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(r.tableName),
+			IndexName:              aws.String("OrderIndex"),
+			KeyConditionExpression: aws.String("trip_order_id = :oid"),
+			ExpressionAttributeNames: map[string]string{
+				"#status": "status",
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":oid": &types.AttributeValueMemberS{Value: orderID},
+			},
+			ProjectionExpression: aws.String("trip_id, PK, #status"),
+			ExclusiveStartKey:    start,
+		})
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to query OrderIndex: %w", err)
+		}
+		for _, item := range out.Items {
+			liveID, failed := noteOrderIndexStatus(orderIndexStatus(item), tripIDFromIndexItem(item), seen)
+			if failed {
+				sawDistanceFailed = true
+			}
+			if liveID != "" {
+				liveIDs = append(liveIDs, liveID)
+			}
+		}
+		if len(out.LastEvaluatedKey) == 0 {
+			return liveIDs, sawDistanceFailed, nil
+		}
+		start = out.LastEvaluatedKey
+	}
+	return nil, false, fmt.Errorf("order index for %s exceeded %d pages", orderID, maxOrderIndexPages)
+}
+
+func (r *TripRepository) newestLiveTrip(ctx context.Context, orderID string, ids []string) (*models.Trip, error) {
 	var live []*models.Trip
-	for _, t := range trips {
-		if models.IsLiveTripStatus(t.Status) {
-			live = append(live, t)
+	for _, id := range ids {
+		full, err := r.GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if full != nil && models.IsLiveTripStatus(full.Status) {
+			live = append(live, full)
 		}
 	}
 	if len(live) == 0 {
@@ -154,6 +341,105 @@ func (r *TripRepository) LiveTripByOrderID(ctx context.Context, orderID string) 
 		}).Error("LiveTripByOrderID: multiple live trips; using newest created_at")
 	}
 	return best, nil
+}
+
+// LiveTripByOrderID returns the unique live trip for this order.
+// If several live trips exist, the newest created_at wins and an error is logged.
+// A suppressed distance_failed guard short-circuits the OrderIndex walk:
+// that order has no live trip, and hydrating its terminal history is what
+// made this lookup fan out into one GetItem per junk trip.
+func (r *TripRepository) LiveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error) {
+	op := logging.Start(ctx, r.logger, "TripRepository.LiveTripByOrderID", logrus.Fields{"order_id": orderID})
+	defer op.End()
+
+	st, err := r.distanceFailedGuardState(ctx, orderID)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+	if st == distanceFailedGuardSuppressed {
+		return nil, nil
+	}
+	ids, _, err := r.scanOrderIndexStatuses(ctx, orderID)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+	trip, err := r.newestLiveTrip(ctx, orderID, ids)
+	if err != nil {
+		return nil, op.Fail(err)
+	}
+	return trip, nil
+}
+
+// ReleaseDistanceFailedGuard clears a suppressed no-route guard so the
+// assignment cron may try the order once. Absent or already-released guards
+// are a no-op. Order cancel uses this because live-trip lookup will not
+// return a distance_failed trip to cancel by id.
+func (r *TripRepository) ReleaseDistanceFailedGuard(ctx context.Context, orderID string) error {
+	if orderID == "" {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:           aws.String(r.tableName),
+		Key:                 distanceFailedGuardKey(orderID),
+		ConditionExpression: aws.String("attribute_exists(PK) AND suppressed = :t"),
+		UpdateExpression:    aws.String("SET suppressed = :f, order_id = :oid, updated_at = :now"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":f":   &types.AttributeValueMemberBOOL{Value: false},
+			":t":   &types.AttributeValueMemberBOOL{Value: true},
+			":oid": &types.AttributeValueMemberS{Value: orderID},
+			":now": &types.AttributeValueMemberS{Value: now},
+		},
+	})
+	if err != nil {
+		var cond *types.ConditionalCheckFailedException
+		if errors.As(err, &cond) {
+			return nil
+		}
+		return fmt.Errorf("release distance_failed guard: %w", err)
+	}
+	return nil
+}
+
+// AssignmentTripForOrder is the assignment cron's existence check.
+// The bool is true when this order must not get another trip: the no-route
+// guard is suppressed, or this call just suppressed it after finding a
+// distance_failed trip. Live-trip lookup ignores that status, which is why
+// a persisted distance_failed trip used to be created again every tick.
+func (r *TripRepository) AssignmentTripForOrder(ctx context.Context, orderID string) (*models.Trip, bool, error) {
+	op := logging.Start(ctx, r.logger, "TripRepository.AssignmentTripForOrder", logrus.Fields{"order_id": orderID})
+	defer op.End()
+
+	st, err := r.distanceFailedGuardState(ctx, orderID)
+	if err != nil {
+		return nil, false, op.Fail(err)
+	}
+	if st == distanceFailedGuardSuppressed {
+		return nil, true, nil
+	}
+
+	ids, sawFailed, err := r.scanOrderIndexStatuses(ctx, orderID)
+	if err != nil {
+		return nil, false, op.Fail(err)
+	}
+	live, err := r.newestLiveTrip(ctx, orderID, ids)
+	if err != nil {
+		return nil, false, op.Fail(err)
+	}
+	blocked, backfill := assignmentBlocksCreate(st, live != nil, sawFailed)
+	if backfill {
+		if perr := r.suppressDistanceFailedGuard(ctx, orderID); perr != nil {
+			r.logger.WithError(perr).WithField("order_id", orderID).
+				Warn("failed to persist distance_failed guard")
+		} else {
+			r.logger.WithField("order_id", orderID).
+				Warn("distance_failed guard set; assignment cron will not retry this order")
+		}
+	}
+	if blocked {
+		return nil, true, nil
+	}
+	return live, false, nil
 }
 
 // ResolveTripByOrderID is LiveTripByOrderID, then follows superseded_by_trip_id
@@ -334,9 +620,9 @@ func (r *TripRepository) PersistMerge(ctx context.Context, in MergePersistInput)
 					"PK": &types.AttributeValueMemberS{Value: "TRIP!" + c.TripID},
 					"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 				},
-				UpdateExpression:         aws.String("SET #status = :inactive, superseded_by_trip_id = :succ, updated_at = :now"),
-				ConditionExpression:      aws.String(cond),
-				ExpressionAttributeNames: map[string]string{"#status": "status"},
+				UpdateExpression:          aws.String("SET #status = :inactive, superseded_by_trip_id = :succ, updated_at = :now"),
+				ConditionExpression:       aws.String(cond),
+				ExpressionAttributeNames:  map[string]string{"#status": "status"},
 				ExpressionAttributeValues: values,
 			},
 		})
@@ -530,9 +816,9 @@ func (r *TripRepository) CompleteDropKeepBusy(ctx context.Context, tripID, dePho
 						"PK": &types.AttributeValueMemberS{Value: "DE!" + dePhone},
 						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 					},
-					UpdateExpression:         aws.String(deExpr),
-					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
-					ExpressionAttributeNames: map[string]string{"#status": "status"},
+					UpdateExpression:          aws.String(deExpr),
+					ConditionExpression:       aws.String("#status = :busy AND current_trip_id = :tid"),
+					ExpressionAttributeNames:  map[string]string{"#status": "status"},
 					ExpressionAttributeValues: deValues,
 				},
 			},

@@ -206,6 +206,9 @@ func TestCancelTripByOrder_NoTrip_NoOp(t *testing.T) {
 	if notifier.sent {
 		t.Fatal("expected no notification for missing trip")
 	}
+	if repo.releasedOrderID != "ORD-001" {
+		t.Fatalf("release guard order = %q, want ORD-001", repo.releasedOrderID)
+	}
 }
 
 func TestCancelTripByOrder_TripCompleted_SkipNoError(t *testing.T) {
@@ -607,6 +610,7 @@ type stubTripRepo struct {
 	cancelCalled            bool
 	cancelTripID            string
 	cancelDEPhone           string
+	releasedOrderID         string
 	updateTasksFn           func(ctx context.Context, tripID string, tasks []models.Task) error
 	updateTasksCalled       bool
 	capturedTasks           []models.Task
@@ -638,6 +642,11 @@ func (s *stubTripRepo) CancelByOrderID(_ context.Context, tripID, dePhone, _ str
 	s.cancelCalled = true
 	s.cancelTripID = tripID
 	s.cancelDEPhone = dePhone
+	return nil
+}
+
+func (s *stubTripRepo) ReleaseDistanceFailedGuard(_ context.Context, orderID string) error {
+	s.releasedOrderID = orderID
 	return nil
 }
 

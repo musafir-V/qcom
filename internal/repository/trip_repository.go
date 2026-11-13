@@ -93,6 +93,7 @@ func (r *TripRepository) Create(ctx context.Context, trip *models.Trip) error {
 			},
 		},
 	}
+	seenOrder := map[string]bool{}
 	for _, oid := range trip.LiveOrderIDs() {
 		sib, serr := marshalOrderIndexSibling(trip.TripID, oid, trip.Status)
 		if serr != nil {
@@ -104,6 +105,12 @@ func (r *TripRepository) Create(ctx context.Context, trip *models.Trip) error {
 				Item:      sib,
 			},
 		})
+		// Same transaction as the trip so a crash cannot leave a distance_failed
+		// trip without the guard that stops the next tick from creating another.
+		if trip.Status == models.TripStatusDistanceFailed && oid != "" && !seenOrder[oid] {
+			seenOrder[oid] = true
+			transact = append(transact, distanceFailedGuardSuppress(r.tableName, oid, now))
+		}
 	}
 
 	_, err = r.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: transact})
@@ -344,55 +351,55 @@ func (r *TripRepository) CompleteTripAndFreeDE(ctx context.Context, tripID, dePh
 	now := nowT.Format(time.RFC3339)
 
 	transact := []types.TransactWriteItem{
-			{
-				Update: &types.Update{
-					TableName: aws.String(r.tableName),
-					Key: map[string]types.AttributeValue{
-						"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
-						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
-					},
-					UpdateExpression: aws.String("SET tasks = :tasks, #status = :completed, completed_at = :now, updated_at = :now"),
-					ConditionExpression: aws.String(
-						"#status <> :completed AND #status <> :cancelled AND #status <> :inactive",
-					),
-					ExpressionAttributeNames: map[string]string{"#status": "status"},
-					ExpressionAttributeValues: map[string]types.AttributeValue{
-						":tasks":     tasksAttr,
-						":completed": &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
-						":cancelled": &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
-						":inactive":  &types.AttributeValueMemberS{Value: string(models.TripStatusInactive)},
-						":now":       &types.AttributeValueMemberS{Value: now},
-					},
+		{
+			Update: &types.Update{
+				TableName: aws.String(r.tableName),
+				Key: map[string]types.AttributeValue{
+					"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+					"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+				},
+				UpdateExpression: aws.String("SET tasks = :tasks, #status = :completed, completed_at = :now, updated_at = :now"),
+				ConditionExpression: aws.String(
+					"#status <> :completed AND #status <> :cancelled AND #status <> :inactive",
+				),
+				ExpressionAttributeNames: map[string]string{"#status": "status"},
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":tasks":     tasksAttr,
+					":completed": &types.AttributeValueMemberS{Value: string(models.TripStatusCompleted)},
+					":cancelled": &types.AttributeValueMemberS{Value: string(models.TripStatusCancelled)},
+					":inactive":  &types.AttributeValueMemberS{Value: string(models.TripStatusInactive)},
+					":now":       &types.AttributeValueMemberS{Value: now},
 				},
 			},
-			{
-				Update: &types.Update{
-					TableName: aws.String(r.tableName),
-					Key: map[string]types.AttributeValue{
-						"PK": &types.AttributeValueMemberS{Value: "DE!" + dePhone},
-						"SK": &types.AttributeValueMemberS{Value: "METADATA"},
-					},
-					UpdateExpression: aws.String(
-						"SET #status = :free, updated_at = :now, in_hand_cash_zmw = if_not_exists(in_hand_cash_zmw, :zero) + :cod, " +
-							"current_store_id = :store, duty_index_key = :duty, last_trip_id = :tid " +
-							"REMOVE current_order_id, current_trip_id, scan_deadline_at",
-					),
-					ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
-					ExpressionAttributeNames: map[string]string{"#status": "status"},
-					ExpressionAttributeValues: map[string]types.AttributeValue{
-						":free":  &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
-						":busy":  &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
-						":tid":   &types.AttributeValueMemberS{Value: tripID},
-						":now":   &types.AttributeValueMemberS{Value: now},
-						":store": &types.AttributeValueMemberS{Value: storeID},
-						":duty":  &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
-						// Always persist COD accrual at 2dp so float64 noise cannot
-						// pollute in_hand_cash_zmw and break later cash deposits.
-						":cod":  &types.AttributeValueMemberN{Value: money.FormatZMW(codAmount)},
-						":zero": &types.AttributeValueMemberN{Value: "0.00"},
-					},
+		},
+		{
+			Update: &types.Update{
+				TableName: aws.String(r.tableName),
+				Key: map[string]types.AttributeValue{
+					"PK": &types.AttributeValueMemberS{Value: "DE!" + dePhone},
+					"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+				},
+				UpdateExpression: aws.String(
+					"SET #status = :free, updated_at = :now, in_hand_cash_zmw = if_not_exists(in_hand_cash_zmw, :zero) + :cod, " +
+						"current_store_id = :store, duty_index_key = :duty, last_trip_id = :tid " +
+						"REMOVE current_order_id, current_trip_id, scan_deadline_at",
+				),
+				ConditionExpression:      aws.String("#status = :busy AND current_trip_id = :tid"),
+				ExpressionAttributeNames: map[string]string{"#status": "status"},
+				ExpressionAttributeValues: map[string]types.AttributeValue{
+					":free":  &types.AttributeValueMemberS{Value: string(models.DEStatusFree)},
+					":busy":  &types.AttributeValueMemberS{Value: string(models.DEStatusBusy)},
+					":tid":   &types.AttributeValueMemberS{Value: tripID},
+					":now":   &types.AttributeValueMemberS{Value: now},
+					":store": &types.AttributeValueMemberS{Value: storeID},
+					":duty":  &types.AttributeValueMemberS{Value: models.DutyIndexKeyOnDuty(storeID)},
+					// Always persist COD accrual at 2dp so float64 noise cannot
+					// pollute in_hand_cash_zmw and break later cash deposits.
+					":cod":  &types.AttributeValueMemberN{Value: money.FormatZMW(codAmount)},
+					":zero": &types.AttributeValueMemberN{Value: "0.00"},
 				},
 			},
+		},
 	}
 	transact = append(transact, orderIndexStatusUpdates(r.tableName, tripID, orderIDsFromTasks(tasks), models.TripStatusCompleted)...)
 
@@ -663,8 +670,10 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone, s
 	now := nowT.Format(time.RFC3339)
 
 	orderIDs := []string{}
+	var existingStatus models.TripStatus
 	if existing, gerr := r.GetByID(ctx, tripID); gerr == nil && existing != nil {
 		orderIDs = existing.LiveOrderIDs()
+		existingStatus = existing.Status
 	}
 
 	items := []types.TransactWriteItem{
@@ -688,6 +697,20 @@ func (r *TripRepository) CancelByOrderID(ctx context.Context, tripID, dePhone, s
 		},
 	}
 	items = append(items, orderIndexStatusUpdates(r.tableName, tripID, orderIDs, models.TripStatusCancelled)...)
+
+	// Releasing the guard is what lets the assignment cron try this order once
+	// more after the coordinates are fixed. Deleting it would just let the
+	// next tick see leftover distance_failed rows and suppress again.
+	if existingStatus == models.TripStatusDistanceFailed {
+		seen := map[string]bool{}
+		for _, oid := range orderIDs {
+			if oid == "" || seen[oid] {
+				continue
+			}
+			seen[oid] = true
+			items = append(items, distanceFailedGuardRelease(r.tableName, oid, now))
+		}
+	}
 
 	if dePhone != "" {
 		deUpdate := &types.Update{
