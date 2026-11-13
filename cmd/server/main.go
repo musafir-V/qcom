@@ -481,6 +481,7 @@ func setupRouter(
 	// Order-scoped drop complete for the order-detail "Mark Delivered" action,
 	// which has the order id but not the driver's phone on hand.
 	admin.HandleFunc("/orders/{orderId}/pickup/complete", adminDriverHandlers.AdminCompletePickupByOrder).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/orders/{orderId}/live-trip", adminTripsByOrdersHandlers.GetLiveTrip).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/orders/{orderId}/batch/candidates", adminDriverHandlers.BatchCandidates).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/orders/{orderId}/batch", adminDriverHandlers.ConfirmBatch).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/orders/{orderId}/drop/preview", adminDriverHandlers.PreviewAdminDrop).Methods("GET", "OPTIONS")

@@ -19,15 +19,22 @@ type tripByOrderLister interface {
 	ListByOrderID(ctx context.Context, orderID string) ([]*models.Trip, error)
 }
 
-// AdminTripsByOrdersHandlers serves GET /admin/trips/by-orders.
+// liveTripGetter is the live-trip lookup POST /admin/assign uses.
+type liveTripGetter interface {
+	LiveTripByOrderID(ctx context.Context, orderID string) (*models.Trip, error)
+}
+
+// AdminTripsByOrdersHandlers serves GET /admin/trips/by-orders and
+// GET /admin/orders/{orderId}/live-trip.
 // Mount behind RequireAdminAuth (parent router applies auth).
 type AdminTripsByOrdersHandlers struct {
 	lister tripByOrderLister
+	live   liveTripGetter
 	logger *logrus.Logger
 }
 
 func NewAdminTripsByOrdersHandlers(repo *repository.TripRepository, logger *logrus.Logger) *AdminTripsByOrdersHandlers {
-	return &AdminTripsByOrdersHandlers{lister: repo, logger: logger}
+	return &AdminTripsByOrdersHandlers{lister: repo, live: repo, logger: logger}
 }
 
 func newAdminTripsByOrdersHandlers(lister tripByOrderLister, logger *logrus.Logger) *AdminTripsByOrdersHandlers {
