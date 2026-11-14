@@ -873,11 +873,42 @@ func (h *AdminDriverHandlers) GetDriverCashCollections(w http.ResponseWriter, r 
 	})
 }
 
+// routeOrderIDs lists the orders on a trip in drop order, which is the
+// order the frozen distance walks (store → drop1 → drop2 → …).
+// Falls back to live order ids when no drop task carries an order id.
+func routeOrderIDs(trip *models.Trip) []string {
+	if trip == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(trip.Tasks))
+	seen := make(map[string]struct{})
+	for i := range trip.Tasks {
+		task := &trip.Tasks[i]
+		if task.Type != models.TaskTypeDrop {
+			continue
+		}
+		id := trip.TaskOrderID(task)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) > 0 {
+		return ids
+	}
+	return trip.LiveOrderIDs()
+}
+
 // driverTripItem is one completed-trip row in the driver-trips response.
 type driverTripItem struct {
-	CompletedAt string  `json:"completed_at"`
-	OrderID     string  `json:"order_id"`
-	DistanceKM  float64 `json:"distance_km"`
+	CompletedAt string   `json:"completed_at"`
+	OrderID     string   `json:"order_id"`
+	OrderIDs    []string `json:"order_ids,omitempty"`
+	DistanceKM  float64  `json:"distance_km"`
 	// LastMileMin / ReturnMin are nil when the trip has no reliable timing
 	// (admin-synthesized arrival, no return scan, or pre-feature trip).
 	LastMileMin    *float64 `json:"last_mile_min"`
@@ -940,6 +971,7 @@ func fetchDriverTrips(ctx context.Context, lister cashCollectionsTripLister, deI
 		item := driverTripItem{
 			CompletedAt:    trip.CompletedAt,
 			OrderID:        trip.OrderID,
+			OrderIDs:       routeOrderIDs(trip),
 			DistanceKM:     trip.DistanceKM,
 			MissingArrival: trip.MissingArrival(),
 		}

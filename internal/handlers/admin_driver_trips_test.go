@@ -233,6 +233,33 @@ func TestFetchDriverTrips_ListerError(t *testing.T) {
 	}
 }
 
+func TestFetchDriverTrips_BatchIsOneRowWithPathDistance(t *testing.T) {
+	// 3.7 is store→drop1 + drop1→drop2, frozen on the trip. One row, counted once.
+	trip := completedTrip("ORD-A", "2026-01-15T10:00:00Z", 3.7)
+	trip.OrderIDs = []string{"ORD-A", "ORD-B"}
+	trip.Tasks = []models.Task{
+		{Type: models.TaskTypePickup, OrderID: "ORD-A"},
+		{Type: models.TaskTypePickup, OrderID: "ORD-B"},
+		{Type: models.TaskTypeDrop, OrderID: "ORD-A"},
+		{Type: models.TaskTypeDrop, OrderID: "ORD-B"},
+	}
+
+	result, err := fetchDriverTrips(context.Background(), &fakeTripLister{trips: []*models.Trip{trip}}, "DE1", "start", "end", 0, 50)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.TripCount != 1 || len(result.Items) != 1 {
+		t.Fatalf("got %d trips / %d items, want one row", result.TripCount, len(result.Items))
+	}
+	item := result.Items[0]
+	if item.DistanceKM != 3.7 || result.TotalDistanceKM != 3.7 {
+		t.Fatalf("distance = %v total = %v, want the path sum 3.7 once", item.DistanceKM, result.TotalDistanceKM)
+	}
+	if len(item.OrderIDs) != 2 || item.OrderIDs[0] != "ORD-A" || item.OrderIDs[1] != "ORD-B" {
+		t.Fatalf("order_ids = %v, want drop order [ORD-A ORD-B]", item.OrderIDs)
+	}
+}
+
 func TestDriverTripsMaxRangeDays(t *testing.T) {
 	if driverTripsMaxRangeDays != 7 {
 		t.Fatalf("driverTripsMaxRangeDays = %d, want 7", driverTripsMaxRangeDays)
