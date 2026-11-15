@@ -42,10 +42,14 @@ func newAdminTripsByOrdersHandlers(lister tripByOrderLister, logger *logrus.Logg
 }
 
 type tripsByOrderItem struct {
-	OrderID    string  `json:"order_id"`
-	DistanceKM float64 `json:"distance_km"`
-	ReachedAt  string  `json:"reached_at,omitempty"`
-	TripStatus string  `json:"trip_status"`
+	OrderID string `json:"order_id"`
+	// DistanceKM is this order's own km. A batched tour total is not reused
+	// for every stop; nil when a batched order has no solo distance on record.
+	DistanceKM *float64 `json:"distance_km,omitempty"`
+	ReachedAt  string   `json:"reached_at,omitempty"`
+	TripStatus string   `json:"trip_status"`
+	// Batched is true when this order rode on a multi-order trip.
+	Batched bool `json:"batched,omitempty"`
 }
 
 type tripsByOrdersResponse struct {
@@ -77,16 +81,77 @@ func (h *AdminTripsByOrdersHandlers) GetTripsByOrders(w http.ResponseWriter, r *
 			continue
 		}
 		item := tripsByOrderItem{
-			OrderID:    chosen.OrderID,
-			DistanceKM: chosen.DistanceKM,
+			OrderID:    id,
+			DistanceKM: orderDistanceKM(trips, chosen, id),
 			TripStatus: string(chosen.Status),
+			Batched:    tripIsBatched(chosen),
 		}
-		if drop := chosen.DropTask(); drop != nil {
+		if drop := dropForOrderLeg(chosen, id); drop != nil {
 			item.ReachedAt = drop.ReachedAt
 		}
 		out = append(out, item)
 	}
 	h.respondWithJSON(w, http.StatusOK, tripsByOrdersResponse{Trips: out})
+}
+
+// tripIsBatched reports a trip that carries more than one order.
+func tripIsBatched(trip *models.Trip) bool {
+	return trip != nil && len(trip.LiveOrderIDs()) > 1
+}
+
+// orderDistanceKM is the km for this order. A single-order trip keeps its
+// frozen distance. A batched tour does not: the order's own km is the latest
+// single-order trip (usually the solo trip merged into the batch).
+func orderDistanceKM(trips []*models.Trip, chosen *models.Trip, orderID string) *float64 {
+	if chosen == nil {
+		return nil
+	}
+	if !tripIsBatched(chosen) {
+		km := chosen.DistanceKM
+		return &km
+	}
+	var best *models.Trip
+	for _, t := range trips {
+		if !soloOrderTrip(t, orderID) {
+			continue
+		}
+		if best == nil || t.CreatedAt > best.CreatedAt {
+			best = t
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	km := best.DistanceKM
+	return &km
+}
+
+func soloOrderTrip(t *models.Trip, orderID string) bool {
+	if t == nil || orderID == "" {
+		return false
+	}
+	switch t.Status {
+	case models.TripStatusCancelled, models.TripStatusDistanceFailed:
+		return false
+	}
+	ids := t.LiveOrderIDs()
+	return len(ids) == 1 && ids[0] == orderID
+}
+
+// dropForOrderLeg is this order's drop. A batched trip must not fall back to
+// the first drop, which belongs to a different stop. A single-order trip
+// written before tasks carried order_id still resolves through DropTask.
+func dropForOrderLeg(trip *models.Trip, orderID string) *models.Task {
+	if trip == nil {
+		return nil
+	}
+	if drop := trip.DropForOrder(orderID); drop != nil {
+		return drop
+	}
+	if tripIsBatched(trip) {
+		return nil
+	}
+	return trip.DropTask()
 }
 
 func parseOrderIDs(raw string) []string {
