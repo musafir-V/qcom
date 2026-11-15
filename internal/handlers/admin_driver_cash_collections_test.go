@@ -384,6 +384,91 @@ func TestFetchCashCollections_EmptyWindow(t *testing.T) {
 	}
 }
 
+func mixedBatchTrip() *models.Trip {
+	// Mirrors TR0706153782: trip.Payment is the first (prepaid) order, while
+	// two of the three drops are COD. The collections list must emit those
+	// COD drops, not skip the whole trip.
+	return &models.Trip{
+		OrderID:     "ORD1232166392",
+		OrderIDs:    []string{"ORD1232166392", "ORD1753449607", "ORD0794751709"},
+		CompletedAt: "2026-11-15T08:06:10Z",
+		Payment:     &models.Payment{CollectCash: false, AmountZMW: 33, Method: "AIRTEL_MONEY"},
+		Tasks: []models.Task{
+			{Type: models.TaskTypePickup, OrderID: "ORD1232166392", Status: models.TaskStatusCompleted},
+			{Type: models.TaskTypeDrop, OrderID: "ORD0794751709", Status: models.TaskStatusCompleted,
+				CompletedAt: "2026-11-15T07:40:02Z",
+				Payment:     &models.Payment{CollectCash: true, AmountZMW: 33, Method: "COD"}},
+			{Type: models.TaskTypeDrop, OrderID: "ORD1232166392", Status: models.TaskStatusCompleted,
+				CompletedAt: "2026-11-15T07:45:35Z",
+				Payment:     &models.Payment{CollectCash: false, AmountZMW: 33, Method: "AIRTEL_MONEY"}},
+			{Type: models.TaskTypeDrop, OrderID: "ORD1753449607", Status: models.TaskStatusCompleted,
+				CompletedAt: "2026-11-15T08:06:10Z",
+				Payment:     &models.Payment{CollectCash: true, AmountZMW: 33, Method: "COD"}},
+		},
+	}
+}
+
+func TestFetchCashCollections_MixedBatchEmitsPerDropCOD(t *testing.T) {
+	lister := &fakeTripLister{trips: []*models.Trip{mixedBatchTrip()}}
+
+	result, err := fetchCashCollections(context.Background(), lister, "DE1", "start", "end", 0, 50)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.OrderCount != 2 {
+		t.Fatalf("order_count = %d, want 2 COD drops (must not skip the trip because trip.Payment is prepaid)", result.OrderCount)
+	}
+	if result.TotalZMW != 66 {
+		t.Fatalf("total_zmw = %v, want 66 (33+33)", result.TotalZMW)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(result.Items))
+	}
+	got := map[string]float64{}
+	for _, item := range result.Items {
+		got[item.OrderID] = item.AmountZMW
+		if item.OrderNumber != item.OrderID {
+			t.Errorf("order_number %q != order_id %q", item.OrderNumber, item.OrderID)
+		}
+	}
+	if got["ORD0794751709"] != 33 || got["ORD1753449607"] != 33 {
+		t.Errorf("COD rows = %+v, want ORD0794751709=33 and ORD1753449607=33", got)
+	}
+	if _, leaked := got["ORD1232166392"]; leaked {
+		t.Fatal("prepaid drop ORD1232166392 leaked into COD collected")
+	}
+	// Last-delivered COD first so the list stays newest-first inside the trip.
+	if result.Items[0].OrderID != "ORD1753449607" {
+		t.Errorf("items[0] = %q, want ORD1753449607 (newest COD drop first)", result.Items[0].OrderID)
+	}
+}
+
+func TestFetchCashCollections_AllCODBatchSplitsPerDropNotTripSum(t *testing.T) {
+	lister := &fakeTripLister{
+		trips: []*models.Trip{{
+			OrderID:     "ORD-A",
+			CompletedAt: "2026-11-14T18:30:39Z",
+			Payment:     &models.Payment{CollectCash: true, AmountZMW: 388, Method: "COD"},
+			Tasks: []models.Task{
+				{Type: models.TaskTypeDrop, OrderID: "ORD-B", Status: models.TaskStatusCompleted,
+					CompletedAt: "2026-11-14T18:20:44Z",
+					Payment:     &models.Payment{CollectCash: true, AmountZMW: 63, Method: "COD"}},
+				{Type: models.TaskTypeDrop, OrderID: "ORD-A", Status: models.TaskStatusCompleted,
+					CompletedAt: "2026-11-14T18:30:39Z",
+					Payment:     &models.Payment{CollectCash: true, AmountZMW: 325, Method: "COD"}},
+			},
+		}},
+	}
+
+	result, err := fetchCashCollections(context.Background(), lister, "DE1", "start", "end", 0, 50)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.OrderCount != 2 || result.TotalZMW != 388 {
+		t.Fatalf("result = count=%d total=%v, want 2 orders totaling 388 (not one row of the trip sum)", result.OrderCount, result.TotalZMW)
+	}
+}
+
 func TestFetchCashCollections_ExcludesPaymentNil(t *testing.T) {
 	lister := &fakeTripLister{
 		trips: []*models.Trip{
