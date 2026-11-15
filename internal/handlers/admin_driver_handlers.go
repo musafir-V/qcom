@@ -749,12 +749,56 @@ type cashCollectionsResult struct {
 	NextCursor string
 }
 
+// cashCollectionsFromTrip emits one COD-collected row per delivered cash drop.
+// Batched trips keep payment on each drop; trip.Payment is the first order and
+// can be prepaid even when later drops are COD. Falling back to trip.Payment
+// covers legacy singleton trips that never stored per-drop payment.
+func cashCollectionsFromTrip(trip *models.Trip) []cashCollectionItem {
+	if trip == nil {
+		return nil
+	}
+	var items []cashCollectionItem
+	for i := range trip.Tasks {
+		task := &trip.Tasks[i]
+		if task.Type != models.TaskTypeDrop || task.Payment == nil || !task.Payment.CollectCash {
+			continue
+		}
+		orderID := trip.TaskOrderID(task)
+		deliveredAt := task.CompletedAt
+		if deliveredAt == "" {
+			deliveredAt = trip.CompletedAt
+		}
+		items = append(items, cashCollectionItem{
+			DeliveredAt: deliveredAt,
+			OrderNumber: orderID,
+			OrderID:     orderID,
+			AmountZMW:   money.Round2ZMW(task.Payment.AmountZMW),
+		})
+	}
+	if len(items) == 0 {
+		if trip.Payment == nil || !trip.Payment.CollectCash {
+			return nil
+		}
+		return []cashCollectionItem{{
+			DeliveredAt: trip.CompletedAt,
+			OrderNumber: trip.OrderID,
+			OrderID:     trip.OrderID,
+			AmountZMW:   money.Round2ZMW(trip.Payment.AmountZMW),
+		}}
+	}
+	for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
+		items[i], items[j] = items[j], items[i]
+	}
+	return items
+}
+
 // fetchCashCollections drains every trip in [startTS, endTS] for deID via
 // lister (paginating the DynamoDB query as needed — safe because the caller
 // already capped the window to cashCollectionsMaxRangeDays), filters to
-// delivered COD trips (payment != nil && payment.collect_cash), and computes
-// totals across the *entire* window before slicing out the requested page.
-// This keeps total_zmw/order_count correct even while items are paginated.
+// delivered COD drops (per-drop payment.collect_cash, falling back to the
+// trip payment on legacy items), and computes totals across the *entire*
+// window before slicing out the requested page. This keeps total_zmw /
+// order_count correct even while items are paginated.
 func fetchCashCollections(ctx context.Context, lister cashCollectionsTripLister, deID, startTS, endTS string, offset, limit int) (*cashCollectionsResult, error) {
 	var allTrips []*models.Trip
 	var lastKey map[string]types.AttributeValue
@@ -773,17 +817,10 @@ func fetchCashCollections(ctx context.Context, lister cashCollectionsTripLister,
 	var total float64
 	items := make([]cashCollectionItem, 0, len(allTrips))
 	for _, trip := range allTrips {
-		if trip.Payment == nil || !trip.Payment.CollectCash {
-			continue
+		for _, item := range cashCollectionsFromTrip(trip) {
+			total += item.AmountZMW
+			items = append(items, item)
 		}
-		amount := money.Round2ZMW(trip.Payment.AmountZMW)
-		total += amount
-		items = append(items, cashCollectionItem{
-			DeliveredAt: trip.CompletedAt,
-			OrderNumber: trip.OrderID,
-			OrderID:     trip.OrderID,
-			AmountZMW:   amount,
-		})
 	}
 
 	result := &cashCollectionsResult{
