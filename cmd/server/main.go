@@ -21,6 +21,7 @@ import (
 	"github.com/qcom/qcom/internal/middleware"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
+	"github.com/qcom/qcom/internal/timezone"
 	"github.com/sirupsen/logrus"
 )
 
@@ -99,6 +100,9 @@ func main() {
 	referralService := service.NewReferralService(referralRepo, deRepo, payoutConfigRepo, logger)
 	deService := service.NewDEService(deRepo, qrService, referralService, earningsLedgerRepo, cashConfigRepo, darkstoreRepo, deStatusEventRepo, tripRepo, logger)
 	presenceService := service.NewPresenceService(deStatusEventRepo, logger)
+	punctualityRepo := repository.NewPunctualityRepository(dynamoClient, cfg.DynamoDB.TableName, logger)
+	punctualityService := service.NewPunctualityService(service.NewDynamoPunctualityStore(punctualityRepo), timezone.Now, logger)
+	deService.SetPunctuality(punctualityService)
 	cashDepositService := service.NewCashDepositService(deRepo, cashConfigRepo, logger)
 
 	javaOrderClient := service.NewJavaOrderClient(cfg.Java.OrderServiceURL, logger)
@@ -183,6 +187,7 @@ func main() {
 		cashDepositLedgerRepo,
 		uploadService,
 		presenceService,
+		punctualityService,
 		earningsHandlers,
 		referralHandlers,
 		inKindDisbHandlers,
@@ -475,6 +480,12 @@ func setupRouter(
 	admin.HandleFunc("/drivers/{phone}/cash-collections", adminDriverHandlers.GetDriverCashCollections).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trips", adminDriverHandlers.GetDriverTrips).Methods("GET", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/presence", adminDriverHandlers.GetDriverPresence).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/punctuality", adminDriverHandlers.GetDriverPunctuality).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/punctuality/clear", adminDriverHandlers.ClearDriverPunctuality).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/shift-start", adminDriverHandlers.SetDriverShiftStart).Methods("PUT", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/shift-starts", adminDriverHandlers.AddDriverShiftStart).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/shift-starts", adminDriverHandlers.ReplaceDriverShiftStart).Methods("PUT", "OPTIONS")
+	admin.HandleFunc("/drivers/{phone}/shift-starts", adminDriverHandlers.RemoveDriverShiftStart).Methods("DELETE", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/pickup/complete", adminDriverHandlers.AdminCompletePickup).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip/drop/complete", adminDriverHandlers.AdminCompleteDrop).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/drivers/{phone}/trip", adminDriverHandlers.GetDriverTrip).Methods("GET", "OPTIONS")

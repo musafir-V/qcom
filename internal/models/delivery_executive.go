@@ -93,7 +93,18 @@ type DeliveryExecutive struct {
 	LastTripID string `json:"last_trip_id,omitempty" dynamodbav:"last_trip_id,omitempty"`
 	// LastAppVersion is the DE app semver last seen on an authenticated request
 	// (header X-App-Version). Empty means an old app; merge is refused.
-	LastAppVersion      string  `json:"last_app_version,omitempty" dynamodbav:"last_app_version,omitempty"`
+	LastAppVersion string `json:"last_app_version,omitempty" dynamodbav:"last_app_version,omitempty"`
+	// ShiftStartTime is the earliest saved arrival, "HH:MM" in Zambia local time.
+	ShiftStartTime string `json:"shift_start_time,omitempty" dynamodbav:"shift_start_time,omitempty"`
+	// ShiftStartSetAt is when that earliest start was saved (RFC3339).
+	ShiftStartSetAt string `json:"shift_start_set_at,omitempty" dynamodbav:"shift_start_set_at,omitempty"`
+	// OpenPunctualityMinutes is the signed sum since the last clear.
+	// Positive is early, negative is late.
+	OpenPunctualityMinutes int `json:"open_punctuality_minutes" dynamodbav:"open_punctuality_minutes"`
+	// LastScoredDate is the Zambia date of the latest scored day ("2006-01-02").
+	LastScoredDate string `json:"last_scored_date,omitempty" dynamodbav:"last_scored_date,omitempty"`
+	// LastScoredMinutes is that day's signed minutes. Zero is a real on-time score.
+	LastScoredMinutes   int     `json:"last_scored_minutes" dynamodbav:"last_scored_minutes"`
 	TotalTripsCompleted int     `json:"total_trips_completed" dynamodbav:"total_trips_completed"`
 	DailyTripCount      int     `json:"daily_trip_count" dynamodbav:"daily_trip_count"`
 	DailyCountDate      string  `json:"daily_count_date,omitempty" dynamodbav:"daily_count_date,omitempty"`
