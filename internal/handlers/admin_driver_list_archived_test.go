@@ -158,3 +158,31 @@ func TestGetDriver_ExposesArchivedFields(t *testing.T) {
 		t.Fatalf("detail = %#v", body)
 	}
 }
+
+func TestListDrivers_IncludesPunctualityColumns(t *testing.T) {
+	svc := &fakeListDEService{des: []*models.DeliveryExecutive{{
+		DEID:                   "DE1",
+		PhoneNumber:            "+260971000001",
+		Name:                   "Ada",
+		Status:                 models.DEStatusOffline,
+		ShiftStartTime:         "08:00",
+		OpenPunctualityMinutes: -20,
+		LastScoredDate:         "2026-06-22",
+		LastScoredMinutes:      -20,
+	}}}
+	h := &AdminDriverHandlers{deService: svc, logger: logrus.New()}
+	rec := doListDrivers(h, "assigned_store_id=221")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Drivers []map[string]interface{} `json:"drivers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	got := body.Drivers[0]
+	if got["shift_start_time"] != "08:00" || got["open_punctuality_minutes"] != float64(-20) || got["last_scored_date"] != "2026-06-22" || got["last_scored_minutes"] != float64(-20) {
+		t.Fatalf("driver = %#v", got)
+	}
+}

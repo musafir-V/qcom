@@ -58,7 +58,28 @@ type DEService struct {
 	darkstoreRepo      darkstoreReader
 	statusEventRepo    statusEventAppender
 	tripRepo           returnTripStore
+	punctuality        punctualityRecorder
 	logger             *logrus.Logger
+}
+
+// punctualityRecorder scores a successful store-QR scan. Failures must not
+// block the duty transition.
+type punctualityRecorder interface {
+	RecordScan(ctx context.Context, phone, reason string, scanAt time.Time) error
+}
+
+// SetPunctuality attaches arrival scoring. A nil recorder leaves scans unscored.
+func (s *DEService) SetPunctuality(p punctualityRecorder) {
+	s.punctuality = p
+}
+
+func (s *DEService) recordPunctuality(ctx context.Context, phone, reason string, scanAt time.Time) {
+	if s == nil || s.punctuality == nil {
+		return
+	}
+	if err := s.punctuality.RecordScan(ctx, phone, reason, scanAt); err != nil {
+		s.logger.WithError(err).WithField("phone", phone).Warn("failed to record punctuality")
+	}
 }
 
 type deEarningsLedgerReader interface {
@@ -273,6 +294,7 @@ func (s *DEService) StartDuty(ctx context.Context, dePhone, qrCode string, loc S
 		AccuracyM: loc.AccuracyM,
 		TS:        nowUTC,
 	})
+	s.recordPunctuality(ctx, dePhone, string(reason), now)
 
 	op.With("store_id", storeID)
 	return storeID, nil

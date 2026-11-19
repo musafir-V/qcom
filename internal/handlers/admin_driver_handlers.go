@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/qcom/qcom/internal/models"
 	"github.com/qcom/qcom/internal/money"
+	"github.com/qcom/qcom/internal/punctuality"
 	"github.com/qcom/qcom/internal/repository"
 	"github.com/qcom/qcom/internal/service"
 	"github.com/qcom/qcom/internal/timezone"
@@ -45,6 +46,16 @@ type adminDriverService interface {
 	RestoreDriver(ctx context.Context, phone string) (*models.DeliveryExecutive, error)
 }
 
+// punctualityAPI is the shift-start and arrival-score surface used by admin routes.
+type punctualityAPI interface {
+	SetShiftStart(ctx context.Context, phone, hhmm string) error
+	AddShiftStart(ctx context.Context, phone, hhmm string) error
+	ReplaceShiftStart(ctx context.Context, phone, from, to string) error
+	RemoveShiftStart(ctx context.Context, phone, hhmm string) error
+	Clear(ctx context.Context, phone, note, admin string) error
+	Report(ctx context.Context, phone, date string) (*service.PunctualityReport, error)
+}
+
 type AdminDriverHandlers struct {
 	deService        adminDriverService
 	deRepo           *repository.DERepository
@@ -55,6 +66,7 @@ type AdminDriverHandlers struct {
 	cashLedgerRepo   *repository.CashDepositLedgerRepository
 	uploadService    *service.UploadService
 	presenceService  *service.PresenceService
+	punctuality      punctualityAPI
 	earningsHandlers *EarningsHandlers
 	referralHandlers *ReferralHandlers
 	inKindHandlers   *InKindDisbursementHandlers
@@ -72,6 +84,7 @@ func NewAdminDriverHandlers(
 	cashLedgerRepo *repository.CashDepositLedgerRepository,
 	uploadService *service.UploadService,
 	presenceService *service.PresenceService,
+	punctuality punctualityAPI,
 	earningsHandlers *EarningsHandlers,
 	referralHandlers *ReferralHandlers,
 	inKindHandlers *InKindDisbursementHandlers,
@@ -88,6 +101,7 @@ func NewAdminDriverHandlers(
 		cashLedgerRepo:   cashLedgerRepo,
 		uploadService:    uploadService,
 		presenceService:  presenceService,
+		punctuality:      punctuality,
 		earningsHandlers: earningsHandlers,
 		referralHandlers: referralHandlers,
 		inKindHandlers:   inKindHandlers,
@@ -1371,28 +1385,36 @@ func (h *AdminDriverHandlers) ListDrivers(w http.ResponseWriter, r *http.Request
 	}
 
 	type driverSummary struct {
-		DEID            string `json:"de_id"`
-		PhoneNumber     string `json:"phone_number"`
-		Name            string `json:"name"`
-		Status          string `json:"status"`
-		ProfileURL      string `json:"profile_url"`
-		ProfileViewURL  string `json:"profile_view_url"`
-		AssignedStoreID string `json:"assigned_store_id"`
-		Archived        bool   `json:"archived"`
-		ArchivedAt      string `json:"archived_at,omitempty"`
+		DEID                   string `json:"de_id"`
+		PhoneNumber            string `json:"phone_number"`
+		Name                   string `json:"name"`
+		Status                 string `json:"status"`
+		ProfileURL             string `json:"profile_url"`
+		ProfileViewURL         string `json:"profile_view_url"`
+		AssignedStoreID        string `json:"assigned_store_id"`
+		ShiftStartTime         string `json:"shift_start_time,omitempty"`
+		OpenPunctualityMinutes int    `json:"open_punctuality_minutes"`
+		LastScoredDate         string `json:"last_scored_date,omitempty"`
+		LastScoredMinutes      int    `json:"last_scored_minutes"`
+		Archived               bool   `json:"archived"`
+		ArchivedAt             string `json:"archived_at,omitempty"`
 	}
 	items := make([]driverSummary, 0, len(des))
 	for _, de := range des {
 		items = append(items, driverSummary{
-			DEID:            de.DEID,
-			PhoneNumber:     de.PhoneNumber,
-			Name:            de.Name,
-			Status:          string(de.Status),
-			ProfileURL:      de.ProfileURL,
-			ProfileViewURL:  h.docViewURL(r.Context(), de.ProfileURL),
-			AssignedStoreID: de.AssignedStoreID,
-			Archived:        de.Archived,
-			ArchivedAt:      de.ArchivedAt,
+			DEID:                   de.DEID,
+			PhoneNumber:            de.PhoneNumber,
+			Name:                   de.Name,
+			Status:                 string(de.Status),
+			ProfileURL:             de.ProfileURL,
+			ProfileViewURL:         h.docViewURL(r.Context(), de.ProfileURL),
+			AssignedStoreID:        de.AssignedStoreID,
+			ShiftStartTime:         de.ShiftStartTime,
+			OpenPunctualityMinutes: de.OpenPunctualityMinutes,
+			LastScoredDate:         de.LastScoredDate,
+			LastScoredMinutes:      de.LastScoredMinutes,
+			Archived:               de.Archived,
+			ArchivedAt:             de.ArchivedAt,
 		})
 	}
 
@@ -1450,6 +1472,190 @@ func (h *AdminDriverHandlers) RecordInKindDisbursement(w http.ResponseWriter, r 
 // ListInKindDisbursements handles GET /api/v1/admin/drivers/{phone}/inkind-disbursements
 func (h *AdminDriverHandlers) ListInKindDisbursements(w http.ResponseWriter, r *http.Request) {
 	h.inKindHandlers.ListInKindDisbursements(w, r)
+}
+
+// GET /api/v1/admin/drivers/{phone}/punctuality?date=YYYY-MM-DD
+func (h *AdminDriverHandlers) GetDriverPunctuality(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+	date := strings.TrimSpace(r.URL.Query().Get("date"))
+	if date != "" {
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_DATE", "date must be YYYY-MM-DD")
+			return
+		}
+	}
+	if h.punctuality == nil {
+		h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_UNAVAILABLE", "Punctuality is not configured")
+		return
+	}
+	report, err := h.punctuality.Report(r.Context(), phone, date)
+	if err != nil {
+		h.logger.WithError(err).Error("admin: failed to load punctuality")
+		h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_FETCH_FAILED", "Failed to load punctuality")
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, report)
+}
+
+// PUT /api/v1/admin/drivers/{phone}/shift-start
+func (h *AdminDriverHandlers) SetDriverShiftStart(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+	var req struct {
+		ShiftStart string `json:"shift_start"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if h.punctuality == nil {
+		h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_UNAVAILABLE", "Punctuality is not configured")
+		return
+	}
+	if err := h.punctuality.SetShiftStart(r.Context(), phone, req.ShiftStart); err != nil {
+		h.respondShiftStartError(w, err)
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, map[string]string{
+		"phone_number": phone,
+		"shift_start":  strings.TrimSpace(req.ShiftStart),
+	})
+}
+
+// POST /api/v1/admin/drivers/{phone}/shift-starts
+func (h *AdminDriverHandlers) AddDriverShiftStart(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+	var req struct {
+		ShiftStart string `json:"shift_start"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if h.punctuality == nil {
+		h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_UNAVAILABLE", "Punctuality is not configured")
+		return
+	}
+	if err := h.punctuality.AddShiftStart(r.Context(), phone, req.ShiftStart); err != nil {
+		h.respondShiftStartError(w, err)
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, map[string]string{
+		"phone_number": phone,
+		"shift_start":  strings.TrimSpace(req.ShiftStart),
+	})
+}
+
+// PUT /api/v1/admin/drivers/{phone}/shift-starts
+func (h *AdminDriverHandlers) ReplaceDriverShiftStart(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+	var req struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if h.punctuality == nil {
+		h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_UNAVAILABLE", "Punctuality is not configured")
+		return
+	}
+	if err := h.punctuality.ReplaceShiftStart(r.Context(), phone, req.From, req.To); err != nil {
+		h.respondShiftStartError(w, err)
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, map[string]string{
+		"phone_number": phone,
+		"shift_start":  strings.TrimSpace(req.To),
+	})
+}
+
+// DELETE /api/v1/admin/drivers/{phone}/shift-starts
+func (h *AdminDriverHandlers) RemoveDriverShiftStart(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+	var req struct {
+		ShiftStart string `json:"shift_start"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if h.punctuality == nil {
+		h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_UNAVAILABLE", "Punctuality is not configured")
+		return
+	}
+	if err := h.punctuality.RemoveShiftStart(r.Context(), phone, req.ShiftStart); err != nil {
+		h.respondShiftStartError(w, err)
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "removed"})
+}
+
+func (h *AdminDriverHandlers) respondShiftStartError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, service.ErrDuplicateShiftStart):
+		h.respondWithError(w, http.StatusBadRequest, "DUPLICATE_SHIFT_START", "That start time is already saved")
+	case errors.Is(err, service.ErrLastShiftStart):
+		h.respondWithError(w, http.StatusBadRequest, "LAST_SHIFT_START", "The last shift start cannot be removed")
+	case errors.Is(err, service.ErrShiftStartNotFound):
+		h.respondWithError(w, http.StatusBadRequest, "SHIFT_START_NOT_FOUND", "That start time is not saved")
+	default:
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_SHIFT_START", "Shift start must be HH:MM")
+	}
+}
+
+// POST /api/v1/admin/drivers/{phone}/punctuality/clear
+func (h *AdminDriverHandlers) ClearDriverPunctuality(w http.ResponseWriter, r *http.Request) {
+	phone := normalizePhone(mux.Vars(r)["phone"])
+	if phone == "" {
+		h.respondWithError(w, http.StatusBadRequest, "MISSING_PARAM", "phone is required")
+		return
+	}
+	var req struct {
+		Note string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+	if h.punctuality == nil {
+		h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_UNAVAILABLE", "Punctuality is not configured")
+		return
+	}
+	adminUsername, _ := r.Context().Value("entity_id").(string)
+	if err := h.punctuality.Clear(r.Context(), phone, req.Note, adminUsername); err != nil {
+		switch {
+		case errors.Is(err, punctuality.ErrClearZero):
+			h.respondWithError(w, http.StatusBadRequest, "NOTHING_TO_CLEAR", "Open aggregate is zero")
+		case errors.Is(err, punctuality.ErrClearNote):
+			h.respondWithError(w, http.StatusBadRequest, "NOTE_REQUIRED", "A note is required")
+		default:
+			h.logger.WithError(err).Error("admin: failed to clear punctuality")
+			h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_CLEAR_FAILED", "Failed to clear punctuality")
+		}
+		return
+	}
+	h.respondWithJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
 func (h *AdminDriverHandlers) respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
