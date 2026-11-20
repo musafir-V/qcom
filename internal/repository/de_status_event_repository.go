@@ -114,3 +114,48 @@ func (r *DEStatusEventRepository) ListEventsForDay(ctx context.Context, phone, z
 	op.With("count", len(events))
 	return events, nil
 }
+
+// ListOnDutyScansSince returns scan_start and scan_return events at or after since.
+func (r *DEStatusEventRepository) ListOnDutyScansSince(ctx context.Context, phone string, since time.Time) ([]*models.DEStatusEvent, error) {
+	op := logging.Start(ctx, r.logger, "DEStatusEventRepository.ListOnDutyScansSince", logrus.Fields{"phone": phone})
+	defer op.End()
+
+	startSK := models.StatusEventSKPrefix(since.UTC().Format(time.RFC3339))
+	var events []*models.DEStatusEvent
+	var lastKey map[string]types.AttributeValue
+	for {
+		result, err := r.client.Query(ctx, &dynamodb.QueryInput{
+			TableName:              aws.String(r.tableName),
+			KeyConditionExpression: aws.String("PK = :pk AND SK >= :start"),
+			FilterExpression:       aws.String("#reason = :startScan OR #reason = :returnScan"),
+			ExpressionAttributeNames: map[string]string{
+				"#reason": "reason",
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":pk":         &types.AttributeValueMemberS{Value: models.StatusEventPK(phone)},
+				":start":      &types.AttributeValueMemberS{Value: startSK},
+				":startScan":  &types.AttributeValueMemberS{Value: string(models.ReasonScanStart)},
+				":returnScan": &types.AttributeValueMemberS{Value: string(models.ReasonScanReturn)},
+			},
+			ScanIndexForward:  aws.Bool(true),
+			ExclusiveStartKey: lastKey,
+		})
+		if err != nil {
+			return nil, op.Fail(fmt.Errorf("failed to query on-duty scans: %w", err))
+		}
+		for _, item := range result.Items {
+			var e models.DEStatusEvent
+			if err := attributevalue.UnmarshalMap(item, &e); err != nil {
+				op.Logger().WithError(err).Warn("failed to unmarshal status event; skipping")
+				continue
+			}
+			events = append(events, &e)
+		}
+		if len(result.LastEvaluatedKey) == 0 {
+			break
+		}
+		lastKey = result.LastEvaluatedKey
+	}
+	op.With("count", len(events))
+	return events, nil
+}

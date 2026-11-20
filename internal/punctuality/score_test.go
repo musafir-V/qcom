@@ -63,16 +63,32 @@ func TestScoreScan_FirstScanStartAfterShiftIsSaved(t *testing.T) {
 	}
 }
 
-func TestScoreScan_ReturnScanDoesNotScore(t *testing.T) {
+func TestScoreScan_ReturnFromFreeScores(t *testing.T) {
+	loc := time.FixedZone("CAT", 2*60*60)
+	got, ok := ScoreScan(ScoreInput{
+		ShiftStart:      "08:00",
+		ShiftStartSetAt: time.Date(2026, 6, 22, 6, 0, 0, 0, loc),
+		ScanAt:          time.Date(2026, 6, 22, 8, 13, 0, 0, loc),
+		Reason:          "scan_return",
+	})
+	if !ok {
+		t.Fatal("a return from free is that day's arrival")
+	}
+	if got.Date != "2026-06-22" || got.ShiftStart != "08:00" || got.FirstScan != "08:13" || got.SignedMinutes != -13 {
+		t.Fatalf("score = %+v", got)
+	}
+}
+
+func TestScoreScan_BusyReturnDoesNotScore(t *testing.T) {
 	loc := time.FixedZone("CAT", 2*60*60)
 	_, ok := ScoreScan(ScoreInput{
 		ShiftStart:      "08:00",
 		ShiftStartSetAt: time.Date(2026, 6, 22, 6, 0, 0, 0, loc),
-		ScanAt:          time.Date(2026, 6, 22, 7, 40, 0, 0, loc),
-		Reason:          "scan_return",
+		ScanAt:          time.Date(2026, 6, 22, 8, 13, 0, 0, loc),
+		Reason:          "scan_return_while_busy",
 	})
 	if ok {
-		t.Fatal("scan_return must not score a day")
+		t.Fatal("a scan while still on a delivery must not score")
 	}
 }
 

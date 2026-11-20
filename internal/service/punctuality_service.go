@@ -177,8 +177,36 @@ func syncLegacyShiftStart(rec *PunctualityRecord) {
 	rec.ShiftStartSetAt = sorted[0].SetAt
 }
 
-// RecordScan scores the first scan_start of a Zambia day when a shift start
-// was already saved. Later scans and scan_return leave the record unchanged.
+// ArrivalScan is one store-QR scan that might be a day's arrival.
+type ArrivalScan struct {
+	At     time.Time
+	Reason string
+}
+
+// BackfillArrivals scores unscored days from scans that already happened.
+// Scans are applied in time order. A day that already has a score is left as it is.
+// The returned count is how many days were newly scored.
+func (s *PunctualityService) BackfillArrivals(ctx context.Context, phone string, scans []ArrivalScan) (int, error) {
+	before, err := s.store.Load(ctx, phone)
+	if err != nil {
+		return 0, err
+	}
+	ordered := append([]ArrivalScan(nil), scans...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].At.Before(ordered[j].At) })
+	for _, scan := range ordered {
+		if err := s.RecordScan(ctx, phone, scan.Reason, scan.At); err != nil {
+			return 0, err
+		}
+	}
+	after, err := s.store.Load(ctx, phone)
+	if err != nil {
+		return 0, err
+	}
+	return len(after.Days) - len(before.Days), nil
+}
+
+// RecordScan scores the first on-duty store scan of a Zambia day when a shift
+// start was already saved. A later scan that day leaves the score unchanged.
 func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason string, scanAt time.Time) error {
 	rec, err := s.store.Load(ctx, phone)
 	if err != nil {
@@ -207,7 +235,7 @@ func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason strin
 		SignedMinutes: scored.SignedMinutes,
 		ScoredAt:      scanAt,
 	})
-	rec.OpenMinutes += scored.SignedMinutes
+	rec.OpenMinutes = punctuality.OpenTotal(scoredDays(rec.Days), latestClear(rec.Settlements))
 	if rec.LastScoredDate == "" || scored.Date >= rec.LastScoredDate {
 		rec.LastScoredDate = scored.Date
 		rec.LastScoredMinutes = scored.SignedMinutes

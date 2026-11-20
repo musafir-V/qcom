@@ -54,6 +54,73 @@ func (s *memPunctualityStore) SaveClear(ctx context.Context, phone string, rec P
 	return s.Save(ctx, phone, rec)
 }
 
+func TestBackfillArrivals_ScoresAReturnAndLeavesASettledDayOutOfTheTotal(t *testing.T) {
+	store := newMemPunctualityStore()
+	phone := "+260971000001"
+	setAt := zTime(2026, 6, 22, 6, 0)
+	store.records[phone] = PunctualityRecord{
+		ShiftStart:      "08:00",
+		ShiftStartSetAt: setAt,
+		Starts:          []SavedShiftStart{{Time: "08:00", SetAt: setAt}},
+		Settlements: []PunctualitySettlement{{
+			At: zTime(2026, 6, 22, 12, 0), Total: -20, Note: "cut", Admin: "ada",
+		}},
+	}
+	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 23, 8, 0) }, logrus.New())
+	n, err := svc.BackfillArrivals(context.Background(), phone, []ArrivalScan{
+		{At: zTime(2026, 6, 22, 8, 13), Reason: "scan_return"},
+		{At: zTime(2026, 6, 23, 8, 5), Reason: "scan_start"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("scored %d days, want 2", n)
+	}
+	rec, err := store.Load(context.Background(), phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Days) != 2 || rec.Days[0].FirstScan != "08:13" || rec.Days[0].SignedMinutes != -13 {
+		t.Fatalf("days = %+v", rec.Days)
+	}
+	if rec.OpenMinutes != -5 {
+		t.Fatalf("open minutes = %d, want -5 from the day after the clear", rec.OpenMinutes)
+	}
+}
+
+func TestBackfillArrivals_DoesNotRewriteAScoredDay(t *testing.T) {
+	store := newMemPunctualityStore()
+	phone := "+260971000001"
+	setAt := zTime(2026, 6, 22, 6, 0)
+	store.records[phone] = PunctualityRecord{
+		ShiftStart:      "08:00",
+		ShiftStartSetAt: setAt,
+		Starts:          []SavedShiftStart{{Time: "08:00", SetAt: setAt}},
+		OpenMinutes:     -20,
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "08:00", FirstScan: "08:20", SignedMinutes: -20, ScoredAt: zTime(2026, 6, 22, 8, 20),
+		}},
+	}
+	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 22, 18, 0) }, logrus.New())
+	n, err := svc.BackfillArrivals(context.Background(), phone, []ArrivalScan{
+		{At: zTime(2026, 6, 22, 8, 13), Reason: "scan_return"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("scored %d days, want 0", n)
+	}
+	rec, err := store.Load(context.Background(), phone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Days) != 1 || rec.Days[0].FirstScan != "08:20" || rec.Days[0].SignedMinutes != -20 || rec.OpenMinutes != -20 {
+		t.Fatalf("rewrote scored day: %+v open=%d", rec.Days, rec.OpenMinutes)
+	}
+}
+
 func TestAddShiftStart_StoresCanonicalTimesEarliestFirst(t *testing.T) {
 	store := newMemPunctualityStore()
 	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 22, 6, 0) }, logrus.New())
@@ -205,7 +272,7 @@ func TestRecordScan_ScoresLateFirstScanStart(t *testing.T) {
 	}
 }
 
-func TestRecordScan_DoesNotScoreReturnSecondStartOrEarlierScan(t *testing.T) {
+func TestRecordScan_ReturnScoresAndLaterScansDoNot(t *testing.T) {
 	store := newMemPunctualityStore()
 	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 22, 6, 0) }, logrus.New())
 	ctx := context.Background()
@@ -223,18 +290,15 @@ func TestRecordScan_DoesNotScoreReturnSecondStartOrEarlierScan(t *testing.T) {
 	if err := svc.RecordScan(ctx, phone, "scan_return", zTime(2026, 6, 22, 7, 50)); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.records[phone].Days) != 0 {
-		t.Fatal("scan_return must not score")
-	}
 	if err := svc.RecordScan(ctx, phone, "scan_start", zTime(2026, 6, 22, 8, 20)); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.RecordScan(ctx, phone, "scan_start", zTime(2026, 6, 22, 14, 0)); err != nil {
+	if err := svc.RecordScan(ctx, phone, "scan_return_while_busy", zTime(2026, 6, 22, 14, 0)); err != nil {
 		t.Fatal(err)
 	}
 	rec := store.records[phone]
-	if len(rec.Days) != 1 || rec.OpenMinutes != -20 || rec.Days[0].FirstScan != "08:20" {
-		t.Fatalf("record = %+v", rec)
+	if len(rec.Days) != 1 || rec.OpenMinutes != 10 || rec.Days[0].FirstScan != "07:50" {
+		t.Fatalf("record = %+v", rec.Days)
 	}
 }
 
