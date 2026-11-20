@@ -46,10 +46,11 @@ type ScoreInput struct {
 	AlreadyScored   bool
 }
 
-// ScoreScan reports the day score for a store-QR scan. ok is false when this
-// scan does not open a scored day.
+// ScoreScan reports the day score for a store-QR scan that puts the driver on
+// duty (scan_start or scan_return). ok is false when this scan does not open
+// a scored day. A scan while still on a delivery does not count.
 func ScoreScan(in ScoreInput) (DayScore, bool) {
-	if in.AlreadyScored || in.Reason != string(models.ReasonScanStart) {
+	if in.AlreadyScored || !countsAsArrival(in.Reason) {
 		return DayScore{}, false
 	}
 	start, ok := chooseStart(candidateStarts(in), in.ScanAt)
@@ -68,6 +69,15 @@ func ScoreScan(in ScoreInput) (DayScore, bool) {
 		FirstScan:     hhmm,
 		SignedMinutes: signed,
 	}, true
+}
+
+func countsAsArrival(reason string) bool {
+	switch models.DEStatusEventReason(reason) {
+	case models.ReasonScanStart, models.ReasonScanReturn:
+		return true
+	default:
+		return false
+	}
 }
 
 func candidateStarts(in ScoreInput) []ShiftStart {
