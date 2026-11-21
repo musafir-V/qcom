@@ -49,7 +49,7 @@ func (s dynamoPunctualityStore) Load(ctx context.Context, phone string) (Punctua
 	}
 	for _, clear := range state.Settlements {
 		rec.Settlements = append(rec.Settlements, PunctualitySettlement{
-			At: clear.At, Total: clear.Total, Note: clear.Note, Admin: clear.Admin,
+			At: clear.At, Total: clear.Total, Note: clear.Note, Admin: clear.Admin, Partial: clear.Partial,
 		})
 	}
 	return rec, nil
@@ -81,5 +81,6 @@ func (s dynamoPunctualityStore) SaveClear(ctx context.Context, phone string, rec
 	clear := rec.Settlements[len(rec.Settlements)-1]
 	return s.repo.PutClear(ctx, phone, repository.PunctualityStoredClear{
 		At: clear.At, Total: clear.Total, Note: clear.Note, Admin: clear.Admin,
+		Partial: clear.Partial, OpenMinutes: rec.OpenMinutes,
 	})
 }

@@ -53,6 +53,7 @@ type punctualityAPI interface {
 	ReplaceShiftStart(ctx context.Context, phone, from, to string) error
 	RemoveShiftStart(ctx context.Context, phone, hhmm string) error
 	Clear(ctx context.Context, phone, note, admin string) error
+	ClearAmount(ctx context.Context, phone string, hours, minutes int, note, admin string) error
 	Report(ctx context.Context, phone, date string) (*service.PunctualityReport, error)
 }
 
@@ -1632,7 +1633,9 @@ func (h *AdminDriverHandlers) ClearDriverPunctuality(w http.ResponseWriter, r *h
 		return
 	}
 	var req struct {
-		Note string `json:"note"`
+		Note    string `json:"note"`
+		Hours   *int   `json:"hours"`
+		Minutes *int   `json:"minutes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.respondWithError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
@@ -1643,12 +1646,29 @@ func (h *AdminDriverHandlers) ClearDriverPunctuality(w http.ResponseWriter, r *h
 		return
 	}
 	adminUsername, _ := r.Context().Value("entity_id").(string)
-	if err := h.punctuality.Clear(r.Context(), phone, req.Note, adminUsername); err != nil {
+	var err error
+	if req.Hours != nil || req.Minutes != nil {
+		hours, minutes := 0, 0
+		if req.Hours != nil {
+			hours = *req.Hours
+		}
+		if req.Minutes != nil {
+			minutes = *req.Minutes
+		}
+		err = h.punctuality.ClearAmount(r.Context(), phone, hours, minutes, req.Note, adminUsername)
+	} else {
+		err = h.punctuality.Clear(r.Context(), phone, req.Note, adminUsername)
+	}
+	if err != nil {
 		switch {
 		case errors.Is(err, punctuality.ErrClearZero):
 			h.respondWithError(w, http.StatusBadRequest, "NOTHING_TO_CLEAR", "Open aggregate is zero")
 		case errors.Is(err, punctuality.ErrClearNote):
 			h.respondWithError(w, http.StatusBadRequest, "NOTE_REQUIRED", "A note is required")
+		case errors.Is(err, punctuality.ErrClearTooMuch):
+			h.respondWithError(w, http.StatusBadRequest, "AMOUNT_TOO_LARGE", "That amount is larger than the open aggregate")
+		case errors.Is(err, punctuality.ErrClearAmount):
+			h.respondWithError(w, http.StatusBadRequest, "INVALID_AMOUNT", "Enter hours and minutes from 0 to 59")
 		default:
 			h.logger.WithError(err).Error("admin: failed to clear punctuality")
 			h.respondWithError(w, http.StatusInternalServerError, "PUNCTUALITY_CLEAR_FAILED", "Failed to clear punctuality")

@@ -22,6 +22,9 @@ type fakePunctuality struct {
 	from     string
 	note     string
 	admin    string
+	hours    int
+	minutes  int
+	partial  bool
 	gotPhone string
 	gotDate  string
 }
@@ -55,6 +58,16 @@ func (f *fakePunctuality) Clear(_ context.Context, phone, note, admin string) er
 	f.gotPhone = phone
 	f.note = note
 	f.admin = admin
+	return f.err
+}
+
+func (f *fakePunctuality) ClearAmount(_ context.Context, phone string, hours, minutes int, note, admin string) error {
+	f.gotPhone = phone
+	f.hours = hours
+	f.minutes = minutes
+	f.note = note
+	f.admin = admin
+	f.partial = true
 	return f.err
 }
 
@@ -179,6 +192,23 @@ func TestRemoveDriverShiftStart_RejectsTheLastTime(t *testing.T) {
 	}
 	if body.Error.Code != "LAST_SHIFT_START" {
 		t.Fatalf("code = %q", body.Error.Code)
+	}
+}
+
+func TestClearDriverPunctuality_ClearsTypedHoursAndMinutes(t *testing.T) {
+	fake := &fakePunctuality{}
+	h := &AdminDriverHandlers{punctuality: fake, logger: logrus.New()}
+	req := httptest.NewRequest(http.MethodPost, "/drivers/+260971000001/punctuality/clear", strings.NewReader(`{"note":"cut five","hours":1,"minutes":30}`))
+	req = req.WithContext(context.WithValue(req.Context(), "entity_id", "ada"))
+	r := mux.NewRouter()
+	r.HandleFunc("/drivers/{phone}/punctuality/clear", h.ClearDriverPunctuality).Methods("POST")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !fake.partial || fake.hours != 1 || fake.minutes != 30 || fake.note != "cut five" || fake.admin != "ada" {
+		t.Fatalf("partial=%v hours=%d minutes=%d note=%q admin=%q", fake.partial, fake.hours, fake.minutes, fake.note, fake.admin)
 	}
 }
 

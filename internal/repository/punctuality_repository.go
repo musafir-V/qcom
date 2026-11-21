@@ -33,10 +33,12 @@ type PunctualityStoredDay struct {
 
 // PunctualityStoredClear is one settlement of the open aggregate.
 type PunctualityStoredClear struct {
-	At    time.Time
-	Total int
-	Note  string
-	Admin string
+	At          time.Time
+	Total       int
+	Note        string
+	Admin       string
+	Partial     bool
+	OpenMinutes int
 }
 
 // PunctualityStoredStart is one saved arrival time.
@@ -228,6 +230,7 @@ func appendPunctualityItem(state *PunctualityState, item map[string]types.Attrib
 			Note      string `dynamodbav:"note"`
 			Admin     string `dynamodbav:"admin"`
 			ClearedAt string `dynamodbav:"cleared_at"`
+			Partial   bool   `dynamodbav:"partial"`
 		}
 		if err := attributevalue.UnmarshalMap(item, &row); err != nil {
 			return fmt.Errorf("unmarshal punctuality clear: %w", err)
@@ -237,7 +240,7 @@ func appendPunctualityItem(state *PunctualityState, item map[string]types.Attrib
 			return fmt.Errorf("bad cleared_at: %w", err)
 		}
 		state.Settlements = append(state.Settlements, PunctualityStoredClear{
-			At: at, Total: row.Total, Note: row.Note, Admin: row.Admin,
+			At: at, Total: row.Total, Note: row.Note, Admin: row.Admin, Partial: row.Partial,
 		})
 	}
 	return nil
@@ -350,15 +353,16 @@ func (r *PunctualityRepository) PutClear(ctx context.Context, phone string, clea
 					"note":       &types.AttributeValueMemberS{Value: clear.Note},
 					"admin":      &types.AttributeValueMemberS{Value: clear.Admin},
 					"cleared_at": &types.AttributeValueMemberS{Value: at},
+					"partial":    &types.AttributeValueMemberBOOL{Value: clear.Partial},
 				},
 				ConditionExpression: aws.String("attribute_not_exists(SK)"),
 			}},
 			{Update: &types.Update{
 				TableName:        aws.String(r.tableName),
 				Key:              deMetadataKey(phone),
-				UpdateExpression: aws.String("SET open_punctuality_minutes = :zero, updated_at = :now"),
+				UpdateExpression: aws.String("SET open_punctuality_minutes = :open, updated_at = :now"),
 				ExpressionAttributeValues: map[string]types.AttributeValue{
-					":zero": &types.AttributeValueMemberN{Value: "0"},
+					":open": &types.AttributeValueMemberN{Value: strconv.Itoa(clear.OpenMinutes)},
 					":now":  &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 				},
 			}},

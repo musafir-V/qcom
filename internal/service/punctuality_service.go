@@ -50,11 +50,13 @@ type PunctualityDay struct {
 }
 
 // PunctualitySettlement is one clear of the open aggregate.
+// Partial leaves the daily rows unmarked and only subtracts Total.
 type PunctualitySettlement struct {
-	At    time.Time
-	Total int
-	Note  string
-	Admin string
+	At      time.Time
+	Total   int
+	Note    string
+	Admin   string
+	Partial bool
 }
 
 // PunctualityStore persists a driver's punctuality record.
@@ -235,7 +237,7 @@ func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason strin
 		SignedMinutes: scored.SignedMinutes,
 		ScoredAt:      scanAt,
 	})
-	rec.OpenMinutes = punctuality.OpenTotal(scoredDays(rec.Days), latestClear(rec.Settlements))
+	rec.OpenMinutes = openMinutes(rec)
 	if rec.LastScoredDate == "" || scored.Date >= rec.LastScoredDate {
 		rec.LastScoredDate = scored.Date
 		rec.LastScoredMinutes = scored.SignedMinutes
@@ -263,30 +265,60 @@ func scoredDays(days []PunctualityDay) []punctuality.ScoredDay {
 func latestClear(settlements []PunctualitySettlement) time.Time {
 	var latest time.Time
 	for _, settlement := range settlements {
-		if settlement.At.After(latest) {
+		if !settlement.Partial && settlement.At.After(latest) {
 			latest = settlement.At
 		}
 	}
 	return latest
 }
 
-// Clear settles the open aggregate. It does not move money.
+func openMinutes(rec PunctualityRecord) int {
+	settlements := make([]punctuality.Settlement, len(rec.Settlements))
+	for i, settlement := range rec.Settlements {
+		settlements[i] = punctuality.Settlement{At: settlement.At, Total: settlement.Total, Partial: settlement.Partial}
+	}
+	return punctuality.OpenBalance(scoredDays(rec.Days), settlements)
+}
+
+// Clear settles the whole open aggregate. It does not move money.
 func (s *PunctualityService) Clear(ctx context.Context, phone, note, admin string) error {
 	rec, err := s.store.Load(ctx, phone)
 	if err != nil {
 		return err
 	}
-	total := punctuality.OpenTotal(scoredDays(rec.Days), latestClear(rec.Settlements))
-	if err := punctuality.ValidateClear(total, note); err != nil {
+	total := openMinutes(rec)
+	hours := 0
+	minutes := total
+	if minutes < 0 {
+		minutes = -minutes
+	}
+	hours = minutes / 60
+	minutes = minutes % 60
+	return s.ClearAmount(ctx, phone, hours, minutes, note, admin)
+}
+
+// ClearAmount settles the given hours and minutes toward zero. It does not move money.
+// An amount equal to the open total settles the days. A smaller amount leaves them unmarked.
+func (s *PunctualityService) ClearAmount(ctx context.Context, phone string, hours, minutes int, note, admin string) error {
+	rec, err := s.store.Load(ctx, phone)
+	if err != nil {
+		return err
+	}
+	signed, full, err := punctuality.ClearAmount(openMinutes(rec), hours, minutes)
+	if err != nil {
+		return err
+	}
+	if err := punctuality.ValidateClear(signed, note); err != nil {
 		return err
 	}
 	rec.Settlements = append(rec.Settlements, PunctualitySettlement{
-		At:    s.now(),
-		Total: total,
-		Note:  strings.TrimSpace(note),
-		Admin: strings.TrimSpace(admin),
+		At:      s.now(),
+		Total:   signed,
+		Note:    strings.TrimSpace(note),
+		Admin:   strings.TrimSpace(admin),
+		Partial: !full,
 	})
-	rec.OpenMinutes = 0
+	rec.OpenMinutes = openMinutes(rec)
 	return s.store.SaveClear(ctx, phone, rec)
 }
 
@@ -339,7 +371,7 @@ func (s *PunctualityService) Report(ctx context.Context, phone, date string) (*P
 		ShiftStart:  rec.ShiftStart,
 		ShiftStarts: starts,
 		Date:        date,
-		OpenMinutes: punctuality.OpenTotal(scoredDays(rec.Days), clearedAt),
+		OpenMinutes: openMinutes(rec),
 		Settlements: make([]PunctualitySettlementView, 0, len(rec.Settlements)),
 	}
 	for _, day := range rec.Days {
