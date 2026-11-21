@@ -334,22 +334,23 @@ func (s *PunctualityService) ClearAmount(ctx context.Context, phone string, hour
 	return s.store.SaveClear(ctx, phone, rec)
 }
 
-// PunctualityReport is the admin view of one day plus the open aggregate.
+// PunctualityReport is the admin view of the selected day's starts plus the open aggregate.
 type PunctualityReport struct {
 	ShiftStart  string                      `json:"shift_start"`
 	ShiftStarts []string                    `json:"shift_starts"`
 	Date        string                      `json:"date"`
 	OpenMinutes int                         `json:"open_minutes"`
-	Day         *PunctualityDayView         `json:"day"`
+	DayStarts   []PunctualityDayView        `json:"day_starts"`
 	Settlements []PunctualitySettlementView `json:"settlements"`
 }
 
-// PunctualityDayView is one scored day. Settled is true when a later clear covers it.
+// PunctualityDayView is one start on the selected day. Scored is false until a scan is saved.
+// Settled is true when a later full clear covers that scan.
 type PunctualityDayView struct {
-	Date          string `json:"date"`
 	ShiftStart    string `json:"shift_start"`
-	FirstScan     string `json:"first_scan"`
+	FirstScan     string `json:"first_scan,omitempty"`
 	SignedMinutes int    `json:"signed_minutes"`
+	Scored        bool   `json:"scored"`
 	Settled       bool   `json:"settled"`
 }
 
@@ -361,7 +362,43 @@ type PunctualitySettlementView struct {
 	Admin string `json:"admin"`
 }
 
-// Report returns the shift start, the selected Zambia day, the open aggregate,
+func dayStartRows(starts []string, days []PunctualityDay, date string, clearedAt time.Time) []PunctualityDayView {
+	seen := map[string]bool{}
+	times := make([]string, 0, len(starts)+len(days))
+	for _, start := range starts {
+		if start == "" || seen[start] {
+			continue
+		}
+		seen[start] = true
+		times = append(times, start)
+	}
+	for _, day := range days {
+		if day.Date != date || seen[day.ShiftStart] {
+			continue
+		}
+		seen[day.ShiftStart] = true
+		times = append(times, day.ShiftStart)
+	}
+	sort.Strings(times)
+	rows := make([]PunctualityDayView, 0, len(times))
+	for _, start := range times {
+		row := PunctualityDayView{ShiftStart: start}
+		for _, day := range days {
+			if day.Date != date || day.ShiftStart != start {
+				continue
+			}
+			row.Scored = true
+			row.FirstScan = day.FirstScan
+			row.SignedMinutes = day.SignedMinutes
+			row.Settled = !clearedAt.IsZero() && !day.ScoredAt.After(clearedAt)
+			break
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// Report returns each start for the selected Zambia day, the open aggregate,
 // and settlement history. The open aggregate does not change with date.
 func (s *PunctualityService) Report(ctx context.Context, phone, date string) (*PunctualityReport, error) {
 	rec, err := s.store.Load(ctx, phone)
@@ -384,20 +421,8 @@ func (s *PunctualityService) Report(ctx context.Context, phone, date string) (*P
 		ShiftStarts: starts,
 		Date:        date,
 		OpenMinutes: openMinutes(rec),
+		DayStarts:   dayStartRows(starts, rec.Days, date, clearedAt),
 		Settlements: make([]PunctualitySettlementView, 0, len(rec.Settlements)),
-	}
-	for _, day := range rec.Days {
-		if day.Date != date {
-			continue
-		}
-		report.Day = &PunctualityDayView{
-			Date:          day.Date,
-			ShiftStart:    day.ShiftStart,
-			FirstScan:     day.FirstScan,
-			SignedMinutes: day.SignedMinutes,
-			Settled:       !clearedAt.IsZero() && !day.ScoredAt.After(clearedAt),
-		}
-		break
 	}
 	// Newest clear first.
 	for i := len(rec.Settlements) - 1; i >= 0; i-- {

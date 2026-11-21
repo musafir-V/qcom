@@ -452,8 +452,8 @@ func TestClearAmount_LeavesRemainderAndDoesNotSettleTheDay(t *testing.T) {
 	if report.OpenMinutes != -15 {
 		t.Fatalf("open minutes = %d, want -15", report.OpenMinutes)
 	}
-	if report.Day == nil || report.Day.Settled {
-		t.Fatalf("day = %+v, want unsettled", report.Day)
+	if len(report.DayStarts) != 1 || !report.DayStarts[0].Scored || report.DayStarts[0].Settled {
+		t.Fatalf("day = %+v, want unsettled", report.DayStarts)
 	}
 	if len(report.Settlements) != 1 || report.Settlements[0].Total != -5 || report.Settlements[0].Note != "cut five minutes" {
 		t.Fatalf("settlements = %+v", report.Settlements)
@@ -469,8 +469,8 @@ func TestClearAmount_LeavesRemainderAndDoesNotSettleTheDay(t *testing.T) {
 	if report.OpenMinutes != -25 {
 		t.Fatalf("open minutes after the next day = %d, want -25", report.OpenMinutes)
 	}
-	if report.Day == nil || report.Day.Settled || report.Day.SignedMinutes != -10 {
-		t.Fatalf("next day = %+v", report.Day)
+	if len(report.DayStarts) != 1 || !report.DayStarts[0].Scored || report.DayStarts[0].Settled || report.DayStarts[0].SignedMinutes != -10 {
+		t.Fatalf("next day = %+v", report.DayStarts)
 	}
 }
 
@@ -498,8 +498,8 @@ func TestClearAmount_ExactAmountSettlesTheDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.OpenMinutes != 0 || report.Day == nil || !report.Day.Settled {
-		t.Fatalf("report = %+v day=%+v", report, report.Day)
+	if report.OpenMinutes != 0 || len(report.DayStarts) != 1 || !report.DayStarts[0].Scored || !report.DayStarts[0].Settled {
+		t.Fatalf("report = %+v day=%+v", report, report.DayStarts)
 	}
 	if len(report.Settlements) != 1 || report.Settlements[0].Total != -20 {
 		t.Fatalf("settlements = %+v", report.Settlements)
@@ -571,8 +571,8 @@ func TestReport_ShowsOpenTotalAndSettledDay(t *testing.T) {
 	if report.ShiftStart != "08:00" || report.OpenMinutes != 0 || report.Date != "2026-06-22" {
 		t.Fatalf("report header = %+v", report)
 	}
-	if report.Day == nil || report.Day.SignedMinutes != -20 || !report.Day.Settled || report.Day.FirstScan != "08:20" {
-		t.Fatalf("day = %+v", report.Day)
+	if len(report.DayStarts) != 1 || !report.DayStarts[0].Scored || report.DayStarts[0].SignedMinutes != -20 || !report.DayStarts[0].Settled || report.DayStarts[0].FirstScan != "08:20" {
+		t.Fatalf("day = %+v", report.DayStarts)
 	}
 	if len(report.Settlements) != 1 || report.Settlements[0].Note != "deducted K20" || report.Settlements[0].Total != -20 || report.Settlements[0].Admin != "ada" {
 		t.Fatalf("settlements = %+v", report.Settlements)
@@ -582,8 +582,8 @@ func TestReport_ShowsOpenTotalAndSettledDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Day != nil {
-		t.Fatalf("unscored day = %+v", next.Day)
+	if len(next.DayStarts) != 1 || next.DayStarts[0].Scored {
+		t.Fatalf("unscored day = %+v", next.DayStarts)
 	}
 	if next.OpenMinutes != 0 {
 		t.Fatalf("open minutes = %d", next.OpenMinutes)
@@ -619,4 +619,33 @@ func TestRecordPunctuality_IgnoresRecorderFailure(t *testing.T) {
 	logger.SetOutput(io.Discard)
 	svc := &DEService{punctuality: &fakeScanRecorder{err: errors.New("dynamo down")}, logger: logger}
 	svc.recordPunctuality(context.Background(), "+260971000001", "scan_start", zTime(2026, 6, 22, 8, 20))
+}
+
+func TestReport_ListsEveryStartForTheSelectedDay(t *testing.T) {
+	store := newMemPunctualityStore()
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, time.UTC)
+	store.records["+260971000001"] = PunctualityRecord{
+		Starts: []SavedShiftStart{
+			{Time: "16:00", SetAt: setAt},
+			{Time: "08:00", SetAt: setAt},
+		},
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "08:00", FirstScan: "08:10",
+			SignedMinutes: -10, ScoredAt: time.Date(2026, 6, 22, 6, 10, 0, 0, time.UTC),
+		}},
+	}
+	svc := NewPunctualityService(store, func() time.Time { return setAt }, logrus.New())
+	report, err := svc.Report(context.Background(), "+260971000001", "2026-06-22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.DayStarts) != 2 {
+		t.Fatalf("rows = %d", len(report.DayStarts))
+	}
+	if report.DayStarts[0].ShiftStart != "08:00" || !report.DayStarts[0].Scored || report.DayStarts[0].SignedMinutes != -10 {
+		t.Fatalf("first row: %+v", report.DayStarts[0])
+	}
+	if report.DayStarts[1].ShiftStart != "16:00" || report.DayStarts[1].Scored {
+		t.Fatalf("second row: %+v", report.DayStarts[1])
+	}
 }
