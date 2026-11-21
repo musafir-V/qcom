@@ -40,7 +40,7 @@ type PunctualityRecord struct {
 	Settlements       []PunctualitySettlement
 }
 
-// PunctualityDay is the frozen score for one Zambia date.
+// PunctualityDay is the frozen score for one shift start on a Zambia date.
 type PunctualityDay struct {
 	Date          string
 	ShiftStart    string
@@ -185,9 +185,9 @@ type ArrivalScan struct {
 	Reason string
 }
 
-// BackfillArrivals scores unscored days from scans that already happened.
-// Scans are applied in time order. A day that already has a score is left as it is.
-// The returned count is how many days were newly scored.
+// BackfillArrivals scores unused shift starts from scans that already happened.
+// Scans are applied in time order. A start that already has a row is left as it is.
+// The returned count is how many rows were newly scored.
 func (s *PunctualityService) BackfillArrivals(ctx context.Context, phone string, scans []ArrivalScan) (int, error) {
 	before, err := s.store.Load(ctx, phone)
 	if err != nil {
@@ -207,8 +207,8 @@ func (s *PunctualityService) BackfillArrivals(ctx context.Context, phone string,
 	return len(after.Days) - len(before.Days), nil
 }
 
-// RecordScan scores the first on-duty store scan of a Zambia day when a shift
-// start was already saved. A later scan that day leaves the score unchanged.
+// RecordScan appends a score when the closest saved start for this scan is unused.
+// A later scan of a start that already has a row leaves that row unchanged.
 func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason string, scanAt time.Time) error {
 	rec, err := s.store.Load(ctx, phone)
 	if err != nil {
@@ -219,13 +219,14 @@ func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason strin
 	for _, start := range rec.Starts {
 		starts = append(starts, punctuality.ShiftStart{Time: start.Time, SetAt: start.SetAt})
 	}
+	used := usedStarts(rec.Days, localDate)
 	scored, ok := punctuality.ScoreScan(punctuality.ScoreInput{
 		Starts:          starts,
 		ShiftStart:      rec.ShiftStart,
 		ShiftStartSetAt: rec.ShiftStartSetAt,
 		ScanAt:          scanAt,
 		Reason:          reason,
-		AlreadyScored:   dayExists(rec.Days, localDate),
+		UsedStarts:      used,
 	})
 	if !ok {
 		return nil
@@ -240,18 +241,29 @@ func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason strin
 	rec.OpenMinutes = openMinutes(rec)
 	if rec.LastScoredDate == "" || scored.Date >= rec.LastScoredDate {
 		rec.LastScoredDate = scored.Date
-		rec.LastScoredMinutes = scored.SignedMinutes
+		rec.LastScoredMinutes = sumSignedMinutes(rec.Days, scored.Date)
 	}
 	return s.store.SaveScore(ctx, phone, rec)
 }
 
-func dayExists(days []PunctualityDay, date string) bool {
+func usedStarts(days []PunctualityDay, date string) []string {
+	out := make([]string, 0, len(days))
 	for _, day := range days {
 		if day.Date == date {
-			return true
+			out = append(out, day.ShiftStart)
 		}
 	}
-	return false
+	return out
+}
+
+func sumSignedMinutes(days []PunctualityDay, date string) int {
+	total := 0
+	for _, day := range days {
+		if day.Date == date {
+			total += day.SignedMinutes
+		}
+	}
+	return total
 }
 
 func scoredDays(days []PunctualityDay) []punctuality.ScoredDay {

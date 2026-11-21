@@ -121,6 +121,44 @@ func TestBackfillArrivals_DoesNotRewriteAScoredDay(t *testing.T) {
 	}
 }
 
+func TestBackfillArrivals_AddsAnUnusedStartWithoutRewritingTheFirst(t *testing.T) {
+	store := newMemPunctualityStore()
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, time.UTC)
+	clearedAt := time.Date(2026, 6, 22, 16, 0, 0, 0, time.UTC)
+	store.records["+260971000001"] = PunctualityRecord{
+		Starts: []SavedShiftStart{
+			{Time: "08:00", SetAt: setAt},
+			{Time: "16:00", SetAt: setAt},
+		},
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "08:00", FirstScan: "08:10",
+			SignedMinutes: -10, ScoredAt: time.Date(2026, 6, 22, 6, 10, 0, 0, time.UTC),
+		}},
+		Settlements: []PunctualitySettlement{{At: clearedAt, Total: -10, Note: "cut"}},
+		OpenMinutes: 0,
+	}
+	svc := NewPunctualityService(store, func() time.Time { return clearedAt }, logrus.New())
+	n, err := svc.BackfillArrivals(context.Background(), "+260971000001", []ArrivalScan{
+		{At: time.Date(2026, 6, 22, 14, 20, 0, 0, time.UTC), Reason: "scan_return"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("new rows = %d, want 1", n)
+	}
+	rec := store.records["+260971000001"]
+	if rec.Days[0].ShiftStart != "08:00" || rec.Days[0].SignedMinutes != -10 {
+		t.Fatalf("rewrote the first score: %+v", rec.Days[0])
+	}
+	if rec.Days[1].ShiftStart != "16:00" || rec.Days[1].SignedMinutes != -20 {
+		t.Fatalf("second score: %+v", rec.Days[1])
+	}
+	if rec.OpenMinutes != 0 {
+		t.Fatalf("open = %d, want 0 because 16:20 is before the clear", rec.OpenMinutes)
+	}
+}
+
 func TestAddShiftStart_StoresCanonicalTimesEarliestFirst(t *testing.T) {
 	store := newMemPunctualityStore()
 	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 22, 6, 0) }, logrus.New())
@@ -319,6 +357,37 @@ func TestRecordScan_EarlyDayReducesOpenTotal(t *testing.T) {
 	}
 	if store.records[phone].OpenMinutes != 0 {
 		t.Fatalf("open minutes = %d, want 0", store.records[phone].OpenMinutes)
+	}
+}
+
+func TestRecordScan_SecondStartAddsARowAndSumsTheDay(t *testing.T) {
+	store := newMemPunctualityStore()
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, time.UTC)
+	store.records["+260971000001"] = PunctualityRecord{
+		Starts: []SavedShiftStart{
+			{Time: "08:00", SetAt: setAt},
+			{Time: "16:00", SetAt: setAt},
+		},
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "08:00", FirstScan: "08:10",
+			SignedMinutes: -10, ScoredAt: time.Date(2026, 6, 22, 6, 10, 0, 0, time.UTC),
+		}},
+		OpenMinutes: -10, LastScoredDate: "2026-06-22", LastScoredMinutes: -10,
+	}
+	svc := NewPunctualityService(store, func() time.Time { return setAt }, logrus.New())
+	scan := time.Date(2026, 6, 22, 13, 0, 0, 0, time.UTC) // 15:00 Zambia
+	if err := svc.RecordScan(context.Background(), "+260971000001", "scan_return", scan); err != nil {
+		t.Fatal(err)
+	}
+	rec := store.records["+260971000001"]
+	if len(rec.Days) != 2 || rec.Days[0].SignedMinutes != -10 {
+		t.Fatalf("first score changed: %+v", rec.Days)
+	}
+	if rec.Days[1].ShiftStart != "16:00" || rec.Days[1].SignedMinutes != 60 {
+		t.Fatalf("second score: %+v", rec.Days[1])
+	}
+	if rec.LastScoredMinutes != 50 || rec.OpenMinutes != 50 {
+		t.Fatalf("day sum and open = %d / %d, want 50 / 50", rec.LastScoredMinutes, rec.OpenMinutes)
 	}
 }
 
