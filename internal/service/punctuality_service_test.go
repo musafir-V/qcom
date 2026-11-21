@@ -649,3 +649,31 @@ func TestReport_ListsEveryStartForTheSelectedDay(t *testing.T) {
 		t.Fatalf("second row: %+v", report.DayStarts[1])
 	}
 }
+
+func TestReport_StartSavedNextDayDoesNotAppear(t *testing.T) {
+	store := newMemPunctualityStore()
+	store.records["+260971000001"] = PunctualityRecord{
+		Starts: []SavedShiftStart{
+			{Time: "08:00", SetAt: zTime(2026, 6, 22, 7, 0)},
+			{Time: "16:00", SetAt: zTime(2026, 6, 23, 9, 0)},
+		},
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "12:00", FirstScan: "12:10",
+			SignedMinutes: -10, ScoredAt: zTime(2026, 6, 22, 12, 10),
+		}},
+	}
+	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 23, 9, 0) }, logrus.New())
+	report, err := svc.Report(context.Background(), "+260971000001", "2026-06-22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.DayStarts) != 2 {
+		t.Fatalf("rows = %+v", report.DayStarts)
+	}
+	if report.DayStarts[0].ShiftStart != "08:00" || report.DayStarts[0].Scored {
+		t.Fatalf("start saved during the day: %+v", report.DayStarts[0])
+	}
+	if report.DayStarts[1].ShiftStart != "12:00" || !report.DayStarts[1].Scored || report.DayStarts[1].SignedMinutes != -10 {
+		t.Fatalf("scored start later removed: %+v", report.DayStarts[1])
+	}
+}

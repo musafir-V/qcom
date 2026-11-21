@@ -46,9 +46,9 @@ type ScoreInput struct {
 	UsedStarts      []string
 }
 
-// ScoreScan reports the day score for a store-QR scan that puts the driver on
-// duty (scan_start or scan_return). ok is false when this scan does not open
-// a scored day. A scan while still on a delivery does not count.
+// ScoreScan reports the score for a store-QR scan that puts the driver on
+// duty (scan_start or scan_return). ok is false when this scan does not score
+// an unused start. A scan while still on a delivery does not count.
 func ScoreScan(in ScoreInput) (DayScore, bool) {
 	if !countsAsArrival(in.Reason) {
 		return DayScore{}, false

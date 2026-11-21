@@ -118,7 +118,7 @@ func TestScoreScan_ScanBeforeShiftWasSavedDoesNotScore(t *testing.T) {
 	}
 }
 
-func TestScoreScan_AlreadyScoredDayStaysFrozen(t *testing.T) {
+func TestScoreScan_UsedStartStaysFrozen(t *testing.T) {
 	loc := time.FixedZone("CAT", 2*60*60)
 	_, ok := ScoreScan(ScoreInput{
 		ShiftStart:      "09:00",
@@ -128,7 +128,7 @@ func TestScoreScan_AlreadyScoredDayStaysFrozen(t *testing.T) {
 		UsedStarts:      []string{"09:00"},
 	})
 	if ok {
-		t.Fatal("a day that already has a score must not be rewritten")
+		t.Fatal("a used start must not be scored again")
 	}
 }
 

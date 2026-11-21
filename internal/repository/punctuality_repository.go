@@ -292,7 +292,11 @@ func (r *PunctualityRepository) UpdateShiftStarts(ctx context.Context, phone str
 }
 
 func (r *PunctualityRepository) PutDay(ctx context.Context, phone string, day PunctualityStoredDay, openMinutes int, lastDate string, lastMinutes int) error {
-	op := logging.Start(ctx, r.logger, "PunctualityRepository.PutDay", logrus.Fields{"phone": phone, "date": day.Date})
+	op := logging.Start(ctx, r.logger, "PunctualityRepository.PutDay", logrus.Fields{
+		"phone":       phone,
+		"date":        day.Date,
+		"shift_start": day.ShiftStart,
+	})
 	defer op.End()
 	scoredAt := day.ScoredAt.UTC().Format(time.RFC3339Nano)
 	now := time.Now().UTC().Format(time.RFC3339)

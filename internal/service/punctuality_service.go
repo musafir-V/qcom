@@ -362,15 +362,15 @@ type PunctualitySettlementView struct {
 	Admin string `json:"admin"`
 }
 
-func dayStartRows(starts []string, days []PunctualityDay, date string, clearedAt time.Time) []PunctualityDayView {
+func dayStartRows(starts []SavedShiftStart, days []PunctualityDay, date string, clearedAt time.Time) []PunctualityDayView {
 	seen := map[string]bool{}
 	times := make([]string, 0, len(starts)+len(days))
 	for _, start := range starts {
-		if start == "" || seen[start] {
+		if start.Time == "" || seen[start.Time] || !startVisibleOnDay(start.SetAt, date) {
 			continue
 		}
-		seen[start] = true
-		times = append(times, start)
+		seen[start.Time] = true
+		times = append(times, start.Time)
 	}
 	for _, day := range days {
 		if day.Date != date || seen[day.ShiftStart] {
@@ -398,6 +398,19 @@ func dayStartRows(starts []string, days []PunctualityDay, date string, clearedAt
 	return rows
 }
 
+// startVisibleOnDay reports whether a saved start belongs on the selected Zambia day.
+// A start saved after that calendar day has ended does not. A zero SetAt still does.
+func startVisibleOnDay(setAt time.Time, date string) bool {
+	if setAt.IsZero() {
+		return true
+	}
+	day, err := time.ParseInLocation("2006-01-02", date, timezone.ZambiaLocation())
+	if err != nil {
+		return true
+	}
+	return setAt.Before(day.AddDate(0, 0, 1))
+}
+
 // Report returns each start for the selected Zambia day, the open aggregate,
 // and settlement history. The open aggregate does not change with date.
 func (s *PunctualityService) Report(ctx context.Context, phone, date string) (*PunctualityReport, error) {
@@ -409,19 +422,21 @@ func (s *PunctualityService) Report(ctx context.Context, phone, date string) (*P
 		date = s.now().In(timezone.ZambiaLocation()).Format("2006-01-02")
 	}
 	clearedAt := latestClear(rec.Settlements)
-	starts := make([]string, 0, len(rec.Starts))
-	for _, start := range rec.Starts {
+	saved := rec.Starts
+	starts := make([]string, 0, len(saved))
+	for _, start := range saved {
 		starts = append(starts, start.Time)
 	}
 	if len(starts) == 0 && rec.ShiftStart != "" {
 		starts = []string{rec.ShiftStart}
+		saved = []SavedShiftStart{{Time: rec.ShiftStart, SetAt: rec.ShiftStartSetAt}}
 	}
 	report := &PunctualityReport{
 		ShiftStart:  rec.ShiftStart,
 		ShiftStarts: starts,
 		Date:        date,
 		OpenMinutes: openMinutes(rec),
-		DayStarts:   dayStartRows(starts, rec.Days, date, clearedAt),
+		DayStarts:   dayStartRows(saved, rec.Days, date, clearedAt),
 		Settlements: make([]PunctualitySettlementView, 0, len(rec.Settlements)),
 	}
 	// Newest clear first.
