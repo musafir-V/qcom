@@ -96,9 +96,9 @@ func TestGetDriverPunctuality_ReturnsOpenTotalAndDay(t *testing.T) {
 		ShiftStart:  "08:00",
 		Date:        "2026-06-22",
 		OpenMinutes: -20,
-		Day: &service.PunctualityDayView{
-			Date: "2026-06-22", ShiftStart: "08:00", FirstScan: "08:20", SignedMinutes: -20,
-		},
+		DayStarts: []service.PunctualityDayView{{
+			ShiftStart: "08:00", FirstScan: "08:20", SignedMinutes: -20,
+		}},
 		Settlements: []service.PunctualitySettlementView{},
 	}}
 	h := &AdminDriverHandlers{punctuality: fake, logger: logrus.New()}
@@ -113,7 +113,7 @@ func TestGetDriverPunctuality_ReturnsOpenTotalAndDay(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.OpenMinutes != -20 || body.Day == nil || body.Day.SignedMinutes != -20 {
+	if body.OpenMinutes != -20 || len(body.DayStarts) != 1 || body.DayStarts[0].SignedMinutes != -20 {
 		t.Fatalf("body = %+v", body)
 	}
 }

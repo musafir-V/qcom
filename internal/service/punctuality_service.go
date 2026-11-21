@@ -40,7 +40,7 @@ type PunctualityRecord struct {
 	Settlements       []PunctualitySettlement
 }
 
-// PunctualityDay is the frozen score for one Zambia date.
+// PunctualityDay is the frozen score for one shift start on a Zambia date.
 type PunctualityDay struct {
 	Date          string
 	ShiftStart    string
@@ -185,9 +185,9 @@ type ArrivalScan struct {
 	Reason string
 }
 
-// BackfillArrivals scores unscored days from scans that already happened.
-// Scans are applied in time order. A day that already has a score is left as it is.
-// The returned count is how many days were newly scored.
+// BackfillArrivals scores unused shift starts from scans that already happened.
+// Scans are applied in time order. A start that already has a row is left as it is.
+// The returned count is how many rows were newly scored.
 func (s *PunctualityService) BackfillArrivals(ctx context.Context, phone string, scans []ArrivalScan) (int, error) {
 	before, err := s.store.Load(ctx, phone)
 	if err != nil {
@@ -207,8 +207,8 @@ func (s *PunctualityService) BackfillArrivals(ctx context.Context, phone string,
 	return len(after.Days) - len(before.Days), nil
 }
 
-// RecordScan scores the first on-duty store scan of a Zambia day when a shift
-// start was already saved. A later scan that day leaves the score unchanged.
+// RecordScan appends a score when the closest saved start for this scan is unused.
+// A later scan of a start that already has a row leaves that row unchanged.
 func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason string, scanAt time.Time) error {
 	rec, err := s.store.Load(ctx, phone)
 	if err != nil {
@@ -219,13 +219,14 @@ func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason strin
 	for _, start := range rec.Starts {
 		starts = append(starts, punctuality.ShiftStart{Time: start.Time, SetAt: start.SetAt})
 	}
+	used := usedStarts(rec.Days, localDate)
 	scored, ok := punctuality.ScoreScan(punctuality.ScoreInput{
 		Starts:          starts,
 		ShiftStart:      rec.ShiftStart,
 		ShiftStartSetAt: rec.ShiftStartSetAt,
 		ScanAt:          scanAt,
 		Reason:          reason,
-		AlreadyScored:   dayExists(rec.Days, localDate),
+		UsedStarts:      used,
 	})
 	if !ok {
 		return nil
@@ -240,18 +241,29 @@ func (s *PunctualityService) RecordScan(ctx context.Context, phone, reason strin
 	rec.OpenMinutes = openMinutes(rec)
 	if rec.LastScoredDate == "" || scored.Date >= rec.LastScoredDate {
 		rec.LastScoredDate = scored.Date
-		rec.LastScoredMinutes = scored.SignedMinutes
+		rec.LastScoredMinutes = sumSignedMinutes(rec.Days, scored.Date)
 	}
 	return s.store.SaveScore(ctx, phone, rec)
 }
 
-func dayExists(days []PunctualityDay, date string) bool {
+func usedStarts(days []PunctualityDay, date string) []string {
+	out := make([]string, 0, len(days))
 	for _, day := range days {
 		if day.Date == date {
-			return true
+			out = append(out, day.ShiftStart)
 		}
 	}
-	return false
+	return out
+}
+
+func sumSignedMinutes(days []PunctualityDay, date string) int {
+	total := 0
+	for _, day := range days {
+		if day.Date == date {
+			total += day.SignedMinutes
+		}
+	}
+	return total
 }
 
 func scoredDays(days []PunctualityDay) []punctuality.ScoredDay {
@@ -322,22 +334,23 @@ func (s *PunctualityService) ClearAmount(ctx context.Context, phone string, hour
 	return s.store.SaveClear(ctx, phone, rec)
 }
 
-// PunctualityReport is the admin view of one day plus the open aggregate.
+// PunctualityReport is the admin view of the selected day's starts plus the open aggregate.
 type PunctualityReport struct {
 	ShiftStart  string                      `json:"shift_start"`
 	ShiftStarts []string                    `json:"shift_starts"`
 	Date        string                      `json:"date"`
 	OpenMinutes int                         `json:"open_minutes"`
-	Day         *PunctualityDayView         `json:"day"`
+	DayStarts   []PunctualityDayView        `json:"day_starts"`
 	Settlements []PunctualitySettlementView `json:"settlements"`
 }
 
-// PunctualityDayView is one scored day. Settled is true when a later clear covers it.
+// PunctualityDayView is one start on the selected day. Scored is false until a scan is saved.
+// Settled is true when a later full clear covers that scan.
 type PunctualityDayView struct {
-	Date          string `json:"date"`
 	ShiftStart    string `json:"shift_start"`
-	FirstScan     string `json:"first_scan"`
+	FirstScan     string `json:"first_scan,omitempty"`
 	SignedMinutes int    `json:"signed_minutes"`
+	Scored        bool   `json:"scored"`
 	Settled       bool   `json:"settled"`
 }
 
@@ -349,7 +362,56 @@ type PunctualitySettlementView struct {
 	Admin string `json:"admin"`
 }
 
-// Report returns the shift start, the selected Zambia day, the open aggregate,
+func dayStartRows(starts []SavedShiftStart, days []PunctualityDay, date string, clearedAt time.Time) []PunctualityDayView {
+	seen := map[string]bool{}
+	times := make([]string, 0, len(starts)+len(days))
+	for _, start := range starts {
+		if start.Time == "" || seen[start.Time] || !startVisibleOnDay(start.SetAt, date) {
+			continue
+		}
+		seen[start.Time] = true
+		times = append(times, start.Time)
+	}
+	for _, day := range days {
+		if day.Date != date || seen[day.ShiftStart] {
+			continue
+		}
+		seen[day.ShiftStart] = true
+		times = append(times, day.ShiftStart)
+	}
+	sort.Strings(times)
+	rows := make([]PunctualityDayView, 0, len(times))
+	for _, start := range times {
+		row := PunctualityDayView{ShiftStart: start}
+		for _, day := range days {
+			if day.Date != date || day.ShiftStart != start {
+				continue
+			}
+			row.Scored = true
+			row.FirstScan = day.FirstScan
+			row.SignedMinutes = day.SignedMinutes
+			row.Settled = !clearedAt.IsZero() && !day.ScoredAt.After(clearedAt)
+			break
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// startVisibleOnDay reports whether a saved start belongs on the selected Zambia day.
+// A start saved after that calendar day has ended does not. A zero SetAt still does.
+func startVisibleOnDay(setAt time.Time, date string) bool {
+	if setAt.IsZero() {
+		return true
+	}
+	day, err := time.ParseInLocation("2006-01-02", date, timezone.ZambiaLocation())
+	if err != nil {
+		return true
+	}
+	return setAt.Before(day.AddDate(0, 0, 1))
+}
+
+// Report returns each start for the selected Zambia day, the open aggregate,
 // and settlement history. The open aggregate does not change with date.
 func (s *PunctualityService) Report(ctx context.Context, phone, date string) (*PunctualityReport, error) {
 	rec, err := s.store.Load(ctx, phone)
@@ -360,32 +422,22 @@ func (s *PunctualityService) Report(ctx context.Context, phone, date string) (*P
 		date = s.now().In(timezone.ZambiaLocation()).Format("2006-01-02")
 	}
 	clearedAt := latestClear(rec.Settlements)
-	starts := make([]string, 0, len(rec.Starts))
-	for _, start := range rec.Starts {
+	saved := rec.Starts
+	starts := make([]string, 0, len(saved))
+	for _, start := range saved {
 		starts = append(starts, start.Time)
 	}
 	if len(starts) == 0 && rec.ShiftStart != "" {
 		starts = []string{rec.ShiftStart}
+		saved = []SavedShiftStart{{Time: rec.ShiftStart, SetAt: rec.ShiftStartSetAt}}
 	}
 	report := &PunctualityReport{
 		ShiftStart:  rec.ShiftStart,
 		ShiftStarts: starts,
 		Date:        date,
 		OpenMinutes: openMinutes(rec),
+		DayStarts:   dayStartRows(saved, rec.Days, date, clearedAt),
 		Settlements: make([]PunctualitySettlementView, 0, len(rec.Settlements)),
-	}
-	for _, day := range rec.Days {
-		if day.Date != date {
-			continue
-		}
-		report.Day = &PunctualityDayView{
-			Date:          day.Date,
-			ShiftStart:    day.ShiftStart,
-			FirstScan:     day.FirstScan,
-			SignedMinutes: day.SignedMinutes,
-			Settled:       !clearedAt.IsZero() && !day.ScoredAt.After(clearedAt),
-		}
-		break
 	}
 	// Newest clear first.
 	for i := len(rec.Settlements) - 1; i >= 0; i-- {

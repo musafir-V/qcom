@@ -3,6 +3,8 @@ package punctuality
 import (
 	"testing"
 	"time"
+
+	"github.com/qcom/qcom/internal/models"
 )
 
 func TestSignedMinutes_EarlyScanIsPositive(t *testing.T) {
@@ -116,17 +118,75 @@ func TestScoreScan_ScanBeforeShiftWasSavedDoesNotScore(t *testing.T) {
 	}
 }
 
-func TestScoreScan_AlreadyScoredDayStaysFrozen(t *testing.T) {
+func TestScoreScan_UsedStartStaysFrozen(t *testing.T) {
 	loc := time.FixedZone("CAT", 2*60*60)
 	_, ok := ScoreScan(ScoreInput{
 		ShiftStart:      "09:00",
 		ShiftStartSetAt: time.Date(2026, 6, 22, 10, 0, 0, 0, loc),
 		ScanAt:          time.Date(2026, 6, 22, 10, 5, 0, 0, loc),
 		Reason:          "scan_start",
-		AlreadyScored:   true,
+		UsedStarts:      []string{"09:00"},
 	})
 	if ok {
-		t.Fatal("a day that already has a score must not be rewritten")
+		t.Fatal("a used start must not be scored again")
+	}
+}
+
+func TestScoreScan_SecondScanLocksTheUnusedCloserStart(t *testing.T) {
+	loc := time.FixedZone("CAT", 2*60*60)
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, loc)
+	got, ok := ScoreScan(ScoreInput{
+		Starts: []ShiftStart{
+			{Time: "08:00", SetAt: setAt},
+			{Time: "16:00", SetAt: setAt},
+		},
+		UsedStarts: []string{"08:00"},
+		ScanAt:     time.Date(2026, 6, 22, 15, 0, 0, 0, loc),
+		Reason:     string(models.ReasonScanReturn),
+	})
+	if !ok {
+		t.Fatal("15:00 should lock 16:00")
+	}
+	if got.ShiftStart != "16:00" || got.FirstScan != "15:00" || got.SignedMinutes != 60 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestScoreScan_TieStaysWithTheUsedEarlierStart(t *testing.T) {
+	loc := time.FixedZone("CAT", 2*60*60)
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, loc)
+	_, ok := ScoreScan(ScoreInput{
+		Starts: []ShiftStart{
+			{Time: "08:00", SetAt: setAt},
+			{Time: "16:00", SetAt: setAt},
+		},
+		UsedStarts: []string{"08:00"},
+		ScanAt:     time.Date(2026, 6, 22, 12, 0, 0, 0, loc),
+		Reason:     string(models.ReasonScanStart),
+	})
+	if ok {
+		t.Fatal("a 12:00 tie belongs to 08:00 and must not score 16:00")
+	}
+}
+
+func TestScoreScan_CanSkipAMiddleStart(t *testing.T) {
+	loc := time.FixedZone("CAT", 2*60*60)
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, loc)
+	got, ok := ScoreScan(ScoreInput{
+		Starts: []ShiftStart{
+			{Time: "08:00", SetAt: setAt},
+			{Time: "12:00", SetAt: setAt},
+			{Time: "16:00", SetAt: setAt},
+		},
+		UsedStarts: []string{"08:00"},
+		ScanAt:     time.Date(2026, 6, 22, 15, 50, 0, 0, loc),
+		Reason:     string(models.ReasonScanReturn),
+	})
+	if !ok {
+		t.Fatal("15:50 should lock 16:00")
+	}
+	if got.ShiftStart != "16:00" || got.SignedMinutes != 10 {
+		t.Fatalf("got %+v", got)
 	}
 }
 

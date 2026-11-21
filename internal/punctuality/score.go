@@ -43,18 +43,18 @@ type ScoreInput struct {
 	ShiftStartSetAt time.Time
 	ScanAt          time.Time
 	Reason          string
-	AlreadyScored   bool
+	UsedStarts      []string
 }
 
-// ScoreScan reports the day score for a store-QR scan that puts the driver on
-// duty (scan_start or scan_return). ok is false when this scan does not open
-// a scored day. A scan while still on a delivery does not count.
+// ScoreScan reports the score for a store-QR scan that puts the driver on
+// duty (scan_start or scan_return). ok is false when this scan does not score
+// an unused start. A scan while still on a delivery does not count.
 func ScoreScan(in ScoreInput) (DayScore, bool) {
-	if in.AlreadyScored || !countsAsArrival(in.Reason) {
+	if !countsAsArrival(in.Reason) {
 		return DayScore{}, false
 	}
 	start, ok := chooseStart(candidateStarts(in), in.ScanAt)
-	if !ok {
+	if !ok || startUsed(in.UsedStarts, start) {
 		return DayScore{}, false
 	}
 	local := in.ScanAt.In(timezone.ZambiaLocation())
@@ -69,6 +69,15 @@ func ScoreScan(in ScoreInput) (DayScore, bool) {
 		FirstScan:     hhmm,
 		SignedMinutes: signed,
 	}, true
+}
+
+func startUsed(used []string, start string) bool {
+	for _, candidate := range used {
+		if candidate == start {
+			return true
+		}
+	}
+	return false
 }
 
 func countsAsArrival(reason string) bool {

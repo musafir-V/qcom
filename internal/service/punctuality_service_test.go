@@ -121,6 +121,44 @@ func TestBackfillArrivals_DoesNotRewriteAScoredDay(t *testing.T) {
 	}
 }
 
+func TestBackfillArrivals_AddsAnUnusedStartWithoutRewritingTheFirst(t *testing.T) {
+	store := newMemPunctualityStore()
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, time.UTC)
+	clearedAt := time.Date(2026, 6, 22, 16, 0, 0, 0, time.UTC)
+	store.records["+260971000001"] = PunctualityRecord{
+		Starts: []SavedShiftStart{
+			{Time: "08:00", SetAt: setAt},
+			{Time: "16:00", SetAt: setAt},
+		},
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "08:00", FirstScan: "08:10",
+			SignedMinutes: -10, ScoredAt: time.Date(2026, 6, 22, 6, 10, 0, 0, time.UTC),
+		}},
+		Settlements: []PunctualitySettlement{{At: clearedAt, Total: -10, Note: "cut"}},
+		OpenMinutes: 0,
+	}
+	svc := NewPunctualityService(store, func() time.Time { return clearedAt }, logrus.New())
+	n, err := svc.BackfillArrivals(context.Background(), "+260971000001", []ArrivalScan{
+		{At: time.Date(2026, 6, 22, 14, 20, 0, 0, time.UTC), Reason: "scan_return"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("new rows = %d, want 1", n)
+	}
+	rec := store.records["+260971000001"]
+	if rec.Days[0].ShiftStart != "08:00" || rec.Days[0].SignedMinutes != -10 {
+		t.Fatalf("rewrote the first score: %+v", rec.Days[0])
+	}
+	if rec.Days[1].ShiftStart != "16:00" || rec.Days[1].SignedMinutes != -20 {
+		t.Fatalf("second score: %+v", rec.Days[1])
+	}
+	if rec.OpenMinutes != 0 {
+		t.Fatalf("open = %d, want 0 because 16:20 is before the clear", rec.OpenMinutes)
+	}
+}
+
 func TestAddShiftStart_StoresCanonicalTimesEarliestFirst(t *testing.T) {
 	store := newMemPunctualityStore()
 	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 22, 6, 0) }, logrus.New())
@@ -322,6 +360,37 @@ func TestRecordScan_EarlyDayReducesOpenTotal(t *testing.T) {
 	}
 }
 
+func TestRecordScan_SecondStartAddsARowAndSumsTheDay(t *testing.T) {
+	store := newMemPunctualityStore()
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, time.UTC)
+	store.records["+260971000001"] = PunctualityRecord{
+		Starts: []SavedShiftStart{
+			{Time: "08:00", SetAt: setAt},
+			{Time: "16:00", SetAt: setAt},
+		},
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "08:00", FirstScan: "08:10",
+			SignedMinutes: -10, ScoredAt: time.Date(2026, 6, 22, 6, 10, 0, 0, time.UTC),
+		}},
+		OpenMinutes: -10, LastScoredDate: "2026-06-22", LastScoredMinutes: -10,
+	}
+	svc := NewPunctualityService(store, func() time.Time { return setAt }, logrus.New())
+	scan := time.Date(2026, 6, 22, 13, 0, 0, 0, time.UTC) // 15:00 Zambia
+	if err := svc.RecordScan(context.Background(), "+260971000001", "scan_return", scan); err != nil {
+		t.Fatal(err)
+	}
+	rec := store.records["+260971000001"]
+	if len(rec.Days) != 2 || rec.Days[0].SignedMinutes != -10 {
+		t.Fatalf("first score changed: %+v", rec.Days)
+	}
+	if rec.Days[1].ShiftStart != "16:00" || rec.Days[1].SignedMinutes != 60 {
+		t.Fatalf("second score: %+v", rec.Days[1])
+	}
+	if rec.LastScoredMinutes != 50 || rec.OpenMinutes != 50 {
+		t.Fatalf("day sum and open = %d / %d, want 50 / 50", rec.LastScoredMinutes, rec.OpenMinutes)
+	}
+}
+
 func TestClear_ResetsOpenTotalAndKeepsTheDay(t *testing.T) {
 	store := newMemPunctualityStore()
 	clearedAt := zTime(2026, 6, 22, 18, 0)
@@ -383,8 +452,8 @@ func TestClearAmount_LeavesRemainderAndDoesNotSettleTheDay(t *testing.T) {
 	if report.OpenMinutes != -15 {
 		t.Fatalf("open minutes = %d, want -15", report.OpenMinutes)
 	}
-	if report.Day == nil || report.Day.Settled {
-		t.Fatalf("day = %+v, want unsettled", report.Day)
+	if len(report.DayStarts) != 1 || !report.DayStarts[0].Scored || report.DayStarts[0].Settled {
+		t.Fatalf("day = %+v, want unsettled", report.DayStarts)
 	}
 	if len(report.Settlements) != 1 || report.Settlements[0].Total != -5 || report.Settlements[0].Note != "cut five minutes" {
 		t.Fatalf("settlements = %+v", report.Settlements)
@@ -400,8 +469,8 @@ func TestClearAmount_LeavesRemainderAndDoesNotSettleTheDay(t *testing.T) {
 	if report.OpenMinutes != -25 {
 		t.Fatalf("open minutes after the next day = %d, want -25", report.OpenMinutes)
 	}
-	if report.Day == nil || report.Day.Settled || report.Day.SignedMinutes != -10 {
-		t.Fatalf("next day = %+v", report.Day)
+	if len(report.DayStarts) != 1 || !report.DayStarts[0].Scored || report.DayStarts[0].Settled || report.DayStarts[0].SignedMinutes != -10 {
+		t.Fatalf("next day = %+v", report.DayStarts)
 	}
 }
 
@@ -429,8 +498,8 @@ func TestClearAmount_ExactAmountSettlesTheDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.OpenMinutes != 0 || report.Day == nil || !report.Day.Settled {
-		t.Fatalf("report = %+v day=%+v", report, report.Day)
+	if report.OpenMinutes != 0 || len(report.DayStarts) != 1 || !report.DayStarts[0].Scored || !report.DayStarts[0].Settled {
+		t.Fatalf("report = %+v day=%+v", report, report.DayStarts)
 	}
 	if len(report.Settlements) != 1 || report.Settlements[0].Total != -20 {
 		t.Fatalf("settlements = %+v", report.Settlements)
@@ -502,8 +571,8 @@ func TestReport_ShowsOpenTotalAndSettledDay(t *testing.T) {
 	if report.ShiftStart != "08:00" || report.OpenMinutes != 0 || report.Date != "2026-06-22" {
 		t.Fatalf("report header = %+v", report)
 	}
-	if report.Day == nil || report.Day.SignedMinutes != -20 || !report.Day.Settled || report.Day.FirstScan != "08:20" {
-		t.Fatalf("day = %+v", report.Day)
+	if len(report.DayStarts) != 1 || !report.DayStarts[0].Scored || report.DayStarts[0].SignedMinutes != -20 || !report.DayStarts[0].Settled || report.DayStarts[0].FirstScan != "08:20" {
+		t.Fatalf("day = %+v", report.DayStarts)
 	}
 	if len(report.Settlements) != 1 || report.Settlements[0].Note != "deducted K20" || report.Settlements[0].Total != -20 || report.Settlements[0].Admin != "ada" {
 		t.Fatalf("settlements = %+v", report.Settlements)
@@ -513,8 +582,8 @@ func TestReport_ShowsOpenTotalAndSettledDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Day != nil {
-		t.Fatalf("unscored day = %+v", next.Day)
+	if len(next.DayStarts) != 1 || next.DayStarts[0].Scored {
+		t.Fatalf("unscored day = %+v", next.DayStarts)
 	}
 	if next.OpenMinutes != 0 {
 		t.Fatalf("open minutes = %d", next.OpenMinutes)
@@ -550,4 +619,61 @@ func TestRecordPunctuality_IgnoresRecorderFailure(t *testing.T) {
 	logger.SetOutput(io.Discard)
 	svc := &DEService{punctuality: &fakeScanRecorder{err: errors.New("dynamo down")}, logger: logger}
 	svc.recordPunctuality(context.Background(), "+260971000001", "scan_start", zTime(2026, 6, 22, 8, 20))
+}
+
+func TestReport_ListsEveryStartForTheSelectedDay(t *testing.T) {
+	store := newMemPunctualityStore()
+	setAt := time.Date(2026, 6, 22, 6, 0, 0, 0, time.UTC)
+	store.records["+260971000001"] = PunctualityRecord{
+		Starts: []SavedShiftStart{
+			{Time: "16:00", SetAt: setAt},
+			{Time: "08:00", SetAt: setAt},
+		},
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "08:00", FirstScan: "08:10",
+			SignedMinutes: -10, ScoredAt: time.Date(2026, 6, 22, 6, 10, 0, 0, time.UTC),
+		}},
+	}
+	svc := NewPunctualityService(store, func() time.Time { return setAt }, logrus.New())
+	report, err := svc.Report(context.Background(), "+260971000001", "2026-06-22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.DayStarts) != 2 {
+		t.Fatalf("rows = %d", len(report.DayStarts))
+	}
+	if report.DayStarts[0].ShiftStart != "08:00" || !report.DayStarts[0].Scored || report.DayStarts[0].SignedMinutes != -10 {
+		t.Fatalf("first row: %+v", report.DayStarts[0])
+	}
+	if report.DayStarts[1].ShiftStart != "16:00" || report.DayStarts[1].Scored {
+		t.Fatalf("second row: %+v", report.DayStarts[1])
+	}
+}
+
+func TestReport_StartSavedNextDayDoesNotAppear(t *testing.T) {
+	store := newMemPunctualityStore()
+	store.records["+260971000001"] = PunctualityRecord{
+		Starts: []SavedShiftStart{
+			{Time: "08:00", SetAt: zTime(2026, 6, 22, 7, 0)},
+			{Time: "16:00", SetAt: zTime(2026, 6, 23, 9, 0)},
+		},
+		Days: []PunctualityDay{{
+			Date: "2026-06-22", ShiftStart: "12:00", FirstScan: "12:10",
+			SignedMinutes: -10, ScoredAt: zTime(2026, 6, 22, 12, 10),
+		}},
+	}
+	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 23, 9, 0) }, logrus.New())
+	report, err := svc.Report(context.Background(), "+260971000001", "2026-06-22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.DayStarts) != 2 {
+		t.Fatalf("rows = %+v", report.DayStarts)
+	}
+	if report.DayStarts[0].ShiftStart != "08:00" || report.DayStarts[0].Scored {
+		t.Fatalf("start saved during the day: %+v", report.DayStarts[0])
+	}
+	if report.DayStarts[1].ShiftStart != "12:00" || !report.DayStarts[1].Scored || report.DayStarts[1].SignedMinutes != -10 {
+		t.Fatalf("scored start later removed: %+v", report.DayStarts[1])
+	}
 }

@@ -1,6 +1,6 @@
 // Command punctuality-backfill scores Zambia days that have a shift start and
-// an on-duty store scan, but no score yet. A day that already has a score is
-// left as it is. Pass -apply to write. Without it, the command only reports
+// an on-duty store scan, but no score yet. An unused start on a scored day can
+// still be filled. Pass -apply to write. Without it, the command only reports
 // how many days would be scored.
 package main
 
