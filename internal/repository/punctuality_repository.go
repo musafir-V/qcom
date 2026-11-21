@@ -118,8 +118,8 @@ func encodeShiftStarts(starts []PunctualityStoredStart) (string, error) {
 	return string(raw), nil
 }
 
-func punctualityDaySK(date string) string {
-	return punctualityDayPrefix + date
+func punctualityDaySK(date, shiftStart string) string {
+	return punctualityDayPrefix + date + "#" + shiftStart
 }
 
 func punctualityClearSK(at time.Time) string {
@@ -303,7 +303,7 @@ func (r *PunctualityRepository) PutDay(ctx context.Context, phone string, day Pu
 				ConditionExpression: aws.String("attribute_not_exists(SK)"),
 				Item: map[string]types.AttributeValue{
 					"PK":             &types.AttributeValueMemberS{Value: "DE!" + phone},
-					"SK":             &types.AttributeValueMemberS{Value: punctualityDaySK(day.Date)},
+					"SK":             &types.AttributeValueMemberS{Value: punctualityDaySK(day.Date, day.ShiftStart)},
 					"date":           &types.AttributeValueMemberS{Value: day.Date},
 					"shift_start":    &types.AttributeValueMemberS{Value: day.ShiftStart},
 					"first_scan":     &types.AttributeValueMemberS{Value: day.FirstScan},
