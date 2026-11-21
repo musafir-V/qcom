@@ -14,6 +14,7 @@ type fakePunctualityRepo struct {
 	last  string
 	mins  int
 	calls int
+	clear repository.PunctualityStoredClear
 }
 
 func (f *fakePunctualityRepo) Load(context.Context, string) (repository.PunctualityState, error) {
@@ -30,8 +31,27 @@ func (f *fakePunctualityRepo) PutDay(_ context.Context, _ string, day repository
 	f.mins = lastMinutes
 	return nil
 }
-func (f *fakePunctualityRepo) PutClear(context.Context, string, repository.PunctualityStoredClear) error {
+func (f *fakePunctualityRepo) PutClear(_ context.Context, _ string, clear repository.PunctualityStoredClear) error {
+	f.clear = clear
 	return nil
+}
+
+func TestDynamoStoreSaveClear_WritesPartialAndRemainingOpen(t *testing.T) {
+	repo := &fakePunctualityRepo{}
+	store := dynamoPunctualityStore{repo: repo}
+	at := time.Date(2026, 6, 22, 16, 0, 0, 0, time.UTC)
+	err := store.SaveClear(context.Background(), "+260971000001", PunctualityRecord{
+		OpenMinutes: -60,
+		Settlements: []PunctualitySettlement{{
+			At: at, Total: -90, Note: "cut 1h 30m", Admin: "ada", Partial: true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repo.clear.Partial || repo.clear.OpenMinutes != -60 || repo.clear.Total != -90 || repo.clear.Note != "cut 1h 30m" {
+		t.Fatalf("clear = %+v", repo.clear)
+	}
 }
 
 func TestDynamoStoreSaveScore_WritesOnlyTheNewDay(t *testing.T) {

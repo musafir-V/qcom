@@ -356,6 +356,90 @@ func TestClear_ResetsOpenTotalAndKeepsTheDay(t *testing.T) {
 	}
 }
 
+func TestClearAmount_LeavesRemainderAndDoesNotSettleTheDay(t *testing.T) {
+	store := newMemPunctualityStore()
+	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 22, 18, 0) }, logrus.New())
+	ctx := context.Background()
+	phone := "+260971000001"
+	if err := svc.SetShiftStart(ctx, phone, "08:00"); err != nil {
+		t.Fatal(err)
+	}
+	rec := store.records[phone]
+	rec.ShiftStartSetAt = zTime(2026, 6, 22, 6, 0)
+	for i := range rec.Starts {
+		rec.Starts[i].SetAt = rec.ShiftStartSetAt
+	}
+	store.records[phone] = rec
+	if err := svc.RecordScan(ctx, phone, "scan_start", zTime(2026, 6, 22, 8, 20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ClearAmount(ctx, phone, 0, 5, "cut five minutes", "ada"); err != nil {
+		t.Fatal(err)
+	}
+	report, err := svc.Report(ctx, phone, "2026-06-22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OpenMinutes != -15 {
+		t.Fatalf("open minutes = %d, want -15", report.OpenMinutes)
+	}
+	if report.Day == nil || report.Day.Settled {
+		t.Fatalf("day = %+v, want unsettled", report.Day)
+	}
+	if len(report.Settlements) != 1 || report.Settlements[0].Total != -5 || report.Settlements[0].Note != "cut five minutes" {
+		t.Fatalf("settlements = %+v", report.Settlements)
+	}
+
+	if err := svc.RecordScan(ctx, phone, "scan_start", zTime(2026, 6, 23, 8, 10)); err != nil {
+		t.Fatal(err)
+	}
+	report, err = svc.Report(ctx, phone, "2026-06-23")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OpenMinutes != -25 {
+		t.Fatalf("open minutes after the next day = %d, want -25", report.OpenMinutes)
+	}
+	if report.Day == nil || report.Day.Settled || report.Day.SignedMinutes != -10 {
+		t.Fatalf("next day = %+v", report.Day)
+	}
+}
+
+func TestClearAmount_ExactAmountSettlesTheDay(t *testing.T) {
+	store := newMemPunctualityStore()
+	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 22, 18, 0) }, logrus.New())
+	ctx := context.Background()
+	phone := "+260971000001"
+	if err := svc.SetShiftStart(ctx, phone, "08:00"); err != nil {
+		t.Fatal(err)
+	}
+	rec := store.records[phone]
+	rec.ShiftStartSetAt = zTime(2026, 6, 22, 6, 0)
+	for i := range rec.Starts {
+		rec.Starts[i].SetAt = rec.ShiftStartSetAt
+	}
+	store.records[phone] = rec
+	if err := svc.RecordScan(ctx, phone, "scan_start", zTime(2026, 6, 22, 8, 20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ClearAmount(ctx, phone, 0, 20, "cleared the rest", "ada"); err != nil {
+		t.Fatal(err)
+	}
+	report, err := svc.Report(ctx, phone, "2026-06-22")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OpenMinutes != 0 || report.Day == nil || !report.Day.Settled {
+		t.Fatalf("report = %+v day=%+v", report, report.Day)
+	}
+	if len(report.Settlements) != 1 || report.Settlements[0].Total != -20 {
+		t.Fatalf("settlements = %+v", report.Settlements)
+	}
+	if store.records[phone].Settlements[0].Partial {
+		t.Fatal("exact amount was stored as a partial clear")
+	}
+}
+
 func TestClear_RejectsZeroAndBlankNote(t *testing.T) {
 	store := newMemPunctualityStore()
 	svc := NewPunctualityService(store, func() time.Time { return zTime(2026, 6, 22, 18, 0) }, logrus.New())
