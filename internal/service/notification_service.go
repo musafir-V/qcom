@@ -24,8 +24,13 @@ var (
 // driverChannelID must match driver-app orderChannel.ts (importance only; no custom sound).
 const driverChannelID = "order-alert-v3"
 
+// pickupNagChannelID is a silent high-importance channel. The driver app plays
+// the voice loop itself; this channel must not use the accept-alarm sound.
+const pickupNagChannelID = "pickup-nag-v1"
+
 var eventMinPriority = map[string]models.NotificationPriority{
-	"ORDER_ASSIGNED": models.PriorityCritical,
+	"ORDER_ASSIGNED":      models.PriorityCritical,
+	models.PickupNagEvent: models.PriorityCritical,
 }
 
 // NotificationService is the central FCM sender and token store owner.
@@ -213,8 +218,12 @@ func buildFCMMessage(token string, req models.NotificationSendRequest) *messagin
 	if highTransport {
 		msg.Android = &messaging.AndroidConfig{Priority: "high"}
 		if req.RecipientType == models.RecipientTypeDriver {
+			channelID := driverChannelID
+			if req.EventType == models.PickupNagEvent {
+				channelID = pickupNagChannelID
+			}
 			msg.Android.Notification = &messaging.AndroidNotification{
-				ChannelID: driverChannelID,
+				ChannelID: channelID,
 				Priority:  messaging.PriorityHigh,
 				Tag:       data["trip_id"],
 			}

@@ -519,6 +519,40 @@ func TestEditTripByOrder_OverwritesItemsPaymentAndPickupZone(t *testing.T) {
 	}
 }
 
+func TestEditTripByOrder_StampsReadyAtOnce(t *testing.T) {
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID: "TRIP-READY-1", OrderID: "ORD-READY-1",
+		Status:     models.TripStatusAccepted,
+		AcceptedAt: time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		Tasks: []models.Task{
+			{TaskID: "t-pickup", Type: models.TaskTypePickup, OrderID: "ORD-READY-1"},
+		},
+	}}
+	svc := newTestTripService(repo, &stubNotifier{})
+	in := EditTripByOrderInput{
+		OrderID: "ORD-READY-1", PaymentMethod: "COD", GrandTotal: 10, Currency: "ZMW",
+		DeliveryZone: "Blue Rack 2",
+		Items:        []EditTripItemInput{{SKU: "SKU-1", Name: "Milk", Quantity: 1}},
+	}
+	if _, err := svc.EditTripByOrder(context.Background(), in); err != nil {
+		t.Fatalf("first edit: %v", err)
+	}
+	if repo.editedTasks[0].ReadyAt == "" {
+		t.Fatal("expected ready_at on the pickup when packing completes")
+	}
+	first := repo.editedTasks[0].ReadyAt
+	if repo.editedTasks[0].PickupNagAt == "" {
+		t.Fatal("expected pickup_nag_at once the trip is already accepted")
+	}
+	repo.trip.Tasks = append([]models.Task(nil), repo.editedTasks...)
+	if _, err := svc.EditTripByOrder(context.Background(), in); err != nil {
+		t.Fatalf("second edit: %v", err)
+	}
+	if repo.editedTasks[0].ReadyAt != first {
+		t.Fatalf("ready_at changed from %s to %s", first, repo.editedTasks[0].ReadyAt)
+	}
+}
+
 func TestEditTripByOrder_IdempotentSecondCall(t *testing.T) {
 	repo := &stubTripRepo{trip: &models.Trip{
 		TripID: "TRIP-EDIT-2", OrderID: "ORD-EDIT-3",
@@ -1279,6 +1313,34 @@ func TestAcceptTrip_NotGatedOnPacked(t *testing.T) {
 	}
 	if repo.trip.Status != models.TripStatusAccepted {
 		t.Fatalf("trip status = %q, want accepted", repo.trip.Status)
+	}
+}
+
+func TestGetCurrentTrip_FillsPickupNagAtFromAcceptAndReady(t *testing.T) {
+	accepted := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	ready := accepted.Add(4 * time.Minute)
+	repo := &stubTripRepo{trip: &models.Trip{
+		TripID:     "t-nag",
+		OrderID:    "ORD-NAG",
+		Status:     models.TripStatusAccepted,
+		AcceptedAt: accepted.Format(time.RFC3339),
+		Tasks: []models.Task{{
+			TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated,
+			OrderID: "ORD-NAG", ReadyAt: ready.Format(time.RFC3339),
+		}},
+	}}
+	deRepo := &stubDERepo{de: &models.DeliveryExecutive{
+		DEID: "de-1", PhoneNumber: "+260971000001", CurrentTripID: "t-nag",
+	}}
+	svc := newTripServiceForTest(repo, deRepo, &stubNotifier{})
+
+	got, err := svc.GetCurrentTrip(context.Background(), "+260971000001")
+	if err != nil {
+		t.Fatalf("GetCurrentTrip: %v", err)
+	}
+	want := ready.Add(time.Minute).Format(time.RFC3339)
+	if got == nil || len(got.Tasks) == 0 || got.Tasks[0].PickupNagAt != want {
+		t.Fatalf("pickup_nag_at = %q, want %s", got.Tasks[0].PickupNagAt, want)
 	}
 }
 

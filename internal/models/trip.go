@@ -66,7 +66,11 @@ type Task struct {
 	OTP           string     `json:"otp,omitempty" dynamodbav:"otp,omitempty"`                       // drop task only
 	RecipientName string     `json:"recipient_name,omitempty" dynamodbav:"recipient_name,omitempty"` // drop task only
 	DeliveryZone  string     `json:"delivery_zone,omitempty" dynamodbav:"delivery_zone,omitempty"`   // pickup task only: rack label e.g. "Blue Rack 2"
-	PhotoS3Key    string     `json:"photo_s3_key,omitempty" dynamodbav:"photo_s3_key,omitempty"`     // set when driver uploads a verification photo
+	// ReadyAt is the first time this pickup's order was packed. It is not overwritten.
+	ReadyAt string `json:"ready_at,omitempty" dynamodbav:"ready_at,omitempty"`
+	// PickupNagAt is max(trip.accepted_at, ready_at) + 1 minute. Empty until both exist.
+	PickupNagAt string `json:"pickup_nag_at,omitempty" dynamodbav:"pickup_nag_at,omitempty"`
+	PhotoS3Key  string `json:"photo_s3_key,omitempty" dynamodbav:"photo_s3_key,omitempty"` // set when driver uploads a verification photo
 	// ReachedByAdmin marks a drop whose ReachedAt was synthesized at admin
 	// completion time, so it does not reflect the driver's actual arrival.
 	ReachedByAdmin bool       `json:"reached_by_admin,omitempty" dynamodbav:"reached_by_admin,omitempty"`
@@ -113,12 +117,15 @@ type Trip struct {
 
 	CustomerUserID string `json:"customer_user_id,omitempty" dynamodbav:"customer_user_id,omitempty"`
 
-	CreatedAt      string   `json:"created_at" dynamodbav:"created_at"`
-	UpdatedAt      string   `json:"updated_at" dynamodbav:"updated_at"`
-	AssignedAt     string   `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
-	AcceptDeadline string   `json:"accept_deadline,omitempty" dynamodbav:"accept_deadline,omitempty"`
-	DropDeadline   *int64   `json:"drop_deadline,omitempty" dynamodbav:"drop_deadline,omitempty"`
-	RejectedDEIDs  []string `json:"rejected_de_ids,omitempty" dynamodbav:"rejected_de_ids,omitempty"`
+	CreatedAt  string `json:"created_at" dynamodbav:"created_at"`
+	UpdatedAt  string `json:"updated_at" dynamodbav:"updated_at"`
+	AssignedAt string `json:"assigned_at,omitempty" dynamodbav:"assigned_at,omitempty"`
+	AcceptedAt string `json:"accepted_at,omitempty" dynamodbav:"accepted_at,omitempty"`
+	// PickupNagPushAt is the last PICKUP_NAG push. It throttles the 30s repeat.
+	PickupNagPushAt string   `json:"pickup_nag_push_at,omitempty" dynamodbav:"pickup_nag_push_at,omitempty"`
+	AcceptDeadline  string   `json:"accept_deadline,omitempty" dynamodbav:"accept_deadline,omitempty"`
+	DropDeadline    *int64   `json:"drop_deadline,omitempty" dynamodbav:"drop_deadline,omitempty"`
+	RejectedDEIDs   []string `json:"rejected_de_ids,omitempty" dynamodbav:"rejected_de_ids,omitempty"`
 	// Reassignments is admin-facing audit only. json:"-" is load-bearing:
 	// GetCurrentTrip returns *models.Trip straight to the driver app, and this
 	// array carries the ops admin's username and a reason code about the rider.

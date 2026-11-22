@@ -443,6 +443,29 @@ func (r *TripRepository) StampReturnedAt(ctx context.Context, tripID, returnedAt
 	return true, nil
 }
 
+// SetPickupNagPushAt records the last pickup-nag push so the cron can wait 30s.
+func (r *TripRepository) SetPickupNagPushAt(ctx context.Context, tripID, at string) error {
+	op := logging.Start(ctx, r.logger, "TripRepository.SetPickupNagPushAt", logrus.Fields{"trip_id": tripID})
+	defer op.End()
+
+	_, err := r.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(r.tableName),
+		Key: map[string]types.AttributeValue{
+			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
+			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		},
+		UpdateExpression:    aws.String("SET pickup_nag_push_at = :at, updated_at = :at"),
+		ConditionExpression: aws.String("attribute_exists(PK)"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":at": &types.AttributeValueMemberS{Value: at},
+		},
+	})
+	if err != nil {
+		return op.Fail(fmt.Errorf("failed to stamp pickup nag push: %w", err))
+	}
+	return nil
+}
+
 // UpdateTasks replaces the entire tasks list on the trip item.
 func (r *TripRepository) UpdateTasks(ctx context.Context, tripID string, tasks []models.Task) error {
 	op := logging.Start(ctx, r.logger, "TripRepository.UpdateTasks", logrus.Fields{"trip_id": tripID})
@@ -861,6 +884,11 @@ func (r *TripRepository) UpdateEditByOrder(ctx context.Context, tripID string, i
 	return nil
 }
 
+// acceptTripUpdateExpression records the accept instant used by the pickup nag.
+func acceptTripUpdateExpression() string {
+	return "SET #status = :accepted, accepted_at = :now, updated_at = :now REMOVE accept_deadline"
+}
+
 // Accept transitions a trip from assigned to accepted for the owning DE.
 // Conditional on the trip still being assigned to this DE — if the cron
 // auto-rejected first, the condition fails and the caller gets a conflict.
@@ -875,7 +903,7 @@ func (r *TripRepository) Accept(ctx context.Context, tripID, deID string) error 
 			"PK": &types.AttributeValueMemberS{Value: "TRIP!" + tripID},
 			"SK": &types.AttributeValueMemberS{Value: "METADATA"},
 		},
-		UpdateExpression:         aws.String("SET #status = :accepted, updated_at = :now REMOVE accept_deadline"),
+		UpdateExpression:         aws.String(acceptTripUpdateExpression()),
 		ConditionExpression:      aws.String("#status = :assigned AND de_id = :de_id"),
 		ExpressionAttributeNames: map[string]string{"#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
