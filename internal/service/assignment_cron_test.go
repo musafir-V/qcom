@@ -264,6 +264,39 @@ func TestBuildTripCarriesCustomerUserID(t *testing.T) {
 	}
 }
 
+func TestPickupNagPlan_StampsReadyOnlyForPackedOrders(t *testing.T) {
+	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	trip := &models.Trip{
+		TripID: "trip-1",
+		DEID:   "de-1",
+		Status: models.TripStatusAccepted,
+		Tasks: []models.Task{{
+			TaskID: "p", Type: models.TaskTypePickup, Status: models.TaskStatusCreated, OrderID: "ORD-1",
+		}},
+	}
+	if stamped, _, ok := pickupNagPlan(trip, "ORD-1", "PACKING", now); stamped || ok {
+		t.Fatalf("packing must not stamp or push, stamped=%v push=%v", stamped, ok)
+	}
+	if trip.Tasks[0].ReadyAt != "" {
+		t.Fatal("ready_at was set while the order was still packing")
+	}
+
+	trip.AcceptedAt = now.Add(-2 * time.Minute).Format(time.RFC3339)
+	stamped, req, ok := pickupNagPlan(trip, "ORD-1", "READY_FOR_DELIVERY", now)
+	if !stamped {
+		t.Fatal("expected the first ready observation to stamp ready_at")
+	}
+	if ok {
+		t.Fatal("must not push during the minute after ready")
+	}
+	if req.EventType != "" {
+		t.Fatalf("unexpected request %+v", req)
+	}
+	if trip.Tasks[0].ReadyAt != now.Format(time.RFC3339) {
+		t.Fatalf("ready_at = %s", trip.Tasks[0].ReadyAt)
+	}
+}
+
 func TestStampAssignmentDecision_DefaultDecisionAndSLA(t *testing.T) {
 	trip := &models.Trip{DistanceKM: 5.0}
 	cfg := &models.PayoutConfig{RatePerKmZMW: 2.0, MinutesPerKm: 4.0}

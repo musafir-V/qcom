@@ -390,6 +390,10 @@ func (s *TripService) EditTripByOrder(ctx context.Context, in EditTripByOrderInp
 	})
 
 	tasks := append([]models.Task(nil), trip.Tasks...)
+	readyTrip := *trip
+	readyTrip.Tasks = tasks
+	readyTrip.MarkOrderReady(in.OrderID, timezone.Now())
+	tasks = readyTrip.Tasks
 	for i := range tasks {
 		if tasks[i].Type == models.TaskTypePickup && trip.TaskOrderID(&tasks[i]) == in.OrderID {
 			tasks[i].DeliveryZone = in.DeliveryZone
@@ -508,6 +512,7 @@ func (s *TripService) GetCurrentTrip(ctx context.Context, dePhone string) (*mode
 		return nil, nil
 	}
 	if trip != nil {
+		trip.RefreshPickupNag()
 		trip.Items = trip.ItemsRollup()
 		if roll := trip.PaymentRollup(); roll != nil {
 			trip.Payment = roll

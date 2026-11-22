@@ -426,7 +426,47 @@ func (c *AssignmentCron) processStore(
 		}
 	}
 
+	for _, r := range results {
+		if r.trip == nil {
+			continue
+		}
+		c.considerPickupNag(ctx, r.trip, r.order.OrderID, r.order.Status, now)
+	}
+
 	metrics.RecordCronStore(storeID, len(orders), len(eligibleDEs), leftOut, len(newTrips), assignedCount, distanceFailedCount)
+}
+
+// pickupNagPlan stamps ready_at the first time an order is packed, then decides
+// whether the current pickup is due for its repeating push.
+func pickupNagPlan(trip *models.Trip, orderID, orderStatus string, now time.Time) (bool, models.NotificationSendRequest, bool) {
+	if trip == nil || orderStatus != eligibleOrderStatus {
+		return false, models.NotificationSendRequest{}, false
+	}
+	stamped := trip.MarkOrderReady(orderID, now)
+	req, ok := trip.PickupNagNotification(now)
+	return stamped, req, ok
+}
+
+func (c *AssignmentCron) considerPickupNag(ctx context.Context, trip *models.Trip, orderID, orderStatus string, now time.Time) {
+	stamped, req, ok := pickupNagPlan(trip, orderID, orderStatus, now)
+	if stamped {
+		if err := c.tripRepo.UpdateTasks(ctx, trip.TripID, trip.Tasks); err != nil {
+			c.logger.WithError(err).WithField("trip_id", trip.TripID).
+				Warn("assignment cron: failed to stamp ready_at")
+		}
+	}
+	if !ok || c.notifier == nil {
+		return
+	}
+	trip.PickupNagPushAt = now.Format(time.RFC3339)
+	if err := c.tripRepo.SetPickupNagPushAt(ctx, trip.TripID, trip.PickupNagPushAt); err != nil {
+		c.logger.WithError(err).WithField("trip_id", trip.TripID).
+			Warn("assignment cron: failed to stamp pickup nag push")
+	}
+	nag := req
+	go func() {
+		c.notifier.Send(context.Background(), nag)
+	}()
 }
 
 // appendStatusEvent writes a status-event best-effort; never fails the tick.
@@ -531,6 +571,9 @@ func (c *AssignmentCron) createTrip(ctx context.Context, order JavaOrder, cfg *m
 	}
 
 	trip := buildTripFromOrder(order, tripID, pickupTaskID, dropTaskID, orderID, storeID, distKM, basePayZMW, ds)
+	if order.Status == eligibleOrderStatus {
+		trip.MarkOrderReady(orderID, timezone.Now())
+	}
 
 	if err := c.tripRepo.Create(ctx, trip); err != nil {
 		return nil, fmt.Errorf("failed to persist trip for order %s: %w", orderID, err)

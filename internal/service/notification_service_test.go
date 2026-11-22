@@ -3,8 +3,8 @@ package service
 import (
 	"testing"
 
-	"github.com/qcom/qcom/internal/models"
 	firebase "firebase.google.com/go/v4/messaging"
+	"github.com/qcom/qcom/internal/models"
 )
 
 func TestBuildFCMMessage_OrderAssigned(t *testing.T) {
@@ -50,6 +50,44 @@ func TestBuildFCMMessage_OrderAssigned(t *testing.T) {
 	}
 	if msg.APNS.Headers["apns-collapse-id"] != "trip-123" {
 		t.Errorf("expected apns-collapse-id trip-123, got %q", msg.APNS.Headers["apns-collapse-id"])
+	}
+}
+
+func TestBuildFCMMessage_PickupNagUsesItsOwnSilentChannel(t *testing.T) {
+	req := models.NotificationSendRequest{
+		RecipientType: models.RecipientTypeDriver,
+		RecipientID:   "DE-1",
+		EventType:     "PICKUP_NAG",
+		Priority:      models.PriorityCritical,
+		Title:         "Order ready",
+		Body:          "Blue Rack 2",
+		Data: map[string]string{
+			"trip_id":  "trip-1",
+			"order_id": "ORD-1",
+			"title":    "Order ready",
+			"body":     "Blue Rack 2",
+		},
+	}
+
+	msg := buildFCMMessage("device-token-abc", req)
+
+	if msg.Notification == nil || msg.Notification.Title != "Order ready" || msg.Notification.Body != "Blue Rack 2" {
+		t.Fatalf("expected lock-screen copy, got %+v", msg.Notification)
+	}
+	if msg.Android == nil || msg.Android.Notification == nil {
+		t.Fatal("expected an android notification so the lock screen shows while the app is waking")
+	}
+	if msg.Android.Notification.ChannelID != pickupNagChannelID {
+		t.Errorf("channel = %q, want %q", msg.Android.Notification.ChannelID, pickupNagChannelID)
+	}
+	if msg.Android.Notification.Sound != "" {
+		t.Errorf("pickup nag channel sound = %q, want empty so the voice loop is the only sound", msg.Android.Notification.Sound)
+	}
+	if msg.Android.Notification.Tag != "trip-1" {
+		t.Errorf("tag = %q, want trip-1 so repeats replace one notification", msg.Android.Notification.Tag)
+	}
+	if err := validateSendRequest(req); err != nil {
+		t.Fatalf("critical PICKUP_NAG should be valid, got %v", err)
 	}
 }
 
