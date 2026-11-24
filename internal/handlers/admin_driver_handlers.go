@@ -72,7 +72,14 @@ type AdminDriverHandlers struct {
 	referralHandlers *ReferralHandlers
 	inKindHandlers   *InKindDisbursementHandlers
 	bucket           string
+	distance         service.DrivingDistancer
 	logger           *logrus.Logger
+}
+
+// SetDrivingDistance measures a full store → drop path when a saved trip
+// distance is only the tail of that path.
+func (h *AdminDriverHandlers) SetDrivingDistance(d service.DrivingDistancer) {
+	h.distance = d
 }
 
 func NewAdminDriverHandlers(
@@ -1001,6 +1008,10 @@ func percentile(sorted []float64, q float64) *float64 {
 // with distance — no Payment / CollectCash filter. Totals span the entire
 // window before the requested page is sliced out.
 func fetchDriverTrips(ctx context.Context, lister cashCollectionsTripLister, deID, startTS, endTS string, offset, limit int) (*driverTripsResult, error) {
+	return fetchDriverTripsMeasured(ctx, lister, nil, deID, startTS, endTS, offset, limit)
+}
+
+func fetchDriverTripsMeasured(ctx context.Context, lister cashCollectionsTripLister, measure service.DrivingDistancer, deID, startTS, endTS string, offset, limit int) (*driverTripsResult, error) {
 	var allTrips []*models.Trip
 	var lastKey map[string]types.AttributeValue
 	for {
@@ -1020,11 +1031,12 @@ func fetchDriverTrips(ctx context.Context, lister cashCollectionsTripLister, deI
 	missingArrivals := 0
 	items := make([]driverTripItem, 0, len(allTrips))
 	for _, trip := range allTrips {
+		km := service.DisplayedTripKM(ctx, measure, trip)
 		item := driverTripItem{
 			CompletedAt:    trip.CompletedAt,
 			OrderID:        trip.OrderID,
 			OrderIDs:       routeOrderIDs(trip),
-			DistanceKM:     trip.DistanceKM,
+			DistanceKM:     km,
 			MissingArrival: trip.MissingArrival(),
 		}
 		if m, ok := trip.LastMileMinutes(); ok {
@@ -1039,7 +1051,7 @@ func fetchDriverTrips(ctx context.Context, lister cashCollectionsTripLister, deI
 			missingArrivals++
 		}
 		items = append(items, item)
-		total += trip.DistanceKM
+		total += km
 	}
 	sort.Float64s(lastMiles)
 	sort.Float64s(returns)
@@ -1121,7 +1133,7 @@ func (h *AdminDriverHandlers) GetDriverTrips(w http.ResponseWriter, r *http.Requ
 	}
 	limit := clampCashCollectionsLimit(q.Get("limit"))
 
-	result, err := fetchDriverTrips(r.Context(), h.tripRepo, de.DEID, startTS, endTS, offset, limit)
+	result, err := fetchDriverTripsMeasured(r.Context(), h.tripRepo, h.distance, de.DEID, startTS, endTS, offset, limit)
 	if err != nil {
 		h.logger.WithError(err).Error("admin: failed to fetch driver trips")
 		h.respondWithError(w, http.StatusInternalServerError, "TRIPS_FETCH_FAILED", "Failed to fetch trips")

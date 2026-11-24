@@ -194,6 +194,7 @@ func main() {
 		cfg.S3.Bucket,
 		logger,
 	)
+	adminDriverHandlers.SetDrivingDistance(distanceService)
 	adminStoreHandlers := handlers.NewAdminStoreHandlers(darkstoreRepo, logger)
 	notificationHandlers := handlers.NewNotificationHandlers(notificationService, logger)
 	webhookHandlers := handlers.NewWebhookHandlers(logger)

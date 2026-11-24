@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/qcom/qcom/internal/models"
@@ -257,6 +258,42 @@ func TestFetchDriverTrips_BatchIsOneRowWithPathDistance(t *testing.T) {
 	}
 	if len(item.OrderIDs) != 2 || item.OrderIDs[0] != "ORD-A" || item.OrderIDs[1] != "ORD-B" {
 		t.Fatalf("order_ids = %v, want drop order [ORD-A ORD-B]", item.OrderIDs)
+	}
+}
+
+type scriptedLegs map[string]float64
+
+func (s scriptedLegs) DistanceKM(_ context.Context, oLat, oLng, dLat, dLng float64) (float64, error) {
+	key := fmt.Sprintf("%.4f,%.4f->%.4f,%.4f", oLat, oLng, dLat, dLng)
+	km, ok := s[key]
+	if !ok {
+		return 0, fmt.Errorf("no leg %s", key)
+	}
+	return km, nil
+}
+
+func TestFetchDriverTrips_ShortBatchShowsFullPath(t *testing.T) {
+	const storeLat, storeLng = -15.3810, 28.3105
+	const aLat, aLng = -15.4026, 28.2913
+	const bLat, bLng = -15.4061, 28.2946
+	trip := completedTrip("ORD-A", "2026-11-22T09:15:55Z", 0.7)
+	trip.OrderIDs = []string{"ORD-A", "ORD-B"}
+	trip.Tasks = []models.Task{
+		{Type: models.TaskTypePickup, OrderID: "ORD-A", Lat: storeLat, Lng: storeLng},
+		{Type: models.TaskTypeDrop, OrderID: "ORD-A", Lat: aLat, Lng: aLng},
+		{Type: models.TaskTypeDrop, OrderID: "ORD-B", Lat: bLat, Lng: bLng},
+	}
+	measure := scriptedLegs{
+		fmt.Sprintf("%.4f,%.4f->%.4f,%.4f", storeLat, storeLng, aLat, aLng): 4,
+		fmt.Sprintf("%.4f,%.4f->%.4f,%.4f", aLat, aLng, bLat, bLng):         2,
+	}
+
+	result, err := fetchDriverTripsMeasured(context.Background(), &fakeTripLister{trips: []*models.Trip{trip}}, measure, "DE1", "start", "end", 0, 50)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if result.Items[0].DistanceKM != 6 || result.TotalDistanceKM != 6 {
+		t.Fatalf("distance = %v total = %v, want 6 (store→drop1 + drop1→drop2)", result.Items[0].DistanceKM, result.TotalDistanceKM)
 	}
 }
 

@@ -367,6 +367,47 @@ func TestBatching_BothOFD_PinsTargetDropFirst(t *testing.T) {
 	}
 }
 
+func TestBatching_BothOFD_DistanceIsFullPath(t *testing.T) {
+	// Pickup is already done, so the tour origin sits on drop A. The stored km
+	// must still be store→A (4) + A→B (2), not only the remaining hop.
+	const storeLat, storeLng = -15.4, 28.3
+	const aLat, aLng = -15.41, 28.31
+	const bLat, bLng = -15.50, 28.50
+	target := acceptedSingleton("T-A", "ORD-A", "de-a", "+260A", aLat, aLng)
+	target.Status = models.TripStatusOutForDelivery
+	target.Tasks[0].Status = models.TaskStatusCompleted
+	source := acceptedSingleton("T-B", "ORD-B", "de-b", "+260B", bLat, bLng)
+	source.Status = models.TripStatusOutForDelivery
+	source.Tasks[0].Status = models.TaskStatusCompleted
+	trips := &fakeBatchTrips{
+		byID:    map[string]*models.Trip{"T-A": target, "T-B": source},
+		byOrder: map[string]*models.Trip{"ORD-A": target, "ORD-B": source},
+	}
+	des := &fakeBatchDEs{byPhone: map[string]*models.DeliveryExecutive{
+		"+260A": {DEID: "de-a", PhoneNumber: "+260A", Status: models.DEStatusBusy, CurrentTripID: "T-A", CurrentStoreID: "221", LastAppVersion: "1.5.0"},
+		"+260B": {DEID: "de-b", PhoneNumber: "+260B", Status: models.DEStatusBusy, CurrentTripID: "T-B", CurrentStoreID: "221", LastAppVersion: "1.5.0"},
+	}}
+	s := testBatching(trips, des, &fakeDist{}, &captureNotifier{})
+	s.distance = scriptedDist{km: map[string]float64{
+		legKey(storeLat, storeLng, aLat, aLng): 4,
+		legKey(storeLat, storeLng, bLat, bLng): 8,
+		legKey(aLat, aLng, bLat, bLng):         2,
+		legKey(bLat, bLng, aLat, aLng):         2,
+		legKey(aLat, aLng, aLat, aLng):         0,
+		legKey(bLat, bLng, bLat, bLng):         0,
+	}}
+	if _, err := s.Confirm(context.Background(), BatchConfirmInput{
+		OrderID: "ORD-B", TargetDEPhone: "+260A",
+		ExpectedUpdatedAt: map[string]string{"T-A": target.UpdatedAt, "T-B": source.UpdatedAt},
+	}); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	got := trips.persist[0].NewTrip.DistanceKM
+	if got != 6 {
+		t.Fatalf("distance_km = %v, want 6 (store→drop1 + drop1→drop2)", got)
+	}
+}
+
 func TestBatching_StealLeavesLeftover(t *testing.T) {
 	target := acceptedSingleton("T-A", "ORD-A", "de-a", "+260A", -15.41, 28.31)
 	loser := &models.Trip{

@@ -114,12 +114,12 @@ func (s *BatchingService) requireEnabled(ctx context.Context) (*models.BatchingC
 }
 
 type BatchCandidate struct {
-	Phone        string `json:"phone"`
-	Name         string `json:"name"`
-	TripID       string `json:"trip_id"`
+	Phone         string `json:"phone"`
+	Name          string `json:"name"`
+	TripID        string `json:"trip_id"`
 	TripUpdatedAt string `json:"trip_updated_at"`
-	AppOK        bool   `json:"app_ok"`
-	CashExceeds  bool   `json:"cash_exceeds"`
+	AppOK         bool   `json:"app_ok"`
+	CashExceeds   bool   `json:"cash_exceeds"`
 }
 
 type BatchCandidatesResult struct {
@@ -594,7 +594,7 @@ func (s *BatchingService) buildSuccessor(ctx context.Context, target, source *mo
 	tasks = append(tasks, tour.Drops...)
 	resetReachedIfIncompletePickups(tasks)
 
-	return s.assembleTrip(target, tasks, []string{target.TripID}, tour, ds, targetDE)
+	return s.assembleTrip(ctx, target, tasks, []string{target.TripID}, tour, ds, targetDE)
 }
 
 func (s *BatchingService) buildFromTasks(ctx context.Context, base *models.Trip, tasks []models.Task, ds *models.Darkstore, supersedes []string) (*builtTrip, error) {
@@ -635,10 +635,10 @@ func (s *BatchingService) buildFromTasks(ctx context.Context, base *models.Trip,
 	out = append(out, completedDrops...)
 	out = append(out, tour.Drops...)
 	resetReachedIfIncompletePickups(out)
-	return s.assembleTrip(base, out, supersedes, tour, ds, nil)
+	return s.assembleTrip(ctx, base, out, supersedes, tour, ds, nil)
 }
 
-func (s *BatchingService) assembleTrip(base *models.Trip, tasks []models.Task, supersedes []string, tour tourResult, ds *models.Darkstore, targetDE *models.DeliveryExecutive) (*builtTrip, error) {
+func (s *BatchingService) assembleTrip(ctx context.Context, base *models.Trip, tasks []models.Task, supersedes []string, tour tourResult, ds *models.Darkstore, targetDE *models.DeliveryExecutive) (*builtTrip, error) {
 	tmp := &models.Trip{Tasks: tasks, OrderID: base.OrderID}
 	orderIDs := pickupOrderIDs(tasks)
 	if len(orderIDs) == 0 {
@@ -659,6 +659,7 @@ func (s *BatchingService) assembleTrip(base *models.Trip, tasks []models.Task, s
 	}
 
 	now := timezone.Now()
+	distanceKM, distanceMethod, haversine := fullRouteDistance(ctx, s.distance, ds, tasks, tour)
 	trip := &models.Trip{
 		OrderIDs:          orderIDs,
 		StoreID:           base.StoreID,
@@ -668,8 +669,8 @@ func (s *BatchingService) assembleTrip(base *models.Trip, tasks []models.Task, s
 		Tasks:             tasks,
 		Items:             tmp.ItemsRollup(),
 		Payment:           tmp.PaymentRollup(),
-		DistanceKM:        tour.KM,
-		DistanceMethod:    tour.Method,
+		DistanceKM:        distanceKM,
+		DistanceMethod:    distanceMethod,
 		SupersedesTripIDs: supersedes,
 		CustomerUserID:    base.CustomerUserID,
 		DropDeadline:      dropDeadline,
@@ -693,7 +694,23 @@ func (s *BatchingService) assembleTrip(base *models.Trip, tasks []models.Task, s
 			trip.BasePayZMW = computeBasePay(trip.DistanceKM, pcfg)
 		}
 	}
-	return &builtTrip{trip: trip, haversine: tour.Haversine}, nil
+	return &builtTrip{trip: trip, haversine: haversine}, nil
+}
+
+// fullRouteDistance is store → drop1 → drop2 → … for the drops in task order.
+// The tour km omits store → first drop when the rider has already picked up,
+// so the persisted distance is measured again along the whole path.
+func fullRouteDistance(ctx context.Context, d distancer, ds *models.Darkstore, tasks []models.Task, tour tourResult) (float64, string, bool) {
+	drops := dropTasksInOrder(tasks)
+	if ds == nil || len(drops) == 0 {
+		return tour.KM, tour.Method, tour.Haversine
+	}
+	km, err := routeDistanceKM(ctx, d, ds.Latitude, ds.Longitude, drops, false)
+	if err != nil {
+		km, _ = routeDistanceKM(ctx, d, ds.Latitude, ds.Longitude, drops, true)
+		return km, models.DistanceMethodHaversine, true
+	}
+	return km, models.DistanceMethodGoogle, false
 }
 
 func (s *BatchingService) synthesizeTasks(ctx context.Context, orderID string, ds *models.Darkstore) ([]models.Task, error) {

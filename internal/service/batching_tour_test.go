@@ -24,6 +24,47 @@ func (s scriptedDist) DistanceKM(_ context.Context, oLat, oLng, dLat, dLng float
 	return v, nil
 }
 
+func TestDisplayedTripKM_ShortBatchUsesFullPath(t *testing.T) {
+	// Stored 0.7 is only drop1→drop2. The row must show store→drop1 + drop1→drop2.
+	storeLat, storeLng := -15.3810, 28.3105
+	aLat, aLng := -15.4026, 28.2913
+	bLat, bLng := -15.4061, 28.2946
+	trip := &models.Trip{
+		DistanceKM: 0.7,
+		Tasks: []models.Task{
+			{Type: models.TaskTypePickup, Lat: storeLat, Lng: storeLng},
+			{Type: models.TaskTypeDrop, OrderID: "ORD-A", Lat: aLat, Lng: aLng},
+			{Type: models.TaskTypeDrop, OrderID: "ORD-B", Lat: bLat, Lng: bLng},
+		},
+	}
+	dist := scriptedDist{km: map[string]float64{
+		legKey(storeLat, storeLng, aLat, aLng): 4,
+		legKey(aLat, aLng, bLat, bLng):         2,
+	}}
+	got := DisplayedTripKM(context.Background(), dist, trip)
+	if got != 6 {
+		t.Fatalf("displayed km = %v, want 6", got)
+	}
+}
+
+func TestDisplayedTripKM_KeepsStoredFullPath(t *testing.T) {
+	storeLat, storeLng := -15.3810, 28.3105
+	aLat, aLng := -15.4026, 28.2913
+	bLat, bLng := -15.4061, 28.2946
+	trip := &models.Trip{
+		DistanceKM: 6,
+		Tasks: []models.Task{
+			{Type: models.TaskTypePickup, Lat: storeLat, Lng: storeLng},
+			{Type: models.TaskTypeDrop, OrderID: "ORD-A", Lat: aLat, Lng: aLng},
+			{Type: models.TaskTypeDrop, OrderID: "ORD-B", Lat: bLat, Lng: bLng},
+		},
+	}
+	got := DisplayedTripKM(context.Background(), scriptedDist{}, trip)
+	if got != 6 {
+		t.Fatalf("displayed km = %v, want stored 6", got)
+	}
+}
+
 func TestNearestNeighbourTour_SumsStoreToDropThenDropToDrop(t *testing.T) {
 	// store→A is 1.5, store→B is 4.0, A→B is 2.2.
 	// The tour km is 1.5+2.2 = 3.7, not 2× store→A (3.0) and not store→A + store→B (5.5).

@@ -6,9 +6,12 @@ import (
 	"github.com/qcom/qcom/internal/models"
 )
 
-type distancer interface {
+// DrivingDistancer measures one driving leg in kilometres.
+type DrivingDistancer interface {
 	DistanceKM(ctx context.Context, originLat, originLng, destLat, destLng float64) (float64, error)
 }
+
+type distancer = DrivingDistancer
 
 type tourResult struct {
 	Drops     []models.Task
@@ -86,6 +89,73 @@ func nnOnce(
 		remaining = append(remaining[:best], remaining[best+1:]...)
 	}
 	return tourResult{Drops: ordered, KM: km}, nil
+}
+
+// DisplayedTripKM is the trip distance shown in admin: store → drop1 → drop2 → …
+// A stored value shorter than the straight-line path is missing a leg, which
+// happens when a batch was frozen after pickup. Those rows are remeasured.
+func DisplayedTripKM(ctx context.Context, d DrivingDistancer, trip *models.Trip) float64 {
+	if trip == nil {
+		return 0
+	}
+	stored := trip.DistanceKM
+	drops := dropTasksInOrder(trip.Tasks)
+	if len(drops) < 2 {
+		return stored
+	}
+	storeLat, storeLng, ok := pickupPoint(trip.Tasks)
+	if !ok {
+		return stored
+	}
+	straight, _ := routeDistanceKM(ctx, nil, storeLat, storeLng, drops, true)
+	if stored+0.5 >= straight {
+		return stored
+	}
+	if d == nil {
+		return stored
+	}
+	measured, err := routeDistanceKM(ctx, d, storeLat, storeLng, drops, false)
+	if err != nil {
+		return straight
+	}
+	return measured
+}
+
+func pickupPoint(tasks []models.Task) (float64, float64, bool) {
+	for _, t := range tasks {
+		if t.Type != models.TaskTypePickup {
+			continue
+		}
+		if t.Lat == 0 && t.Lng == 0 {
+			continue
+		}
+		return t.Lat, t.Lng, true
+	}
+	return 0, 0, false
+}
+
+func routeDistanceKM(ctx context.Context, d distancer, storeLat, storeLng float64, drops []models.Task, haversine bool) (float64, error) {
+	lat, lng := storeLat, storeLng
+	km := 0.0
+	for _, drop := range drops {
+		leg, err := legKM(ctx, d, lat, lng, drop.Lat, drop.Lng, haversine)
+		if err != nil {
+			return 0, err
+		}
+		km += leg
+		lat, lng = drop.Lat, drop.Lng
+	}
+	return km, nil
+}
+
+func dropTasksInOrder(tasks []models.Task) []models.Task {
+	drops := make([]models.Task, 0, len(tasks))
+	for _, t := range tasks {
+		if t.Type == models.TaskTypeDrop {
+			drops = append(drops, t)
+		}
+	}
+	return drops
 }
 
 func legKM(ctx context.Context, d distancer, oLat, oLng, dLat, dLng float64, haversine bool) (float64, error) {
