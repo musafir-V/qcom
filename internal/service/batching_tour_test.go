@@ -47,10 +47,12 @@ func TestDisplayedTripKM_ShortBatchUsesFullPath(t *testing.T) {
 	}
 }
 
-func TestDisplayedTripKM_KeepsStoredFullPath(t *testing.T) {
-	storeLat, storeLng := -15.3810, 28.3105
-	aLat, aLng := -15.4026, 28.2913
-	bLat, bLng := -15.4061, 28.2946
+func TestDisplayedTripKM_SecondLegOnlyStillShowsFullPath(t *testing.T) {
+	// Saved 6 is only drop1→drop2. That driving hop is longer than the straight
+	// line of the whole path, and the row must still show store→drop1 + drop1→drop2.
+	storeLat, storeLng := -15.381012, 28.31048
+	aLat, aLng := -15.414948, 28.3310082
+	bLat, bLng := -15.4009331, 28.3209973
 	trip := &models.Trip{
 		DistanceKM: 6,
 		Tasks: []models.Task{
@@ -59,9 +61,13 @@ func TestDisplayedTripKM_KeepsStoredFullPath(t *testing.T) {
 			{Type: models.TaskTypeDrop, OrderID: "ORD-B", Lat: bLat, Lng: bLng},
 		},
 	}
-	got := DisplayedTripKM(context.Background(), scriptedDist{}, trip)
-	if got != 6 {
-		t.Fatalf("displayed km = %v, want stored 6", got)
+	dist := scriptedDist{km: map[string]float64{
+		legKey(storeLat, storeLng, aLat, aLng): 9,
+		legKey(aLat, aLng, bLat, bLng):         6,
+	}}
+	got := DisplayedTripKM(context.Background(), dist, trip)
+	if got != 15 {
+		t.Fatalf("displayed km = %v, want 15 (store→drop1 + drop1→drop2)", got)
 	}
 }
 

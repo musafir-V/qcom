@@ -91,32 +91,26 @@ func nnOnce(
 	return tourResult{Drops: ordered, KM: km}, nil
 }
 
-// DisplayedTripKM is the trip distance shown in admin: store → drop1 → drop2 → …
-// A stored value shorter than the straight-line path is missing a leg, which
-// happens when a batch was frozen after pickup. Those rows are remeasured.
+// DisplayedTripKM is the last mile shown for a rider trip.
+// One drop keeps the saved store→drop kilometres.
+// Two or more drops are store → drop1 → drop2 → …, summed in drop order.
+// The saved kilometres are not used for that sum, and pay is left unchanged.
 func DisplayedTripKM(ctx context.Context, d DrivingDistancer, trip *models.Trip) float64 {
 	if trip == nil {
 		return 0
 	}
 	stored := trip.DistanceKM
 	drops := dropTasksInOrder(trip.Tasks)
-	if len(drops) < 2 {
+	if len(drops) < 2 || d == nil {
 		return stored
 	}
 	storeLat, storeLng, ok := pickupPoint(trip.Tasks)
 	if !ok {
 		return stored
 	}
-	straight, _ := routeDistanceKM(ctx, nil, storeLat, storeLng, drops, true)
-	if stored+0.5 >= straight {
-		return stored
-	}
-	if d == nil {
-		return stored
-	}
 	measured, err := routeDistanceKM(ctx, d, storeLat, storeLng, drops, false)
 	if err != nil {
-		return straight
+		return stored
 	}
 	return measured
 }
